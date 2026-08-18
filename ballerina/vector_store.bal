@@ -212,7 +212,7 @@ public isolated class VectorStore {
         return self.transport.close();
     }
 
-    # Implements the search-then-bulk-delete path required on `SERVERLESS_CLASSIC` (§D9).
+    # Implements the search-then-bulk-delete path required on `SERVERLESS_CLASSIC`.
     #
     # Because `add` is append-only there, a heavily re-added logical id can accumulate more
     # duplicate documents than a single lookup's `size` (`Configuration.maxResultWindow`) can see.
@@ -252,7 +252,7 @@ public isolated class VectorStore {
     }
 }
 
-# Runs the seven fail-fast construction validations (§6.2) before any network I/O is attempted.
+# Runs the fail-fast construction validations before any network I/O is attempted.
 #
 # + serviceUrl - The service URL, checked for a parseable host
 # + deploymentType - The deployment flavour

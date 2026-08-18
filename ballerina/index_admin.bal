@@ -19,12 +19,12 @@ import ballerina/ai;
 # Builds the `PUT /<index>` request body: a `knn_vector` field sized and spaced per `IndexConfig`,
 # the fixed schema fields (content/id/chunk type), and a `dynamic_templates` block mapping
 # metadata strings to `keyword` — without it, `term` filters on string metadata silently return
-# zero hits, because the default dynamic mapping would map them as analyzed `text` (§5.4).
+# zero hits, because the default dynamic mapping would map them as analyzed `text`.
 #
 # `SERVERLESS_NEXTGEN` omits the `method` block entirely (it auto-configures its own engine and
 # rejects one being specified) and puts `space_type` at the field's top level instead; every other
 # deployment type emits an explicit `method` block, since relying on the default engine is what
-# silently breaks k-NN pre-filtering on Serverless Classic (§5.12).
+# silently breaks k-NN pre-filtering on Serverless Classic.
 #
 # + config - The vector store configuration
 # + deploymentType - The deployment flavour, which gates the `method` block
@@ -113,7 +113,7 @@ isolated function toSpaceType(ai:SimilarityMetric metric) returns string {
 # fully offline for least-privilege deployments and for testing.
 #
 # A `resource_already_exists_exception` on creation is treated as success, covering two instances
-# racing to create the same index (§D5).
+# racing to create the same index.
 #
 # + transport - The transport to issue `HEAD`/`PUT` requests through
 # + indexName - The index to ensure

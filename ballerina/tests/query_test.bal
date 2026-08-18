@@ -70,7 +70,7 @@ isolated function testQueryEmbeddingAndFiltersPreFiltersInsideKnn() returns erro
     map<json> knn = check asJsonMap(queryClause["knn"]);
     map<json> knnField = check asJsonMap(knn["embedding"]);
     test:assertTrue(knnField.hasKey("filter"), "the filter must be pre-filtered inside the knn clause, not post_filter");
-    test:assertFalse(bodyMap.hasKey("post_filter"), "post_filter must never be used (§3.4)");
+    test:assertFalse(bodyMap.hasKey("post_filter"), "post_filter must never be used");
 }
 
 @test:Config

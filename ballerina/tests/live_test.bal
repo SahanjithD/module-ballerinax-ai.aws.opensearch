@@ -26,7 +26,7 @@
 //
 // Each deployment type is independently gated on its own service URL being non-empty, so you can
 // exercise just the one you have access to. Visibility waits poll with a timeout rather than
-// sleep a fixed duration (§5.6): a managed domain uses `refreshOnWrite` and needs no poll, while
+// sleep a fixed duration: a managed domain uses `refreshOnWrite` and needs no poll, while
 // Serverless Classic (~60s refresh) and NextGen (~10s refresh) do.
 
 import ballerina/ai;

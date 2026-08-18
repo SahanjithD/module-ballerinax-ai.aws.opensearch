@@ -1,0 +1,67 @@
+# Copyright (c) 2026, WSO2 LLC. (http://www.wso2.com).
+#
+# WSO2 LLC. licenses this file to you under the Apache License,
+# Version 2.0 (the "License"); you may not use this file except
+# in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied. See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+# Two single-node OpenSearch clusters backing the `docker` test group. This is the same engine
+# AWS OpenSearch Service runs, so the k-NN mapping, the query DSL, and `refresh=wait_for` all
+# behave identically to a managed domain. Neither container is AWS, so neither validates a SigV4
+# signature -- the tests still exercise the full signing path with dummy static credentials, and
+# the server simply ignores the resulting `Authorization` header.
+name: ballerinax-ai-aws-opensearch-tests
+
+services:
+    # Security plugin off: plain HTTP on 9200, no authentication. Carries the bulk of the suite.
+    opensearch:
+        image: opensearchproject/opensearch:2.19.1
+        container_name: ballerina-ai-aws-opensearch
+        environment:
+            discovery.type: single-node
+            DISABLE_SECURITY_PLUGIN: "true"
+            DISABLE_INSTALL_DEMO_CONFIG: "true"
+            OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+        ulimits:
+            nofile:
+                soft: 65536
+                hard: 65536
+        ports:
+            - "9200:9200"
+        healthcheck:
+            test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+            interval: 10s
+            timeout: 5s
+            retries: 12
+            start_period: 30s
+
+    # Security plugin on: HTTPS with the demo certificate on 9201, internal user database.
+    # This is what exercises the `BasicAuth` branch of the transport and `secureSocket` passthrough.
+    opensearch-secure:
+        image: opensearchproject/opensearch:2.19.1
+        container_name: ballerina-ai-aws-opensearch-secure
+        environment:
+            discovery.type: single-node
+            OPENSEARCH_INITIAL_ADMIN_PASSWORD: "Ballerina@OpenSearch1"
+            OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+        ulimits:
+            nofile:
+                soft: 65536
+                hard: 65536
+        ports:
+            - "9201:9200"
+        healthcheck:
+            test: ["CMD-SHELL", "curl -fsSk -u admin:Ballerina@OpenSearch1 https://localhost:9200/_cluster/health || exit 1"]
+            interval: 10s
+            timeout: 5s
+            retries: 12
+            start_period: 30s

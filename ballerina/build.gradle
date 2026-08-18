@@ -95,6 +95,78 @@ clean {
     delete 'build'
 }
 
+// --- Docker-backed integration tests ----------------------------------------------------------
+// The `docker` test group runs against two throwaway single-node OpenSearch containers rather
+// than a live AWS endpoint, so every PR -- including one from a fork with no secrets -- exercises
+// the transport, index-admin, and response-mapping paths that unit tests cannot reach.
+
+def composeFile = "tests/resources/compose.yaml"
+
+tasks.register('startOpenSearchServers') {
+    doLast {
+        def stdOut = new ByteArrayOutputStream()
+        def cmd = Os.isFamily(Os.FAMILY_WINDOWS) ? ['cmd', '/c'] : ['sh', '-c']
+        exec {
+            commandLine cmd + ["docker compose -f ${composeFile} ps --services --filter status=running"]
+            standardOutput = stdOut
+        }
+        if (stdOut.toString().trim().isEmpty()) {
+            println "Starting OpenSearch servers."
+            exec {
+                commandLine cmd + ["docker compose -f ${composeFile} up -d"]
+            }
+            // OpenSearch boots considerably slower than a relational database, and the security
+            // plugin adds a further init phase, so this waits longer than the usual connector.
+            def healthCheckPassed = false
+            int retries = 36 // 180 seconds max, 5s interval
+            for (int i = 0; i < retries; i++) {
+                def healthOut = new ByteArrayOutputStream()
+                exec {
+                    commandLine cmd + ["docker compose -f ${composeFile} ps --format '{{.Name}}: {{.Health}}'"]
+                    standardOutput = healthOut
+                    ignoreExitValue = true
+                }
+                def healthStatus = healthOut.toString().trim()
+                if (healthStatus && !healthStatus.contains("unhealthy") && !healthStatus.contains("starting")) {
+                    healthCheckPassed = true
+                    break
+                }
+                sleep(5 * 1000)
+            }
+            if (!healthCheckPassed) {
+                throw new GradleException("OpenSearch containers did not become healthy in time.")
+            }
+        } else {
+            println "Expected OpenSearch containers are already running. Exiting without starting new containers."
+        }
+    }
+}
+
+tasks.register('stopOpenSearchServers') {
+    doLast {
+        def stdOut = new ByteArrayOutputStream()
+        def cmd = Os.isFamily(Os.FAMILY_WINDOWS) ? ['cmd', '/c'] : ['sh', '-c']
+        exec {
+            commandLine cmd + ["docker compose -f ${composeFile} ps --services --filter status=running"]
+            standardOutput = stdOut
+        }
+        if (!stdOut.toString().trim().isEmpty()) {
+            println "Stopping OpenSearch servers."
+            exec {
+                commandLine cmd + ["docker compose -f ${composeFile} rm -svf"]
+                standardOutput = stdOut
+            }
+            println stdOut.toString()
+            sleep(5 * 1000)
+        } else {
+            println "OpenSearch servers are not started."
+        }
+    }
+}
+
+test.dependsOn "startOpenSearchServers"
+test.finalizedBy "stopOpenSearchServers"
+
 build.dependsOn "generatePomFileForMavenPublication"
 publishToMavenLocal.dependsOn build
 publish.dependsOn build

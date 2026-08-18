@@ -39,7 +39,7 @@ type PreparedEntry record {|
 # Validates and normalizes a batch of vector entries prior to indexing.
 #
 # + entries - The caller-supplied entries
-# + metric - The index's configured similarity metric, used for the zero-vector guard (§5.11)
+# + metric - The index's configured similarity metric, used for the zero-vector guard
 # + return - The prepared entries, or an `ai:Error` naming the offending entry
 isolated function prepareEntries(ai:VectorEntry[] entries, ai:SimilarityMetric metric) returns PreparedEntry[]|ai:Error {
     PreparedEntry[] prepared = [];
@@ -91,7 +91,7 @@ isolated function chunkIds(string[] ids, int chunkSize) returns string[][] {
 }
 
 # Rejects a zero-magnitude vector under cosine similarity before it reaches the server, where it
-# would otherwise fail the entire `_bulk` request with an opaque exception (§5.11).
+# would otherwise fail the entire `_bulk` request with an opaque exception.
 #
 # + embedding - The dense vector to check
 # + metric - The index's configured similarity metric
@@ -150,7 +150,7 @@ isolated function buildEntrySource(PreparedEntry entry, Configuration config) re
 }
 
 # Builds the NDJSON body of a `POST /_bulk` indexing request for a batch of prepared entries.
-# Serverless Classic collections reject a caller-supplied `_id` on write (§5.2), so the action
+# Serverless Classic collections reject a caller-supplied `_id` on write, so the action
 # line omits `_id` there; every other deployment type writes `_id` for a free upsert.
 #
 # + entries - The prepared entries to index, already sized to fit one `_bulk` request
@@ -197,7 +197,7 @@ isolated function buildDeleteBulkBody(string indexName, string[] ids) returns by
 
 # Builds a `POST /<index>/_search` body that looks up the internal `_id`s of documents whose
 # `idFieldName` matches one of `ids`. This is phase one of a `SERVERLESS_CLASSIC` delete, since a
-# custom `_id` cannot be written there and `_delete_by_query` is not on the AOSS whitelist (§D9).
+# custom `_id` cannot be written there and `_delete_by_query` is not on the AOSS whitelist.
 #
 # + idFieldName - The document field carrying the logical id (`Configuration.idFieldName`)
 # + ids - The logical ids to look up. Must be chunked by the caller to at most 65,536 terms
@@ -218,8 +218,8 @@ isolated function buildDocIdLookupBody(string idFieldName, string[] ids, int max
 }
 
 # Builds a `POST /<index>/_search` body for an `ai:VectorStoreQuery`, covering all four
-# combinations of `(embedding, filters)` (§D8). Pre-filters inside the `knn` clause rather than
-# using `post_filter`, since `post_filter` can silently return fewer than `k` results (§3.4).
+# combinations of `(embedding, filters)`. Pre-filters inside the `knn` clause rather than using
+# `post_filter`, since `post_filter` can silently return fewer than `k` results.
 #
 # + query - The vector store query
 # + config - The vector store configuration
@@ -268,7 +268,7 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, Configuration confi
 }
 
 # Recursively translates `ai:MetadataFilters`/`ai:MetadataFilter` into an OpenSearch `bool` query
-# clause (§D10). Uses `bool.filter` for `AND` (unscored, cacheable) and `bool.should` +
+# clause. Uses `bool.filter` for `AND` (unscored, cacheable) and `bool.should` +
 # `minimum_should_match: 1` for `OR`. An empty filter list at any level of nesting contributes no
 # clause at all, rather than an empty `{"bool":{"filter":[]}}`.
 #
@@ -302,7 +302,7 @@ isolated function convertFilters(ai:MetadataFilters|ai:MetadataFilter node, stri
     return {"bool": {"filter": clauses}};
 }
 
-# Translates a single `ai:MetadataFilter` leaf into its OpenSearch clause (§D10).
+# Translates a single `ai:MetadataFilter` leaf into its OpenSearch clause.
 #
 # + path - The full field path, e.g. `metadata.author`
 # + operator - The comparison operator
@@ -511,7 +511,7 @@ isolated function extractStoredMetadata(map<json> src, Configuration config) ret
     return metadataValue is map<json> ? metadataValue : ();
 }
 
-# Extracts the per-item failures from a `_bulk` indexing response (§5.3). OpenSearch returns HTTP
+# Extracts the per-item failures from a `_bulk` indexing response. OpenSearch returns HTTP
 # 200 even when some items failed, so `errors: true` must always be checked explicitly.
 #
 # + response - The parsed `_bulk` response

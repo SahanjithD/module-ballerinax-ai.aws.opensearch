@@ -27,9 +27,9 @@ const string SIGNING_NAME_MANAGED = "es";
 const string SIGNING_NAME_SERVERLESS = "aoss";
 
 # Owns the HTTP client, request signing, retry, and error mapping for talking to the OpenSearch
-# REST API directly — there is no `ballerinax/opensearch` connector to wrap (§5.1). Every public
-# operation signs the exact bytes it sends and never re-serializes between signing and sending
-# (§5.14), since a payload-hash mismatch fails as an unexplained 403.
+# REST API directly — there is no `ballerinax/opensearch` connector to wrap. Every public
+# operation signs the exact bytes it sends and never re-serializes between signing and sending,
+# since a payload-hash mismatch fails as an unexplained 403.
 isolated class OpenSearchTransport {
     private final http:Client httpClient;
     private final string host;
@@ -173,7 +173,7 @@ isolated class OpenSearchTransport {
 
     # Signs and sends a single request, retrying on transport failures and retryable HTTP status
     # codes. The NDJSON/JSON body is built once by the caller and its exact bytes are passed to
-    # both the signer and the request — never re-serialized in between (§5.14).
+    # both the signer and the request — never re-serialized in between.
     #
     # + method - The HTTP method, upper case
     # + path - The request path, unencoded, starting with `/`
@@ -301,8 +301,8 @@ isolated function buildQueryString(map<string> queryParams) returns string|ai:Er
 # requires for query parameters — leaving only unreserved characters (`A-Z a-z 0-9 - . _ ~`)
 # unescaped. Deliberately not `ballerina/url:encode`, whose `application/x-www-form-urlencoded`
 # behavior differs (e.g. a space becomes `+`, not `%20`): the query string sent over the wire must
-# byte-for-byte match what the signer canonicalized, or AWS rejects the request with an opaque 403
-# (§5.14 applies to query params as much as to the body). There is only ever one query parameter
+# byte-for-byte match what the signer canonicalized, or AWS rejects the request with an opaque
+# 403. There is only ever one query parameter
 # in this module today (`refresh=wait_for`, which needs no encoding either way), but a correct
 # encoder here removes the landmine for `Configuration.additionalHeaders`-style extensions.
 #
@@ -339,7 +339,7 @@ isolated function isUnreservedCodepoint(int codepoint) returns boolean {
 
 # Maps a non-2xx OpenSearch HTTP response to an `ai:Error`, extracting `error.type`/`error.reason`
 # from the response body when present (AOSS edge 403s are sometimes not JSON), and attaching an
-# actionable hint per status code (§6.3).
+# actionable hint per status code.
 #
 # + response - The non-2xx HTTP response
 # + return - The mapped error, carrying `status` and (when available) `openSearchErrorType` as

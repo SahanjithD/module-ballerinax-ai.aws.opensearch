@@ -180,7 +180,7 @@ type BulkItemResult record {
 # way regardless of which key is present.
 type BulkResponse record {
     # `true` if any item in `items` failed. HTTP 200 is returned either way, so this must always
-    # be checked explicitly (§5.3).
+    # be checked explicitly.
     boolean errors;
     # The per-item results, in request order.
     map<BulkItemResult>[] items = [];
