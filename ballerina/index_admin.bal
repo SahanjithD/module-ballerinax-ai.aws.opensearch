@@ -112,6 +112,11 @@ isolated function toSpaceType(ai:SimilarityMetric metric) returns string {
 # When it is `false`, this function performs no network I/O at all — this is what lets `init` run
 # fully offline for least-privilege deployments and for testing.
 #
+# Note that "no network I/O" also means no existence check, and a missing index is not
+# self-announcing: OpenSearch's `action.auto_create_index` default silently creates one from the
+# first document's inferred shape, without `index.knn` and with the vector mapped as a plain
+# `float` array. See the hazard note on `IndexConfig.createIndexIfNotExists`.
+#
 # A `resource_already_exists_exception` on creation is treated as success, covering two instances
 # racing to create the same index.
 #

@@ -387,6 +387,14 @@ isolated function transformMetadata(ai:Metadata? metadata) returns map<json> {
 # `decimal` (JSON only round-trips `int`/`float`), and every other value passes through.
 #
 # + metadata - The stored metadata map, or `()`
+# A custom metadata key holding a fractional number does not round-trip its Ballerina type: it is
+# written as a `float` and read back as a `decimal`, because JSON has a single number type and
+# Ballerina's parser maps every non-integral value to `decimal`. The value is preserved exactly;
+# only the basic type differs, so `readBack["rating"] == 4.25` is `false` after a round trip.
+# This is deliberate, and matches `ai.pinecone`'s identical conversion. Coercing back to `float`
+# would silently lose precision for a caller who passed a `decimal` on purpose, which is the worse
+# failure — `fileSize` is restored explicitly only because `ai:Metadata` declares it `decimal`.
+#
 # + return - The reconstructed `ai:Metadata`, `()` if `metadata` is `()`, or an `ai:Error` if a
 # `createdAt`/`modifiedAt`/`fileSize` value cannot be converted
 isolated function createAiMetadata(map<json>? metadata) returns ai:Metadata?|ai:Error {

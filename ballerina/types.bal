@@ -87,6 +87,17 @@ public type IndexConfig record {|
     # Whether `init` should create the index if it does not already exist. When `false`, `init`
     # performs no network I/O at all — useful for least-privilege deployments where the calling
     # principal has no `CreateIndex` permission, and for fully offline construction in tests.
+    #
+    # # Hazard when `false`
+    # `init` does not verify that the index exists, and a missing index does not make `add` fail:
+    # OpenSearch ships with `action.auto_create_index: true`, so the first `_bulk` write creates
+    # an index from the document's inferred shape instead. That index has no `index.knn` setting
+    # and maps the vector as a plain `float` array rather than a `knn_vector`, so writes keep
+    # succeeding while every `query` fails with a `400`. Recovering means deleting the index and
+    # reindexing from source.
+    #
+    # Only set this to `false` against an index you know was provisioned out of band with a
+    # compatible mapping.
     boolean createIndexIfNotExists = true;
 |};
 

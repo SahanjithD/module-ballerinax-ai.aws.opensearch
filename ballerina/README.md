@@ -195,7 +195,17 @@ config = {..., auth: {username: "...", password: "..."}}
 | `engine` | `FAISS` | Forced to `FAISS` on `SERVERLESS_CLASSIC`; ignored on `SERVERLESS_NEXTGEN` |
 | `efConstruction` | `128` | HNSW build-time accuracy/speed trade-off |
 | `m` | `16` | HNSW max bi-directional links per node |
-| `createIndexIfNotExists` | `true` | When `false`, `init` performs **no network I/O at all** |
+| `createIndexIfNotExists` | `true` | When `false`, `init` performs **no network I/O at all** — including no existence check. See the warning below before setting it |
+
+
+> [!WARNING]
+> **`createIndexIfNotExists = false` against an index that does not exist corrupts silently.**
+> `init` does no existence check, and a missing index does not make `add` fail — OpenSearch ships
+> with `action.auto_create_index: true`, so the first `_bulk` write creates an index from the
+> document's inferred shape. That index has no `index.knn` setting and maps the vector as a plain
+> `float` array instead of a `knn_vector`. Writes keep succeeding; every `query` then fails with a
+> `400`. Recovery means deleting the index and reindexing from source. Only set this to `false`
+> against an index you know was provisioned out of band with a compatible mapping.
 
 ### Other configuration (`Configuration`)
 
@@ -234,6 +244,13 @@ filters), OpenSearch's constant score is not a similarity at all, so `similarity
 - **`SERVERLESS_CLASSIC` delete** can fail loudly (rather than silently under-deleting) if a
   single logical id has accumulated more duplicate documents than `maxResultWindow` can see in
   one lookup — raise `maxResultWindow` and retry.
+- **Fractional metadata values change Ballerina type on a round trip.** A custom metadata key
+  written as a `float` (`{"rating": 4.25}`) is read back as a `decimal`, because JSON has one
+  number type and Ballerina's parser maps every non-integral value to `decimal`. The value is
+  exact; only the basic type differs, so `readBack["rating"] == 4.25` is `false`. `fileSize` is
+  the one numeric field restored to its declared type, because `ai:Metadata` declares it
+  `decimal`. This matches `ai.pinecone`'s behaviour, so metadata semantics stay identical when
+  swapping vector stores behind the `ai:VectorStore` interface.
 
 ## Examples
 
