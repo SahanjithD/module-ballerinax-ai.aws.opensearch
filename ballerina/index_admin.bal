@@ -21,34 +21,61 @@ import ballerina/ai;
 # metadata strings to `keyword` — without it, `term` filters on string metadata silently return
 # zero hits, because the default dynamic mapping would map them as analyzed `text`.
 #
-# `SERVERLESS_NEXTGEN` omits the `method` block entirely (it auto-configures its own engine and
-# rejects one being specified) and puts `space_type` at the field's top level instead; every other
-# deployment type emits an explicit `method` block, since relying on the default engine is what
-# silently breaks k-NN pre-filtering on Serverless Classic.
+# Every deployment type gets an explicit `method` block carrying the HNSW `parameters`, since
+# relying on the default engine is what silently breaks k-NN pre-filtering on Serverless Classic.
+# What varies is only what may accompany the block.
+#
+# # What each deployment gets
+# `MANAGED_DOMAIN` and `SERVERLESS_CLASSIC` carry `engine` and `space_type` inside the block —
+# Classic hard-coded to Faiss, the only engine it supports. `SERVERLESS_NEXTGEN` gets neither:
+# `engine` inside the block fails there with a flat 400 reading "Field parameter 'engine' is not
+# supported", raised by the AOSS proxy rather than by OpenSearch, so it carries no error type to
+# map. Its `space_type` goes at the field's top level instead, and it is the only deployment that
+# may also carry `compression_level`/`mode` there.
+#
+# A block of `{"name": "hnsw", "parameters": {...}}` without `engine` was verified accepted on
+# NextGen with its parameters stored intact; the stored mapping comes back with `engine: faiss`
+# supplied by NextGen itself, alongside the `mode` and `compression_level` it was sent. Sending no
+# block at all — which this module did previously — was a self-imposed limitation that cost HNSW
+# tuning on NextGen, not a restriction AWS imposes.
+#
+# # Quantization on NextGen
+# A NextGen field created without them comes back mapped as `on_disk`/`32x`, so every vector is
+# quantized unless something says otherwise, with nothing in the request or the response to
+# announce it. `ServerlessNextGenDeployment.compressionLevel` and `.vectorMode` are emitted here so
+# that choice can be made explicit. Both are unset by default, which reproduces the server's
+# behavior exactly.
 #
 # + config - The vector store configuration
-# + deploymentType - The deployment flavour, which gates the `method` block
+# + deployment - The deployment, which gates `engine` and the quantization parameters
 # + return - The index-creation request body
-isolated function buildIndexMapping(Configuration config, DeploymentType deploymentType) returns json {
+isolated function buildIndexMapping(Configuration config, Deployment deployment) returns json {
     string spaceType = toSpaceType(config.indexConfig.similarityMetric);
 
     map<json> vectorField = {
         "type": "knn_vector",
         "dimension": config.indexConfig.dimension
     };
-    if deploymentType == SERVERLESS_NEXTGEN {
+    map<json> method = {"name": "hnsw"};
+    if deployment is ServerlessNextGenDeployment {
         vectorField["space_type"] = spaceType;
+        CompressionLevel? compressionLevel = deployment.compressionLevel;
+        if compressionLevel is CompressionLevel {
+            vectorField["compression_level"] = compressionLevel;
+        }
+        VectorMode? vectorMode = deployment.vectorMode;
+        if vectorMode is VectorMode {
+            vectorField["mode"] = vectorMode;
+        }
     } else {
-        vectorField["method"] = {
-            "name": "hnsw",
-            "engine": config.indexConfig.engine,
-            "space_type": spaceType,
-            "parameters": {
-                "ef_construction": config.indexConfig.efConstruction,
-                "m": config.indexConfig.m
-            }
-        };
+        method["engine"] = deployment is ManagedDomainDeployment ? deployment.engine : FAISS;
+        method["space_type"] = spaceType;
     }
+    method["parameters"] = {
+        "ef_construction": config.indexConfig.efConstruction,
+        "m": config.indexConfig.m
+    };
+    vectorField["method"] = method;
 
     map<json> properties = {
         [config.vectorFieldName]: vectorField,
@@ -120,13 +147,28 @@ isolated function toSpaceType(ai:SimilarityMetric metric) returns string {
 # A `resource_already_exists_exception` on creation is treated as success, covering two instances
 # racing to create the same index.
 #
+# # Creation is not searchability on Serverless Classic
+# Returning successfully means the index exists, not that it can be searched yet. On
+# `SERVERLESS_CLASSIC` a newly created index answers `GET _mapping` and `GET _settings`
+# immediately while `_count`/`_search` against it still fail with `index_not_found_exception`,
+# for roughly ten seconds. This is a propagation delay rather than an unassigned shard: the index
+# becomes searchable on its own, with no write and no intervention. Writes are unaffected and
+# succeed immediately, so a caller that adds before it queries never observes it.
+#
+# The delay is deliberately not waited out here. Blocking construction until the index answers a
+# search would add up to those ten seconds to every `SERVERLESS_CLASSIC` construction, including
+# for the callers who write first and would never have hit it. A caller that must query
+# immediately after constructing the store should instead retry an `index_not_found_exception`
+# for a few seconds before treating it as fatal. `SERVERLESS_NEXTGEN` is searchable at once and
+# does not need this.
+#
 # + transport - The transport to issue `HEAD`/`PUT` requests through
 # + indexName - The index to ensure
 # + config - The vector store configuration
-# + deploymentType - The deployment flavour, passed through to the mapping builder
+# + deployment - The deployment, passed through to the mapping builder
 # + return - An `ai:Error` on failure, otherwise `()`
 isolated function ensureIndex(OpenSearchTransport transport, string indexName, Configuration config,
-        DeploymentType deploymentType) returns ai:Error? {
+        Deployment deployment) returns ai:Error? {
     if !config.indexConfig.createIndexIfNotExists {
         return;
     }
@@ -134,7 +176,7 @@ isolated function ensureIndex(OpenSearchTransport transport, string indexName, C
     if exists {
         return;
     }
-    json mapping = buildIndexMapping(config, deploymentType);
+    json mapping = buildIndexMapping(config, deployment);
     ai:Error? result = transport.createIndex(indexName, mapping);
     if result is ai:Error && !isAlreadyExistsError(result) {
         return result;

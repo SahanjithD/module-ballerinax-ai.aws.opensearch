@@ -138,24 +138,24 @@ isolated function testContainerFilterOnArrayValuedMetadata() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerFilterAndCombinesConditions() returns error? {
     ai:VectorMatch[] matches = check queryWithFilters("f-and", {
-        condition: ai:AND,
-        filters: [
-            {key: "language", operator: ai:EQUAL, value: "en"},
-            {key: "year", operator: ai:EQUAL, value: 2024}
-        ]
-    });
+                                                                   condition: ai:AND,
+                                                                   filters: [
+                                                                       {key: "language", operator: ai:EQUAL, value: "en"},
+                                                                       {key: "year", operator: ai:EQUAL, value: 2024}
+                                                                   ]
+                                                               });
     assertIdsEqual(matches, ["en-2024"], "AND should require every clause to match");
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerFilterOrCombinesConditions() returns error? {
     ai:VectorMatch[] matches = check queryWithFilters("f-or", {
-        condition: ai:OR,
-        filters: [
-            {key: "language", operator: ai:EQUAL, value: "fr"},
-            {key: "year", operator: ai:EQUAL, value: 2020}
-        ]
-    });
+                                                                  condition: ai:OR,
+                                                                  filters: [
+                                                                      {key: "language", operator: ai:EQUAL, value: "fr"},
+                                                                      {key: "year", operator: ai:EQUAL, value: 2020}
+                                                                  ]
+                                                              });
     // `bool.should` without `minimum_should_match: 1` would match everything; this is what proves
     // that clause is present and doing its job.
     assertIdsEqual(matches, ["fr-2022", "en-2020"], "OR should require at least one clause to match");
@@ -164,18 +164,18 @@ isolated function testContainerFilterOrCombinesConditions() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerFilterNestedGroups() returns error? {
     ai:VectorMatch[] matches = check queryWithFilters("f-nested", {
-        condition: ai:AND,
-        filters: [
-            {key: "year", operator: ai:EQUAL, value: 2024},
-            {
-                condition: ai:OR,
-                filters: [
-                    {key: "language", operator: ai:EQUAL, value: "de"},
-                    {key: "rating", operator: ai:GREATER_THAN, value: 4.0}
-                ]
-            }
-        ]
-    });
+                                                                      condition: ai:AND,
+                                                                      filters: [
+                                                                          {key: "year", operator: ai:EQUAL, value: 2024},
+                                                                          {
+                                                                              condition: ai:OR,
+                                                                              filters: [
+                                                                                  {key: "language", operator: ai:EQUAL, value: "de"},
+                                                                                  {key: "rating", operator: ai:GREATER_THAN, value: 4.0}
+                                                                              ]
+                                                                          }
+                                                                      ]
+                                                                  });
     assertIdsEqual(matches, ["de-2024"], "a nested OR inside an AND should be evaluated as written");
 }
 
@@ -211,8 +211,7 @@ isolated function testContainerFilterUnderFlatSchema() returns error? {
     string indexName = containerIndexName("f-flat");
     Configuration config = {
         indexConfig: {dimension: CONTAINER_DIMENSION},
-        metadataFieldName: "",
-        refreshOnWrite: true
+        metadataFieldName: ""
     };
     VectorStore store = check newContainerStore(indexName, config);
     check store.add([

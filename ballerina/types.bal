@@ -18,8 +18,8 @@ import ballerina/ai;
 import ballerinax/aws.auth;
 
 # The deployment flavour of the target OpenSearch cluster. Determines the SigV4 signing name,
-# whether a custom document `_id` can be written, how `delete` is implemented, and whether the
-# index mapping needs an explicit `method` block.
+# whether a custom document `_id` can be written, how `delete` is implemented, and how the
+# `knn_vector` field's `method` block is shaped.
 #
 # OpenSearch Serverless now ships two generations that behave differently on the data plane, and
 # there is no documented way to detect which one a collection is from the data plane alone — the
@@ -36,12 +36,27 @@ public enum DeploymentType {
     # Custom document `_id` is supported, so `add` is an upsert and `delete` is a single bulk
     # call, matching managed-domain semantics. Vectors are excluded from `_source` by default,
     # which this module always overrides explicitly. Refresh interval is a fixed 10 seconds.
+    #
+    # The custom `_id` support was verified through the path this module actually uses — the
+    # `_bulk` action line — where re-adding an id replaces the document rather than duplicating
+    # it. Parts of the AWS documentation state that vector search collections reject a custom
+    # document id; that is true of `SERVERLESS_CLASSIC` but not of NextGen.
+    #
+    # The only `knn_vector` mapping parameter NextGen rejects is `engine` inside the `method`
+    # block (and, per AWS, `mode`): a block carrying it fails with a flat
+    # `400 Field parameter 'engine' is not supported`, raised by the AOSS proxy in front of
+    # OpenSearch, which is why it carries no OpenSearch error type to map. A block of
+    # `{"name": "hnsw", "parameters": {...}}` without `engine` is accepted and its parameters are
+    # stored intact — NextGen fills in `engine: faiss` itself in the stored mapping. HNSW tuning
+    # therefore works here exactly as it does elsewhere; see `buildIndexMapping`.
     SERVERLESS_NEXTGEN
 }
 
-# The approximate nearest-neighbor engine backing the `knn_vector` field on a managed domain or a
-# Serverless Classic collection. Ignored on `SERVERLESS_NEXTGEN`, which auto-configures its engine
-# and rejects an explicit `method` block in the index mapping.
+# The approximate nearest-neighbor engine backing the `knn_vector` field. Selectable only on
+# `ManagedDomainDeployment`: `SERVERLESS_CLASSIC` supports Faiss alone, and `SERVERLESS_NEXTGEN`
+# rejects the `engine` parameter inside the index mapping's `method` block outright, filling in
+# `faiss` itself. Neither variant exposes the field, so a wrong value is not expressible rather
+# than rejected at construction.
 public enum Engine {
     # Facebook AI Similarity Search. The only engine Serverless Classic supports, and the only one
     # under which efficient k-NN pre-filtering works.
@@ -53,10 +68,34 @@ public enum Engine {
     NMSLIB = "nmslib"
 }
 
+# The vector quantization ratio applied to the `knn_vector` field, trading recall for memory.
+# `SERVERLESS_NEXTGEN` only — see `ServerlessNextGenDeployment.compressionLevel`.
+public enum CompressionLevel {
+    # No compression; vectors are stored at full precision.
+    COMPRESSION_1X = "1x",
+    COMPRESSION_2X = "2x",
+    COMPRESSION_4X = "4x",
+    COMPRESSION_8X = "8x",
+    COMPRESSION_16X = "16x",
+    # The ratio `SERVERLESS_NEXTGEN` applies when nothing is configured.
+    COMPRESSION_32X = "32x"
+}
+
+# Where the `knn_vector` field's index is held. `SERVERLESS_NEXTGEN` only — see
+# `ServerlessNextGenDeployment.vectorMode`.
+public enum VectorMode {
+    # Full-precision vectors held in memory. Defaults to `1x` compression.
+    IN_MEMORY = "in_memory",
+    # Vectors held on disk with a quantized in-memory copy. Defaults to `32x` compression, and
+    # rejects `COMPRESSION_1X` outright.
+    ON_DISK = "on_disk"
+}
+
 # HTTP basic authentication against a fine-grained-access-control internal user database.
-# Valid only on `MANAGED_DOMAIN` — Serverless has no basic-auth path and `init` rejects this
-# combination. A domain access policy containing IAM principals requires SigV4-signed requests,
-# so a request cannot carry both a username/password and IAM credentials on the same domain.
+# Reachable only through `ManagedDomainDeployment.auth` — Serverless has no basic-auth path, and
+# neither Serverless variant admits this type. A domain access policy containing IAM principals
+# requires SigV4-signed requests, so a request cannot carry both a username/password and IAM
+# credentials on the same domain.
 public type BasicAuth record {|
     # The internal-user-database username.
     string username;
@@ -65,8 +104,85 @@ public type BasicAuth record {|
 |};
 
 # The authentication mechanism used to sign or authorize requests to the OpenSearch endpoint:
-# an AWS credential source (SigV4), or HTTP basic auth (`MANAGED_DOMAIN` only).
+# an AWS credential source (SigV4), or HTTP basic auth (managed domains only).
 public type Auth auth:AuthConfig|BasicAuth;
+
+# The deployment flavour of the target cluster, together with the settings that only that flavour
+# honors. Selecting a variant is the first choice a caller makes, and it is what makes a
+# deployment-specific setting unreachable everywhere else: `refreshOnWrite` cannot be named on a
+# Serverless collection, `compressionLevel` cannot be named on a managed domain, and `BasicAuth`
+# cannot be handed to either Serverless generation. Those were once `init`-time validation rules;
+# they are now type errors.
+#
+# Settings honored identically everywhere — dimension, similarity metric, HNSW tuning, field
+# names, bulk sizing, retries — live on `Configuration`/`IndexConfig` instead, so a caller
+# switching deployments carries them across untouched.
+public type Deployment ManagedDomainDeployment|ServerlessClassicDeployment|ServerlessNextGenDeployment;
+
+# Targets an OpenSearch Service (managed) domain. The only deployment that accepts a non-Faiss
+# engine, `BasicAuth`, or a forced refresh on write.
+public type ManagedDomainDeployment record {|
+    # Discriminates this variant. Required, so a record literal resolves to exactly one member of
+    # `Deployment`.
+    MANAGED_DOMAIN deploymentType;
+    # SigV4 credentials, or `BasicAuth` against a fine-grained-access-control internal user
+    # database. A domain does one or the other, never both.
+    #
+    # Required rather than defaulted: a store that silently falls back to the ambient AWS
+    # credential chain hides a misconfiguration until it surfaces as a 403 from the wrong
+    # principal. Pass `auth:DEFAULT_CREDENTIALS` to opt into that chain explicitly.
+    Auth auth;
+    # The ANN engine backing the `knn_vector` field.
+    Engine engine = FAISS;
+    # Whether `add` requests `?refresh=wait_for` so newly-added entries are immediately visible to
+    # `query`. Only forceable here: both Serverless generations have a fixed refresh interval
+    # (60 seconds on Classic, 10 on NextGen) that no request parameter overrides.
+    boolean refreshOnWrite = false;
+|};
+
+# Targets an OpenSearch Serverless "Classic" vector search collection.
+#
+# Nothing is configurable beyond credentials, and that is the honest shape: Classic's differences
+# from a managed domain are behavioral rather than tunable. It supports Faiss alone, so `engine`
+# would have exactly one legal value; it rejects a custom document `_id`, which makes `add`
+# append-only and `delete` a search-then-bulk-delete round trip; and its refresh interval is fixed.
+public type ServerlessClassicDeployment record {|
+    # Discriminates this variant.
+    SERVERLESS_CLASSIC deploymentType;
+    # SigV4 credentials. Serverless has no basic-auth path, so `BasicAuth` is not admitted here.
+    # Required rather than defaulted, for the same reason as `ManagedDomainDeployment.auth`.
+    auth:AuthConfig auth;
+|};
+
+# Targets an OpenSearch Serverless "NextGen" vector search collection. The only deployment that
+# exposes vector quantization, which it applies by default whether or not a caller asks.
+#
+# Note that the NextGen endpoint is per-account rather than per-collection, and identifies the
+# target collection through a signed `x-amz-aoss-collection-name` or `x-amz-aoss-collection-id`
+# header — set it via `Configuration.additionalHeaders`.
+public type ServerlessNextGenDeployment record {|
+    # Discriminates this variant.
+    SERVERLESS_NEXTGEN deploymentType;
+    # SigV4 credentials. Serverless has no basic-auth path, so `BasicAuth` is not admitted here.
+    # Required rather than defaulted, for the same reason as `ManagedDomainDeployment.auth`.
+    auth:AuthConfig auth;
+    # The vector quantization ratio, emitted as the `knn_vector` field's `compression_level`.
+    #
+    # Leaving this unset preserves the server's default, which is not lossless: NextGen provisions
+    # every vector field as `on_disk`/`32x` when nothing is configured, so vectors are quantized by
+    # default and the stored mapping is the only place that says so. Set `COMPRESSION_1X` (together
+    # with `vectorMode = IN_MEMORY`, since `on_disk` rejects `1x`) to opt out of quantization.
+    #
+    # Verified accepted by OpenSearch 2.19.1 itself, and accepted by the AOSS NextGen proxy
+    # alongside a `method` block carrying HNSW `parameters` — both survive into the stored mapping.
+    CompressionLevel? compressionLevel = ();
+    # Where the vector index is held, emitted as the `knn_vector` field's `mode`. Carries the same
+    # caveats as `compressionLevel`.
+    #
+    # `ON_DISK` with `COMPRESSION_1X` is rejected at construction, matching the server's own
+    # validation (`Cannot specify "x1" compression level when using "on_disk" mode`).
+    VectorMode? vectorMode = ();
+|};
 
 # Configuration for the `knn_vector` field and the index-creation mapping this module generates.
 public type IndexConfig record {|
@@ -77,12 +193,12 @@ public type IndexConfig record {|
     # The vector similarity metric, mapped to the OpenSearch `space_type`: `COSINE` →
     # `cosinesimil`, `EUCLIDEAN` → `l2`, `DOT_PRODUCT` → `innerproduct`.
     ai:SimilarityMetric similarityMetric = ai:COSINE;
-    # The ANN engine. Ignored on `SERVERLESS_NEXTGEN`. Forced to `FAISS` on `SERVERLESS_CLASSIC`;
-    # any other value is rejected at construction.
-    Engine engine = FAISS;
-    # The HNSW `ef_construction` parameter (build-time accuracy/speed trade-off).
+    # The HNSW `ef_construction` parameter (build-time accuracy/speed trade-off). Honored on all
+    # three deployment types: the `method` block carrying it is accepted everywhere, including on
+    # `SERVERLESS_NEXTGEN` once `engine` is left out of it.
     int efConstruction = 128;
-    # The HNSW `m` parameter (max bi-directional links per node).
+    # The HNSW `m` parameter (max bi-directional links per node). Honored on all three deployment
+    # types, for the same reason as `efConstruction`.
     int m = 16;
     # Whether `init` should create the index if it does not already exist. When `false`, `init`
     # performs no network I/O at all — useful for least-privilege deployments where the calling
@@ -132,16 +248,14 @@ public type Configuration record {|
     string metadataFieldName = "metadata";
     # Whether `query` results include the stored vector. When `false`, the vector field is
     # excluded from `_source` and `VectorMatch.embedding` is returned as `[]` — a meaningful
-    # bandwidth saving at high dimensions and large `topK`.
+    # bandwidth saving at high dimensions and large `topK`. When `true`, what comes back is the
+    # vector as storage holds it, which is not necessarily the one that was written — see
+    # "Returned embeddings" on `VectorStore`.
     boolean includeEmbeddingsInResults = true;
     # Whether to convert a `cosinesimil` `_score` back to a `[-1, 1]` cosine similarity
     # (`cos = 2 * score - 1`) before returning it as `VectorMatch.similarityScore`. Applies only
     # when `indexConfig.similarityMetric` is `COSINE`; ignored otherwise.
     boolean normalizeCosineScore = false;
-    # Whether `add` requests `?refresh=wait_for` so newly-added entries are immediately visible to
-    # `query`. `MANAGED_DOMAIN` only — both Serverless generations have a fixed, unforceable
-    # refresh interval and `init` rejects this combination for them.
-    boolean refreshOnWrite = false;
     # The maximum number of entries per `_bulk` request issued by `add`. Large `add` calls are
     # chunked into requests of at most this size, to stay under the endpoint's HTTP payload cap.
     int maxBulkSize = 500;
@@ -163,11 +277,25 @@ public type Configuration record {|
 // through `cloneWithType` without requiring every field to be declared here.
 
 # The `error` object embedded in an OpenSearch error response, or in a failed `_bulk` item.
+#
+# `reason` is frequently the least useful field on it. A shard-level search failure puts
+# `all shards failed` there and the actual explanation in `root_cause[0]`; a failed `_bulk` item
+# puts `failed to parse field [embedding] ... Preview of field's value: 'null'` there and the
+# actual explanation in `caused_by`. Both nestings are modelled so `describeErrorDetail` can
+# recover the specific reason instead of reporting the wrapper's.
 type ErrorDetail record {
-    # OpenSearch's error classification, e.g. `resource_already_exists_exception`.
+    # OpenSearch's error classification, e.g. `resource_already_exists_exception`. On a wrapper
+    # error such as `search_phase_execution_exception` this is the wrapper's own type, not the
+    # underlying cause's.
     string 'type?;
     # A human-readable explanation of the error.
     string reason?;
+    # The underlying cause, when this error wraps one. Nests arbitrarily deep; carried by `_bulk`
+    # item errors and by some error responses.
+    ErrorDetail caused_by?;
+    # The originating error(s) behind a wrapper error, carried by error responses. A `_bulk` item
+    # error has no `root_cause` and uses `caused_by` alone.
+    ErrorDetail[] root_cause?;
 };
 
 # The per-action result nested one level inside a `_bulk` response item, e.g. the value of the

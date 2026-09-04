@@ -16,94 +16,108 @@
 
 import ballerina/ai;
 import ballerina/test;
-import ballerinax/aws.auth;
 
 const string VALID_URL = "https://my-domain.us-east-1.es.amazonaws.com";
 
 isolated function validConfig() returns Configuration => {indexConfig: {dimension: 1536}};
 
-// --- rule 1: BasicAuth is MANAGED_DOMAIN only ---------------------------------------------------
+// The rules this file once exercised at runtime -- `BasicAuth` outside a managed domain, a
+// non-Faiss engine on Serverless Classic, `refreshOnWrite` off a managed domain, and quantization
+// off NextGen -- are no longer reachable: each of those fields now lives on the one `Deployment`
+// variant that honors it, so the wrong combination does not compile. There is no way to write a
+// Ballerina test that asserts a compile error, and a runtime assertion would have to construct the
+// very value the type system forbids, so those cases are covered by the types themselves and are
+// deliberately absent here. What remains is the range and format checking no type can express.
+
+// --- accepted deployments --------------------------------------------------------------------
 
 @test:Config
-isolated function testBasicAuthRejectedOnServerlessClassic() {
+isolated function testManagedDomainWithBasicAuthPasses() {
     BasicAuth basicAuth = {username: "u", password: "p"};
-    ai:Error? result = validateConfiguration(VALID_URL, SERVERLESS_CLASSIC, basicAuth, ai:DENSE, validConfig());
-    test:assertTrue(result is ai:Error);
-}
-
-@test:Config
-isolated function testBasicAuthRejectedOnServerlessNextGen() {
-    BasicAuth basicAuth = {username: "u", password: "p"};
-    ai:Error? result = validateConfiguration(VALID_URL, SERVERLESS_NEXTGEN, basicAuth, ai:DENSE, validConfig());
-    test:assertTrue(result is ai:Error);
-}
-
-@test:Config
-isolated function testBasicAuthAllowedOnManagedDomain() {
-    BasicAuth basicAuth = {username: "u", password: "p"};
-    ai:Error? result = validateConfiguration(VALID_URL, MANAGED_DOMAIN, basicAuth, ai:DENSE, validConfig());
-    test:assertTrue(result is ());
-}
-
-// --- rule 2: engine must be FAISS on SERVERLESS_CLASSIC -----------------------------------------
-
-@test:Config
-isolated function testNonFaissEngineRejectedOnServerlessClassic() {
-    Configuration config = {indexConfig: {dimension: 8, engine: NMSLIB}};
-    ai:Error? result = validateConfiguration(VALID_URL, SERVERLESS_CLASSIC, auth:DEFAULT_CREDENTIALS, ai:DENSE, config);
-    test:assertTrue(result is ai:Error);
-}
-
-@test:Config
-isolated function testFaissEngineAllowedOnServerlessClassic() {
-    Configuration config = {indexConfig: {dimension: 8, engine: FAISS}};
-    ai:Error? result = validateConfiguration(VALID_URL, SERVERLESS_CLASSIC, auth:DEFAULT_CREDENTIALS, ai:DENSE, config);
+    ManagedDomainDeployment deployment = {deploymentType: MANAGED_DOMAIN, auth: basicAuth};
+    ai:Error? result = validateConfiguration(VALID_URL, deployment, ai:DENSE, validConfig());
     test:assertTrue(result is ());
 }
 
 @test:Config
-isolated function testNonFaissEngineAllowedOnManagedDomain() {
-    Configuration config = {indexConfig: {dimension: 8, engine: LUCENE}};
-    ai:Error? result = validateConfiguration(VALID_URL, MANAGED_DOMAIN, auth:DEFAULT_CREDENTIALS, ai:DENSE, config);
+isolated function testManagedDomainWithNonFaissEnginePasses() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(LUCENE), ai:DENSE,
+            validConfig());
     test:assertTrue(result is ());
 }
 
-// --- rule 3: only DENSE query mode is supported --------------------------------------------------
+@test:Config
+isolated function testManagedDomainWithRefreshOnWritePasses() {
+    ManagedDomainDeployment deployment = managedDeployment(refreshOnWrite = true);
+    ai:Error? result = validateConfiguration(VALID_URL, deployment, ai:DENSE, validConfig());
+    test:assertTrue(result is ());
+}
+
+@test:Config
+isolated function testEveryDeploymentTypePassesWithDefaults() {
+    Deployment[] deployments = [
+        managedDeployment(),
+        classicDeployment(),
+        nextGenDeployment()
+    ];
+    foreach Deployment deployment in deployments {
+        ai:Error? result = validateConfiguration(VALID_URL, deployment, ai:DENSE, validConfig());
+        test:assertTrue(result is (),
+                string `a default ${deployment.deploymentType} deployment should validate`);
+    }
+}
+
+// A record literal carrying only the discriminator has to resolve to exactly one member of the
+// union -- which is why `deploymentType` is a required field on all three variants rather than a
+// defaulted one. Were it defaulted everywhere, `{}` would be ambiguous and would not compile.
+@test:Config
+isolated function testDiscriminatorSelectsTheVariant() {
+    Deployment managed = managedDeployment();
+    Deployment classic = classicDeployment();
+    Deployment nextGen = nextGenDeployment();
+    test:assertTrue(managed is ManagedDomainDeployment);
+    test:assertTrue(classic is ServerlessClassicDeployment);
+    test:assertTrue(nextGen is ServerlessNextGenDeployment);
+}
+
+// --- rule 1: only DENSE query mode is supported ------------------------------------------------
 
 @test:Config
 isolated function testSparseQueryModeRejected() {
-    ai:Error? result = validateConfiguration(VALID_URL, MANAGED_DOMAIN, auth:DEFAULT_CREDENTIALS, ai:SPARSE, validConfig());
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:SPARSE,
+            validConfig());
     test:assertTrue(result is ai:Error);
 }
 
 @test:Config
 isolated function testHybridQueryModeRejected() {
-    ai:Error? result = validateConfiguration(VALID_URL, MANAGED_DOMAIN, auth:DEFAULT_CREDENTIALS, ai:HYBRID, validConfig());
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:HYBRID,
+            validConfig());
     test:assertTrue(result is ai:Error);
 }
 
-// --- rule 4: dimension must be positive ------------------------------------------------------
+// --- rule 2: dimension must be positive --------------------------------------------------------
 
 @test:Config
 isolated function testZeroDimensionRejected() {
     Configuration config = {indexConfig: {dimension: 0}};
-    ai:Error? result = validateConfiguration(VALID_URL, MANAGED_DOMAIN, auth:DEFAULT_CREDENTIALS, ai:DENSE, config);
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:DENSE, config);
     test:assertTrue(result is ai:Error);
 }
 
 @test:Config
 isolated function testNegativeDimensionRejected() {
     Configuration config = {indexConfig: {dimension: -1}};
-    ai:Error? result = validateConfiguration(VALID_URL, MANAGED_DOMAIN, auth:DEFAULT_CREDENTIALS, ai:DENSE, config);
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:DENSE, config);
     test:assertTrue(result is ai:Error);
 }
 
-// --- rule 5: serviceUrl must parse to a host -----------------------------------------------------
+// --- rule 3: serviceUrl must parse to a host ---------------------------------------------------
 
 @test:Config
 isolated function testServiceUrlWithoutSchemeRejected() {
-    ai:Error? result = validateConfiguration("my-domain.us-east-1.es.amazonaws.com", MANAGED_DOMAIN,
-            auth:DEFAULT_CREDENTIALS, ai:DENSE, validConfig());
+    ai:Error? result = validateConfiguration("my-domain.us-east-1.es.amazonaws.com",
+            managedDeployment(), ai:DENSE, validConfig());
     test:assertTrue(result is ai:Error);
 }
 
@@ -155,50 +169,28 @@ isolated function testBuildQueryStringSingleParam() returns error? {
     test:assertEquals(check buildQueryString({"refresh": "wait_for"}), "refresh=wait_for");
 }
 
-// --- rule 6: refreshOnWrite is MANAGED_DOMAIN only -----------------------------------------------
-
-@test:Config
-isolated function testRefreshOnWriteRejectedOnServerlessClassic() {
-    Configuration config = {indexConfig: {dimension: 8}, refreshOnWrite: true};
-    ai:Error? result = validateConfiguration(VALID_URL, SERVERLESS_CLASSIC, auth:DEFAULT_CREDENTIALS, ai:DENSE, config);
-    test:assertTrue(result is ai:Error);
-}
-
-@test:Config
-isolated function testRefreshOnWriteRejectedOnServerlessNextGen() {
-    Configuration config = {indexConfig: {dimension: 8}, refreshOnWrite: true};
-    ai:Error? result = validateConfiguration(VALID_URL, SERVERLESS_NEXTGEN, auth:DEFAULT_CREDENTIALS, ai:DENSE, config);
-    test:assertTrue(result is ai:Error);
-}
-
-@test:Config
-isolated function testRefreshOnWriteAllowedOnManagedDomain() {
-    Configuration config = {indexConfig: {dimension: 8}, refreshOnWrite: true};
-    ai:Error? result = validateConfiguration(VALID_URL, MANAGED_DOMAIN, auth:DEFAULT_CREDENTIALS, ai:DENSE, config);
-    test:assertTrue(result is ());
-}
-
-// --- rule 7: maxBulkSize / maxResultWindow must be positive ---------------------------------------
+// --- rule 4: maxBulkSize / maxResultWindow must be positive ------------------------------------
 
 @test:Config
 isolated function testZeroMaxBulkSizeRejected() {
     Configuration config = {indexConfig: {dimension: 8}, maxBulkSize: 0};
-    ai:Error? result = validateConfiguration(VALID_URL, MANAGED_DOMAIN, auth:DEFAULT_CREDENTIALS, ai:DENSE, config);
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:DENSE, config);
     test:assertTrue(result is ai:Error);
 }
 
 @test:Config
 isolated function testZeroMaxResultWindowRejected() {
     Configuration config = {indexConfig: {dimension: 8}, maxResultWindow: 0};
-    ai:Error? result = validateConfiguration(VALID_URL, MANAGED_DOMAIN, auth:DEFAULT_CREDENTIALS, ai:DENSE, config);
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:DENSE, config);
     test:assertTrue(result is ai:Error);
 }
 
-// --- a valid configuration passes all seven rules --------------------------------------------
+// --- a valid configuration passes every rule ---------------------------------------------------
 
 @test:Config
 isolated function testFullyValidConfigurationPasses() {
-    ai:Error? result = validateConfiguration(VALID_URL, MANAGED_DOMAIN, auth:DEFAULT_CREDENTIALS, ai:DENSE, validConfig());
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:DENSE,
+            validConfig());
     test:assertTrue(result is ());
 }
 
@@ -212,10 +204,47 @@ isolated function testOfflineConstructionWithCreateIndexDisabled() returns error
         VALID_URL,
         "us-east-1",
         "test-index",
-        MANAGED_DOMAIN,
-        {accessKeyId: "AKIAFAKEFAKEFAKEFAKE", secretAccessKey: "fake-secret"},
+        managedDeployment(),
         {indexConfig: {dimension: 8, createIndexIfNotExists: false}}
     );
     ai:Error? closeResult = store.close();
     test:assertTrue(closeResult is (), "closing a fully offline store should not fail");
+}
+
+// --- rule 5: the two quantization knobs are mutually constrained -------------------------------
+
+@test:Config
+isolated function testQuantizationAllowedOnServerlessNextGen() {
+    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_1X, IN_MEMORY),
+            ai:DENSE, validConfig());
+    test:assertTrue(result is (), "in_memory/1x is the documented way to opt out of quantization");
+}
+
+// Mirrors the server's own validation, which fails index creation with
+// `Cannot specify "x1" compression level when using "on_disk" mode`. Caught at construction so it
+// surfaces as a configuration error rather than a mapper_parsing_exception from a PUT.
+@test:Config
+isolated function testOnDiskWithNoCompressionRejected() {
+    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_1X, ON_DISK),
+            ai:DENSE, validConfig());
+    if result !is ai:Error {
+        test:assertFail("'ON_DISK' with 'COMPRESSION_1X' is rejected by the server and should be caught here");
+    }
+    test:assertTrue(result.message().includes("IN_MEMORY"),
+            string `the message should name the way out, got: ${result.message()}`);
+}
+
+@test:Config
+isolated function testUnsetQuantizationIsAllowedOnNextGen() {
+    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(), ai:DENSE,
+            validConfig());
+    test:assertTrue(result is (), "leaving both unset reproduces the server's own default");
+}
+
+@test:Config
+isolated function testCompressionLevelWithoutVectorModeIsAllowed() {
+    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_1X), ai:DENSE,
+            validConfig());
+    test:assertTrue(result is (),
+            "'COMPRESSION_1X' is only rejected alongside 'ON_DISK', which is not set here");
 }

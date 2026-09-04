@@ -42,7 +42,8 @@ isolated function secureContainerHttpConfig() returns http:ClientConfiguration =
 isolated function newSecureContainerStore(string indexName, string password = secureContainerPassword)
         returns VectorStore|ai:Error {
     BasicAuth auth = {username: secureContainerUsername, password};
-    return new (secureContainerUrl, CONTAINER_REGION, indexName, MANAGED_DOMAIN, auth,
+    return new (secureContainerUrl, CONTAINER_REGION, indexName,
+        {deploymentType: MANAGED_DOMAIN, auth, refreshOnWrite: true},
         containerConfig(), ai:DENSE, secureContainerHttpConfig()
     );
 }
@@ -93,8 +94,8 @@ isolated function testSecureContainerRejectsSigV4Credentials() returns error? {
     // The security plugin has no idea what a SigV4 `Authorization` header is. This is the same
     // failure a caller gets by pointing SigV4 credentials at an FGAC domain, so it is worth
     // confirming it arrives as a clean 401 rather than an unparsed transport error.
-    VectorStore|ai:Error result = new (secureContainerUrl, CONTAINER_REGION, indexName, MANAGED_DOMAIN,
-        containerAuth, containerConfig(), ai:DENSE, secureContainerHttpConfig()
+    VectorStore|ai:Error result = new (secureContainerUrl, CONTAINER_REGION, indexName,
+        containerDeployment(), containerConfig(), ai:DENSE, secureContainerHttpConfig()
     );
 
     if result !is ai:Error {

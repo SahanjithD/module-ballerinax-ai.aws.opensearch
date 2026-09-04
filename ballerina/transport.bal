@@ -29,11 +29,11 @@ const string SIGNING_NAME_SERVERLESS = "aoss";
 # Owns the HTTP client, request signing, retry, and error mapping for talking to the OpenSearch
 # REST API directly — there is no `ballerinax/opensearch` connector to wrap. Every public
 # operation signs the exact bytes it sends and never re-serializes between signing and sending,
-# since a payload-hash mismatch fails as an unexplained 403.
+# since a payload-hash mismatch fails as an unexplained 403. For the same reason the HTTP client
+# is pinned to HTTP/1.1 with chunking disabled — see the comment in `init`.
 isolated class OpenSearchTransport {
     private final http:Client httpClient;
     private final string host;
-    private final DeploymentType deploymentType;
     private final string signingName;
     private final aws:Region|string region;
     private final auth:CredentialProvider? credProvider;
@@ -42,17 +42,19 @@ isolated class OpenSearchTransport {
     private final RetryConfig & readonly retryConfig;
     private final boolean refreshOnWrite;
 
-    isolated function init(string serviceUrl, aws:Region|string region, DeploymentType deploymentType,
-            Auth authConfig, map<string> additionalHeaders, RetryConfig retryConfig, boolean refreshOnWrite,
-            http:ClientConfiguration httpConfig) returns ai:Error? {
+    isolated function init(string serviceUrl, aws:Region|string region, Deployment deployment,
+            map<string> additionalHeaders, RetryConfig retryConfig, http:ClientConfiguration httpConfig)
+            returns ai:Error? {
         self.host = check extractHost(serviceUrl);
-        self.deploymentType = deploymentType;
-        self.signingName = deploymentType == MANAGED_DOMAIN ? SIGNING_NAME_MANAGED : SIGNING_NAME_SERVERLESS;
+        self.signingName = deployment is ManagedDomainDeployment ? SIGNING_NAME_MANAGED : SIGNING_NAME_SERVERLESS;
         self.region = region;
         self.additionalHeaders = additionalHeaders.cloneReadOnly();
         self.retryConfig = retryConfig.cloneReadOnly();
-        self.refreshOnWrite = refreshOnWrite;
+        // Only a managed domain can force a refresh, and only that variant carries the field —
+        // the Serverless generations have a fixed, unforceable refresh interval.
+        self.refreshOnWrite = deployment is ManagedDomainDeployment && deployment.refreshOnWrite;
 
+        Auth authConfig = deployment.auth;
         if authConfig is BasicAuth {
             string credentials = string `${authConfig.username}:${authConfig.password}`;
             self.basicAuthHeader = string `Basic ${credentials.toBytes().toBase64()}`;
@@ -66,7 +68,33 @@ isolated class OpenSearchTransport {
             self.basicAuthHeader = ();
         }
 
-        http:Client|http:ClientError httpClient = new (serviceUrl, httpConfig);
+        // HTTP/1.1 and an unchunked body are correctness requirements here, not preferences, so
+        // both are pinned over whatever the caller passed.
+        //
+        // Ballerina's HTTP/2 outbound path alters an `application/json` body between signing and
+        // the wire. On `SERVERLESS_NEXTGEN`, which verifies the SigV4 payload checksum, every
+        // `_search` fails with `403 Request Content Checksum Verification Failed` while the
+        // byte-identical request over HTTP/1.1 succeeds; `POST /_bulk` (`application/x-ndjson`)
+        // is unaffected on the same connection. What was measured on Classic and managed domains
+        // is only that HTTP/2 works there — whether the body is left intact, or is altered the
+        // same way and accepted because those endpoints do not verify the checksum, was not
+        // tested. Pinning HTTP/1.1 everywhere makes the question moot rather than answering it.
+        //
+        // Chunked transfer encoding breaks independently: SigV4 signs the whole body and the
+        // signature is matched against a `Content-Length`-framed request, which a chunked body
+        // does not provide. This bites any hand-signed AWS call whose payload crosses the
+        // chunking threshold — for this module, any `_bulk` batch of realistic dimensionality.
+        // Ballerina's defaults (`HTTP_2_0`, `CHUNKING_AUTO`) are wrong on both counts, and the
+        // failure they produce is a 403 whose text points at IAM.
+        // (Copy-then-assign, not a spread with overriding fields: Ballerina rejects a record
+        // constructor whose explicit key duplicates one supplied by the spread.)
+        http:ClientHttp1Settings http1Settings = {...httpConfig.http1Settings};
+        http1Settings.chunking = http:CHUNKING_NEVER;
+        http:ClientConfiguration effectiveConfig = {...httpConfig};
+        effectiveConfig.httpVersion = http:HTTP_1_1;
+        effectiveConfig.http1Settings = http1Settings;
+
+        http:Client|http:ClientError httpClient = new (serviceUrl, effectiveConfig);
         if httpClient is error {
             return error("Failed to initialize the OpenSearch HTTP client", httpClient);
         }
@@ -114,7 +142,7 @@ isolated class OpenSearchTransport {
             return {errors: false, items: []};
         }
         map<string> queryParams = {};
-        if self.deploymentType == MANAGED_DOMAIN && self.refreshOnWrite {
+        if self.refreshOnWrite {
             queryParams["refresh"] = "wait_for";
         }
         http:Response resp = check self.sendSigned("POST", "/_bulk", queryParams,
@@ -341,13 +369,24 @@ isolated function isUnreservedCodepoint(int codepoint) returns boolean {
 # from the response body when present (AOSS edge 403s are sometimes not JSON), and attaching an
 # actionable hint per status code.
 #
+# The reason is taken from `describeErrorDetail` rather than from `error.reason` directly. On a
+# shard-level failure `error.reason` is the wrapper's — a query vector of the wrong dimension
+# surfaces as `all shards failed`, and the sentence naming the expected dimension is nested a
+# level down. Reporting only the wrapper leaves the caller with a message that says something went
+# wrong and nothing about what.
+#
+# `openSearchErrorType` stays the response's own `error.type`, so an existing check against it
+# keeps working; `openSearchRootCauseType` carries the nested classification, and is present only
+# when the response actually wraps a different one.
+#
 # + response - The non-2xx HTTP response
-# + return - The mapped error, carrying `status` and (when available) `openSearchErrorType` as
-# detail fields
+# + return - The mapped error, carrying `status` and (when available) `openSearchErrorType` and
+# `openSearchRootCauseType` as detail fields
 isolated function mapErrorResponse(http:Response response) returns ai:Error {
     int status = response.statusCode;
     string reason = "";
     string? errorType = ();
+    string? rootCauseType = ();
     json|error body = response.getJsonPayload();
     if body is json {
         OpenSearchErrorResponse|error parsed = body.cloneWithType(OpenSearchErrorResponse);
@@ -355,7 +394,8 @@ isolated function mapErrorResponse(http:Response response) returns ai:Error {
             ErrorDetail? detail = parsed?.'error;
             if detail is ErrorDetail {
                 errorType = detail.'type;
-                reason = detail.reason ?: (detail.'type ?: "");
+                rootCauseType = specificErrorType(detail);
+                reason = describeErrorDetail(detail);
             }
         }
     }
@@ -365,6 +405,10 @@ isolated function mapErrorResponse(http:Response response) returns ai:Error {
     message += hintForStatus(status);
 
     if errorType is string {
+        if rootCauseType is string {
+            return error ai:Error(message, status = status, openSearchErrorType = errorType,
+                    openSearchRootCauseType = rootCauseType);
+        }
         return error ai:Error(message, status = status, openSearchErrorType = errorType);
     }
     return error ai:Error(message, status = status);

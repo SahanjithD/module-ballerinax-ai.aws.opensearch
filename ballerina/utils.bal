@@ -155,19 +155,19 @@ isolated function buildEntrySource(PreparedEntry entry, Configuration config) re
 #
 # + entries - The prepared entries to index, already sized to fit one `_bulk` request
 # + indexName - The target index
-# + deploymentType - The deployment flavour, which gates whether `_id` is written
+# + deployment - The target deployment, which gates whether `_id` is written
 # + config - The vector store configuration
 # + return - The exact bytes to sign and send. Empty entries produce an empty byte array. An
 # `ai:Error` if a flat-schema metadata key collides with a reserved field name (see
 # `buildEntrySource`)
-isolated function buildAddBulkBody(PreparedEntry[] entries, string indexName, DeploymentType deploymentType,
+isolated function buildAddBulkBody(PreparedEntry[] entries, string indexName, Deployment deployment,
         Configuration config) returns byte[]|ai:Error {
     if entries.length() == 0 {
         return [];
     }
     string[] lines = [];
     foreach PreparedEntry entry in entries {
-        json action = deploymentType == SERVERLESS_CLASSIC
+        json action = deployment is ServerlessClassicDeployment
             ? {"index": {"_index": indexName}}
             : {"index": {"_index": indexName, "_id": entry.id}};
         lines.push(action.toJsonString());
@@ -207,7 +207,11 @@ isolated function buildDeleteBulkBody(string indexName, string[] ids) returns by
 isolated function buildDocIdLookupBody(string idFieldName, string[] ids, int maxResultWindow) returns json {
     return {
         "size": maxResultWindow,
-        "_source": false,
+        // `idFieldName` rather than `false`: the delete that follows submits internal `_id`s, so
+        // without the logical id travelling back alongside each hit, a per-item delete failure
+        // could only be reported against an internal id the caller has never seen. One keyword
+        // field per hit is a negligible cost next to the `_id`s already being returned.
+        "_source": [idFieldName],
         "track_total_hits": false,
         "query": {
             "terms": {
@@ -519,21 +523,152 @@ isolated function extractStoredMetadata(map<json> src, Configuration config) ret
     return metadataValue is map<json> ? metadataValue : ();
 }
 
+# Gathers the places an `ErrorDetail` can nest its underlying cause, most-authoritative first.
+#
+# The two are not alternatives so much as different dialects: an error *response* wraps its causes
+# in `root_cause`, while a `_bulk` item error has no `root_cause` and uses `caused_by` alone. Both
+# are collected so callers can walk them in one pass without caring which shape they were handed.
+#
+# + detail - The error object to inspect
+# + return - The nested causes, `root_cause[0]` before `caused_by`; empty if it wraps nothing
+isolated function causeCandidates(ErrorDetail detail) returns ErrorDetail[] {
+    ErrorDetail[] candidates = [];
+    ErrorDetail[]? rootCause = detail?.root_cause;
+    if rootCause is ErrorDetail[] && rootCause.length() > 0 {
+        candidates.push(rootCause[0]);
+    }
+    ErrorDetail? cause = detail?.caused_by;
+    if cause is ErrorDetail {
+        candidates.push(cause);
+    }
+    return candidates;
+}
+
+# Recovers the most specific explanation an `ErrorDetail` carries. The reason at its top level is
+# routinely a wrapper's rather than the failure's, so reporting that alone tells a caller nothing
+# about what they did wrong.
+#
+# Shaped against OpenSearch 2.19.1 response bodies. A shard-level search failure — what a
+# wrong-dimension query vector produces — reports `all shards failed` at the top and puts the
+# explanation in `root_cause[0].reason`
+# (`failed to create query: Query vector has invalid dimension: 4. Dimension should be: 8`). A
+# failed `_bulk` item carries no `root_cause` at all: it reports
+# `failed to parse field [embedding] of type [knn_vector] ... Preview of field's value: 'null'`
+# at the top and puts the explanation in `caused_by.reason`
+# (`Vector dimension mismatch. Expected: 8, Given: 2`). Both nestings are therefore searched.
+#
+# Errors that wrap nothing — `index_not_found_exception`, `parsing_exception` — repeat their own
+# reason verbatim in `root_cause[0]`, so a nested reason is appended only when it differs from the
+# one already being reported, and the common case stays a single unduplicated sentence.
+#
+# + detail - The error object to describe
+# + return - The top-level reason, followed by the nested cause when that adds something; `""` if
+# the error object carries neither a reason nor a type
+isolated function describeErrorDetail(ErrorDetail detail) returns string {
+    string outerReason = detail.reason ?: (detail.'type ?: "");
+    ErrorDetail[] candidates = causeCandidates(detail);
+    foreach ErrorDetail candidate in candidates {
+        ErrorDetail deepest = deepestCause(candidate);
+        string reason = deepest.reason ?: "";
+        if reason.length() == 0 || reason == outerReason {
+            continue;
+        }
+        string causeType = deepest.'type ?: "";
+        return causeType.length() > 0
+            ? string `${outerReason}: [${causeType}] ${reason}`
+            : string `${outerReason}: ${reason}`;
+    }
+    return outerReason;
+}
+
+# Follows an `ErrorDetail`'s `caused_by` chain to its end. Terminates because the chain is decoded
+# from a JSON response body, which is a finite tree.
+#
+# + detail - The error object to walk from
+# + return - The deepest cause, or `detail` itself when it wraps nothing
+isolated function deepestCause(ErrorDetail detail) returns ErrorDetail {
+    ErrorDetail current = detail;
+    ErrorDetail? next = current?.caused_by;
+    while next is ErrorDetail {
+        current = next;
+        next = current?.caused_by;
+    }
+    return current;
+}
+
+# Resolves the error classification worth branching on. An error object's own `type` names the
+# wrapper when there is one — a failed search reports `search_phase_execution_exception`, which
+# says only that the query phase failed and nothing about why.
+#
+# + detail - The error object
+# + return - The underlying cause's type when it differs from the wrapper's own, otherwise `()`
+isolated function specificErrorType(ErrorDetail detail) returns string? {
+    string outerType = detail.'type ?: "";
+    ErrorDetail[] candidates = causeCandidates(detail);
+    foreach ErrorDetail candidate in candidates {
+        string causeType = deepestCause(candidate).'type ?: "";
+        if causeType.length() > 0 && causeType != outerType {
+            return causeType;
+        }
+    }
+    return ();
+}
+
+# Resolves which id to report for a failing `_bulk` item, preferring the caller's own id at that
+# position over the `_id` the server reports back.
+#
+# + result - The failing item's result
+# + submittedIds - The submitted ids, in submission order
+# + position - The item's index within `BulkResponse.items`
+# + return - The submitted id at `position`, falling back to the response `_id`
+isolated function bulkFailureId(BulkItemResult result, string[] submittedIds, int position) returns string {
+    if position < submittedIds.length() {
+        return submittedIds[position];
+    }
+    return result?._id ?: "<unknown>";
+}
+
+# Renders a failing `_bulk` item's reason, falling back when the error object says nothing.
+#
+# + err - The failing item's error object
+# + return - The described reason, or `unknown error`
+isolated function bulkFailureReason(ErrorDetail err) returns string {
+    string reason = describeErrorDetail(err);
+    return reason.length() > 0 ? reason : "unknown error";
+}
+
 # Extracts the per-item failures from a `_bulk` indexing response. OpenSearch returns HTTP
 # 200 even when some items failed, so `errors: true` must always be checked explicitly.
 #
+# # Failures are attributed by position, not by `_id`
+# `_bulk` returns its items in submission order, so the item at position `i` is the entry at
+# `submittedIds[i]`. That correspondence is the only reliable way back to the caller's entry: the
+# `_id` in the response is the caller's id only where a custom `_id` can be written at all. On
+# `SERVERLESS_CLASSIC` the action line deliberately carries no `_id` (see `buildAddBulkBody`) and
+# the server invents one, so reporting it would name the caller's failing entries as strings like
+# `1%3A0%3AjNUSV6ABrlsmLW-dso53` — leaving someone who submitted 500 entries and got 3 failures
+# with no way to tell which 3 were theirs.
+#
+# The response `_id` is used only for a position beyond the end of `submittedIds`, which would
+# mean the server returned more items than were submitted and the positional correspondence is
+# already broken.
+#
 # + response - The parsed `_bulk` response
+# + submittedIds - The logical ids of the submitted entries, in submission order
 # + return - The failing ids and their reasons; empty if every item succeeded
-isolated function extractIndexFailures(BulkResponse response) returns BulkFailure[] {
+isolated function extractIndexFailures(BulkResponse response, string[] submittedIds) returns BulkFailure[] {
     if !response.errors {
         return [];
     }
     BulkFailure[] failures = [];
-    foreach map<BulkItemResult> item in response.items {
-        foreach [string, BulkItemResult] [_, result] in item.entries() {
+    foreach int position in 0 ..< response.items.length() {
+        foreach [string, BulkItemResult] [_, result] in response.items[position].entries() {
             ErrorDetail? err = result?.'error;
             if err is ErrorDetail {
-                failures.push({id: result?._id ?: "<unknown>", reason: err.reason ?: (err.'type ?: "unknown error")});
+                failures.push({
+                    id: bulkFailureId(result, submittedIds, position),
+                    reason: bulkFailureReason(err)
+                });
             }
         }
     }
@@ -544,15 +679,24 @@ isolated function extractIndexFailures(BulkResponse response) returns BulkFailur
 # distributed delete of an id that no longer exists (or never did) is not treated as a caller
 # error, matching the Pinecone/pgvector/weaviate precedent rather than `InMemoryVectorStore`'s.
 #
+# Failures are attributed by position for the same reason as in `extractIndexFailures`, and it
+# matters here even on deployments that write a custom `_id`: the `SERVERLESS_CLASSIC` delete path
+# submits the *internal* `_id`s a lookup discovered, so `submittedIds` is what carries the
+# caller's logical ids back into the message.
+#
 # + response - The parsed `_bulk` response
+# + submittedIds - The logical ids behind the submitted delete actions, in submission order
 # + return - The failing ids and their reasons; `not_found` items are not included
-isolated function extractDeleteFailures(BulkResponse response) returns BulkFailure[] {
+isolated function extractDeleteFailures(BulkResponse response, string[] submittedIds) returns BulkFailure[] {
     BulkFailure[] failures = [];
-    foreach map<BulkItemResult> item in response.items {
-        foreach [string, BulkItemResult] [_, result] in item.entries() {
+    foreach int position in 0 ..< response.items.length() {
+        foreach [string, BulkItemResult] [_, result] in response.items[position].entries() {
             ErrorDetail? err = result?.'error;
             if err is ErrorDetail {
-                failures.push({id: result?._id ?: "<unknown>", reason: err.reason ?: (err.'type ?: "unknown error")});
+                failures.push({
+                    id: bulkFailureId(result, submittedIds, position),
+                    reason: bulkFailureReason(err)
+                });
                 continue;
             }
             int status = result?.status ?: 200;
@@ -561,7 +705,10 @@ isolated function extractDeleteFailures(BulkResponse response) returns BulkFailu
                 continue;
             }
             if status >= 300 {
-                failures.push({id: result?._id ?: "<unknown>", reason: string `HTTP ${status}`});
+                failures.push({
+                    id: bulkFailureId(result, submittedIds, position),
+                    reason: string `HTTP ${status}`
+                });
             }
         }
     }
@@ -570,9 +717,11 @@ isolated function extractDeleteFailures(BulkResponse response) returns BulkFailu
 
 # A single failing item from a `_bulk` response.
 type BulkFailure record {|
-    # The failing document's `_id`.
+    # The failing entry's logical id as the caller supplied it, recovered from the item's position
+    # in the response rather than from the `_id` the server reported.
     string id;
-    # The failure reason, from OpenSearch's `error.reason` (or `error.type` if `reason` is absent).
+    # The failure reason: OpenSearch's `error.reason`, extended with the nested cause that
+    # actually explains it. See `describeErrorDetail`.
     string reason;
 |};
 

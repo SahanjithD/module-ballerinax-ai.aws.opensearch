@@ -100,14 +100,24 @@ isolated function trackedIndexNames() returns string[] {
     }
 }
 
-# The configuration most container tests use: an index sized to `CONTAINER_DIMENSION`, with
-# `refreshOnWrite` set so a write is visible to the very next query. That flag is what makes this
-# suite deterministic where `live_test.bal` has to poll -- a managed domain (and a container)
-# honors `refresh=wait_for`, while Serverless does not.
+# The configuration most container tests use: an index sized to `CONTAINER_DIMENSION`.
 #
 # + return - The default container test configuration
 isolated function containerConfig() returns Configuration => {
-    indexConfig: {dimension: CONTAINER_DIMENSION},
+    indexConfig: {dimension: CONTAINER_DIMENSION}
+};
+
+# The deployment every container test uses: a managed domain with `refreshOnWrite` set, so a write
+# is visible to the very next query. That flag is what makes this suite deterministic where
+# `live_test.bal` has to poll -- a managed domain (and a container) honors `refresh=wait_for`,
+# while Serverless does not, which is why neither Serverless variant offers the field at all.
+#
+# + engine - The ANN engine to configure, which only a managed domain lets a caller choose
+# + return - The default container test deployment
+isolated function containerDeployment(Engine engine = FAISS) returns ManagedDomainDeployment => {
+    deploymentType: MANAGED_DOMAIN,
+    auth: containerAuth,
+    engine,
     refreshOnWrite: true
 };
 
@@ -115,12 +125,16 @@ isolated function containerConfig() returns Configuration => {
 #
 # + indexName - The target index
 # + config - The store configuration
+# + deployment - The deployment, defaulting to a managed domain with `refreshOnWrite` set
 # + return - The store, or an `ai:Error` if construction fails
 isolated function newContainerStore(string indexName, Configuration config = {
-            indexConfig: {dimension: CONTAINER_DIMENSION},
+            indexConfig: {dimension: CONTAINER_DIMENSION}
+        }, ManagedDomainDeployment deployment = {
+            deploymentType: MANAGED_DOMAIN,
+            auth: containerAuth,
             refreshOnWrite: true
         }) returns VectorStore|ai:Error =>
-    new (containerUrl, CONTAINER_REGION, indexName, MANAGED_DOMAIN, containerAuth, config);
+    new (containerUrl, CONTAINER_REGION, indexName, deployment, config);
 
 # Builds a dense test vector of `CONTAINER_DIMENSION` components.
 #

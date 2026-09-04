@@ -53,8 +53,7 @@ isolated function testContainerInitOnExistingIndexIsANoOp() returns error? {
 isolated function testContainerCreateIndexIfNotExistsFalseSkipsCreation() returns error? {
     string indexName = containerIndexName("init-nocreate");
     Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION, createIndexIfNotExists: false},
-        refreshOnWrite: true
+        indexConfig: {dimension: CONTAINER_DIMENSION, createIndexIfNotExists: false}
     };
     VectorStore store = check newContainerStore(indexName, config);
     test:assertFalse(check rawIndexExists(indexName),
@@ -79,10 +78,9 @@ isolated function testContainerMappingEnablesKnn() returns error? {
 isolated function testContainerMappingVectorFieldShape() returns error? {
     string indexName = containerIndexName("init-vecfield");
     Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION, engine: FAISS, efConstruction: 200, m: 24},
-        refreshOnWrite: true
+        indexConfig: {dimension: CONTAINER_DIMENSION, efConstruction: 200, m: 24}
     };
-    VectorStore store = check newContainerStore(indexName, config);
+    VectorStore store = check newContainerStore(indexName, config, containerDeployment(FAISS));
 
     map<json> mappings = check indexMapping(indexName);
     map<json> properties = check mapField(mappings, "properties");
@@ -105,8 +103,7 @@ isolated function testContainerMappingSpaceType(ai:SimilarityMetric metric, stri
         returns error? {
     string indexName = containerIndexName("init-space");
     Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION, similarityMetric: metric},
-        refreshOnWrite: true
+        indexConfig: {dimension: CONTAINER_DIMENSION, similarityMetric: metric}
     };
     VectorStore store = check newContainerStore(indexName, config);
 
@@ -128,11 +125,8 @@ isolated function spaceTypeDataProvider() returns [ai:SimilarityMetric, string][
 @test:Config {groups: ["docker"]}
 isolated function testContainerLuceneEngineIsAccepted() returns error? {
     string indexName = containerIndexName("init-lucene");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION, engine: LUCENE},
-        refreshOnWrite: true
-    };
-    VectorStore store = check newContainerStore(indexName, config);
+    Configuration config = {indexConfig: {dimension: CONTAINER_DIMENSION}};
+    VectorStore store = check newContainerStore(indexName, config, containerDeployment(LUCENE));
 
     map<json> mappings = check indexMapping(indexName);
     map<json> properties = check mapField(mappings, "properties");
@@ -155,8 +149,7 @@ isolated function testContainerMappingHonoursCustomFieldNames() returns error? {
         vectorFieldName: "vec",
         contentFieldName: "body",
         idFieldName: "entry_id",
-        metadataFieldName: "props",
-        refreshOnWrite: true
+        metadataFieldName: "props"
     };
     VectorStore store = check newContainerStore(indexName, config);
 

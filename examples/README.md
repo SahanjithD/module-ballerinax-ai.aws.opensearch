@@ -19,9 +19,13 @@ Explore this [example](https://github.com/ballerina-platform/module-ballerinax-a
    serviceUrl = "<Your OpenSearch endpoint URL>"
    region = "<Your AWS region>"
    indexName = "<Your index name>"
+
+   [deployment]
    deploymentType = "MANAGED_DOMAIN"
    ```
 
-   AWS credentials are resolved via the standard credential chain (environment variables, shared
-   config/credentials file, EC2/ECS instance role, and so on) — no credentials need to go in
-   `Config.toml`.
+   This example opts into the standard AWS credential chain (environment variables, shared
+   config/credentials file, EC2/ECS instance role, and so on), so no credentials need to go in
+   `Config.toml`. Note that `auth` has no default on any `Deployment` variant — the example states
+   `auth:DEFAULT_CREDENTIALS` explicitly in `main.bal`, rather than the store falling back to the
+   ambient chain on its own.

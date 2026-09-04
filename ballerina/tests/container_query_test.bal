@@ -65,7 +65,6 @@ isolated function testContainerQueryNegativeTopKReturnsEverything() returns erro
     string indexName = containerIndexName("q-all");
     Configuration config = {
         indexConfig: {dimension: CONTAINER_DIMENSION},
-        refreshOnWrite: true,
         maxResultWindow: 100
     };
     VectorStore store = check newContainerStore(indexName, config);
@@ -81,7 +80,6 @@ isolated function testContainerQueryMaxResultWindowCapsReturnAll() returns error
     string indexName = containerIndexName("q-window");
     Configuration config = {
         indexConfig: {dimension: CONTAINER_DIMENSION},
-        refreshOnWrite: true,
         maxResultWindow: 2
     };
     VectorStore store = check newContainerStore(indexName, config);
@@ -98,7 +96,6 @@ isolated function testContainerQueryExcludesEmbeddingsWhenConfigured() returns e
     string indexName = containerIndexName("q-noembed");
     Configuration config = {
         indexConfig: {dimension: CONTAINER_DIMENSION},
-        refreshOnWrite: true,
         includeEmbeddingsInResults: false
     };
     VectorStore store = check newContainerStore(indexName, config);
@@ -144,7 +141,6 @@ isolated function testContainerQueryNormalizedCosineScore() returns error? {
     string indexName = containerIndexName("q-normscore");
     Configuration config = {
         indexConfig: {dimension: CONTAINER_DIMENSION},
-        refreshOnWrite: true,
         normalizeCosineScore: true
     };
     VectorStore store = check newContainerStore(indexName, config);
@@ -207,7 +203,6 @@ isolated function testContainerQueryRejectsTopKAboveMaxResultWindow() returns er
     string indexName = containerIndexName("q-overwindow");
     Configuration config = {
         indexConfig: {dimension: CONTAINER_DIMENSION},
-        refreshOnWrite: true,
         maxResultWindow: 5
     };
     VectorStore store = check newContainerStore(indexName, config);

@@ -120,11 +120,50 @@ opensearch:VectorStore vectorStore = check new (
     serviceUrl = "https://my-domain.us-east-1.es.amazonaws.com",
     region = "us-east-1",
     indexName = "my-knowledge-base",
-    deploymentType = opensearch:MANAGED_DOMAIN,
-    auth = auth:DEFAULT_CREDENTIALS,
+    deployment = {
+        deploymentType: opensearch:MANAGED_DOMAIN,
+        auth: auth:DEFAULT_CREDENTIALS
+    },
     config = {indexConfig: {dimension: 1536}}
 );
 ```
+
+`deployment` is required, and selects one of three record types. Each exposes only the settings its
+flavour actually honors — so a setting that does not apply cannot be named at all:
+
+```ballerina
+// Managed domain: the only flavour with a selectable engine, basic auth, or a forced refresh.
+deployment = {
+    deploymentType: opensearch:MANAGED_DOMAIN,
+    auth: {username: "...", password: "..."},
+    engine: opensearch:LUCENE,
+    refreshOnWrite: true
+}
+
+// Serverless Classic: credentials only. Faiss is the sole engine it supports, and its refresh
+// interval is fixed, so neither is a choice.
+deployment = {
+    deploymentType: opensearch:SERVERLESS_CLASSIC,
+    auth: auth:DEFAULT_CREDENTIALS
+}
+
+// Serverless NextGen: the only flavour exposing vector quantization.
+deployment = {
+    deploymentType: opensearch:SERVERLESS_NEXTGEN,
+    auth: auth:DEFAULT_CREDENTIALS,
+    vectorMode: opensearch:IN_MEMORY,
+    compressionLevel: opensearch:COMPRESSION_1X
+}
+```
+
+`auth` is required on every variant. It is deliberately not defaulted to
+`auth:DEFAULT_CREDENTIALS`: a store that silently picks up the ambient AWS credential chain hides a
+misconfiguration until it surfaces as a 403 from a principal nobody intended to use. Pass
+`auth:DEFAULT_CREDENTIALS` to opt into that chain explicitly.
+
+Settings honored identically everywhere — `dimension`, `similarityMetric`, `efConstruction`, `m`,
+field names, bulk sizing, retries — live on `config` instead, so switching deployments carries
+them across untouched.
 
 By default (`IndexConfig.createIndexIfNotExists = true`), `init` creates the index with the
 correct `knn_vector` mapping if it does not already exist.
@@ -164,7 +203,9 @@ other `ballerina/ai` API that accepts a vector store.
 | `add` semantics | upsert | **append-only** | upsert |
 | `delete` | single `_bulk` call | search-then-bulk-delete | single `_bulk` call |
 | Write visibility | immediate with `refreshOnWrite`, else normal refresh | ~60 s, unforceable | ~10 s, unforceable |
-| Index mapping | explicit `method` block, `engine` configurable | explicit `method` block, forced `faiss` | no `method` block; auto-configured |
+| Index mapping | `method` block with `engine` configurable | `method` block, forced `faiss` | `method` block without `engine`; `space_type` at the field's top level |
+| HNSW tuning (`efConstruction`/`m`) | yes | yes | yes |
+| Vector quantization | no | no | yes |
 
 On `SERVERLESS_CLASSIC`, a custom document `_id` cannot be written, so re-`add`ing the same
 logical id creates a duplicate document rather than upserting, and `delete` must first search for
@@ -173,17 +214,33 @@ before it can delete them. A document added less than the collection's refresh i
 not be found by that search and will survive the delete — this is a real limitation of the
 platform, not a bug in this module.
 
+> [!NOTE]
+> **On `SERVERLESS_CLASSIC`, a successful `init` does not mean the index can be queried yet.**
+> When `init` creates the index, `_mapping` and `_settings` report it as present immediately while
+> `_search`/`_count` against it still fail with `index_not_found_exception` for roughly ten
+> seconds. It is a propagation delay, not a missing shard: the index becomes searchable on its own
+> with no write and no intervention. **Writes are unaffected** and succeed immediately, so code
+> that `add`s before it queries never sees this. `init` deliberately does not wait the delay out,
+> which would add up to ten seconds to every Classic construction including the callers who write
+> first; if you must query straight after constructing the store, retry an
+> `index_not_found_exception` for a few seconds before treating it as fatal.
+> `SERVERLESS_NEXTGEN` is searchable at once.
+
 ### Authentication
+
+Credentials are part of the `deployment` argument, since which mechanisms are available depends on
+the flavour.
 
 ```ballerina
 // Static keys
-config = {..., auth: {accessKeyId: "...", secretAccessKey: "..."}}
+deployment = {..., auth: {accessKeyId: "...", secretAccessKey: "..."}}
 
 // The standard AWS credential chain (recommended)
-config = {..., auth: auth:DEFAULT_CREDENTIALS}
+deployment = {..., auth: auth:DEFAULT_CREDENTIALS}
 
-// HTTP basic auth (MANAGED_DOMAIN only, requires FGAC + internal user database)
-config = {..., auth: {username: "...", password: "..."}}
+// HTTP basic auth — requires FGAC + an internal user database, and is accepted only by
+// `ManagedDomainDeployment`. Neither Serverless variant's `auth` field admits this type.
+deployment = {deploymentType: opensearch:MANAGED_DOMAIN, auth: {username: "...", password: "..."}}
 ```
 
 ### Index configuration (`IndexConfig`)
@@ -192,10 +249,14 @@ config = {..., auth: {username: "...", password: "..."}}
 |---|---|---|
 | `dimension` | *(required)* | No client-side ceiling — AWS's own docs disagree on the maximum (10,000 vs. 16,000); the server enforces its own limit |
 | `similarityMetric` | `ai:COSINE` | Maps to OpenSearch `space_type`: `COSINE`→`cosinesimil`, `EUCLIDEAN`→`l2`, `DOT_PRODUCT`→`innerproduct` |
-| `engine` | `FAISS` | Forced to `FAISS` on `SERVERLESS_CLASSIC`; ignored on `SERVERLESS_NEXTGEN` |
-| `efConstruction` | `128` | HNSW build-time accuracy/speed trade-off |
-| `m` | `16` | HNSW max bi-directional links per node |
+| `efConstruction` | `128` | HNSW build-time accuracy/speed trade-off. Honored on all three deployment types |
+| `m` | `16` | HNSW max bi-directional links per node. Honored on all three deployment types |
 | `createIndexIfNotExists` | `true` | When `false`, `init` performs **no network I/O at all** — including no existence check. See the warning below before setting it |
+
+`engine`, `compressionLevel`, and `vectorMode` are not here: they live on the `Deployment` variant
+that honors them (`ManagedDomainDeployment.engine`, and `compressionLevel`/`vectorMode` on
+`ServerlessNextGenDeployment`), so naming one against a deployment that ignores it does not
+compile.
 
 
 > [!WARNING]
@@ -207,6 +268,18 @@ config = {..., auth: {username: "...", password: "..."}}
 > `400`. Recovery means deleting the index and reindexing from source. Only set this to `false`
 > against an index you know was provisioned out of band with a compatible mapping.
 
+> [!NOTE]
+> **Vectors are quantized by default on `SERVERLESS_NEXTGEN`.** NextGen auto-configures the
+> `knn_vector` field, and what it configures is `on_disk` storage with `32x` compression — the
+> same index created on a managed domain stores full-precision vectors. Nothing in the request or
+> the response announces this; the stored mapping is the only place it shows up. To store vectors
+> uncompressed, set both `vectorMode: IN_MEMORY` and `compressionLevel: COMPRESSION_1X`
+> (`ON_DISK` rejects `1x`, and is caught at construction). Leaving both unset preserves the
+> platform default rather than substituting one of this module's own.
+>
+> Both fields are declared on `ServerlessNextGenDeployment` alone, so they are simply not
+> expressible against a managed domain or a Classic collection.
+
 ### Other configuration (`Configuration`)
 
 | Field | Default | Notes |
@@ -217,7 +290,6 @@ config = {..., auth: {username: "...", password: "..."}}
 | `metadataFieldName` | `"metadata"` | Set to `""` to address bare `<key>` paths — for pointing this module at a pre-existing index with a flat schema. A metadata key that would then collide with a reserved field name (`embedding`, `content`, `doc_id`, `chunk_type`) is rejected with an `ai:Error` rather than silently overwriting that field |
 | `includeEmbeddingsInResults` | `true` | Set `false` to exclude the vector from `_source` — a meaningful bandwidth saving at high dimensions and large `topK` |
 | `normalizeCosineScore` | `false` | Converts a `cosinesimil` `_score` back to `[-1, 1]` (`cos = 2 * score - 1`); see below |
-| `refreshOnWrite` | `false` | `?refresh=wait_for` on `add`. `MANAGED_DOMAIN` only |
 | `maxBulkSize` | `500` | Entries per `_bulk` request; `add` chunks larger batches automatically |
 | `maxResultWindow` | `10000` | The `size` used when `topK < 1` ("return all"), and the ceiling enforced on an explicit `topK` |
 | `additionalHeaders` | `{}` | Extra headers, **SigV4-signed** — needed for a Serverless NextGen per-account endpoint's `x-amz-aoss-collection-name`/`x-amz-aoss-collection-id` header |
@@ -244,6 +316,8 @@ filters), OpenSearch's constant score is not a similarity at all, so `similarity
 - **`SERVERLESS_CLASSIC` delete** can fail loudly (rather than silently under-deleting) if a
   single logical id has accumulated more duplicate documents than `maxResultWindow` can see in
   one lookup — raise `maxResultWindow` and retry.
+- **A `SERVERLESS_CLASSIC` index is not searchable for ~10 s after `init` creates it**, though it
+  is writable immediately — see the note under "Deployment types" above.
 - **Fractional metadata values change Ballerina type on a round trip.** A custom metadata key
   written as a `float` (`{"rating": 4.25}`) is read back as a `decimal`, because JSON has one
   number type and Ballerina's parser maps every non-integral value to `decimal`. The value is

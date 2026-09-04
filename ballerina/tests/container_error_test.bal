@@ -29,9 +29,8 @@ import ballerina/test;
 # + return - The store, or an `ai:Error`
 isolated function storeOnMissingIndex(string indexName) returns VectorStore|ai:Error =>
     newContainerStore(indexName, {
-        indexConfig: {dimension: CONTAINER_DIMENSION, createIndexIfNotExists: false},
-        refreshOnWrite: true
-    });
+                                     indexConfig: {dimension: CONTAINER_DIMENSION, createIndexIfNotExists: false}
+                                 });
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryOnMissingIndexMapsTo404() returns error? {
@@ -119,6 +118,83 @@ isolated function testContainerDimensionMismatchIsReported() returns error? {
     // The server's own explanation has to survive into the message, not be replaced by a generic one.
     test:assertTrue(result.message().includes("dimension") || result.message().includes("vector"),
             string `the server's reason should be preserved, got: ${result.message()}`);
+    // And specifically the *nested* one. A failed `_bulk` item's top-level reason is a parse
+    // summary whose preview of the offending value is the literal string `null`; the numbers that
+    // tell the caller what was wrong live in `caused_by`, which is what must reach the message.
+    test:assertTrue(result.message().includes("Expected: 4") && result.message().includes("Given: 2"),
+            string `the nested cause carries the only actionable detail, got: ${result.message()}`);
+    check store.close();
+}
+
+// The case that motivated unwrapping nested causes at all: a shard-level search failure reports
+// `all shards failed` and nothing else at the top level, and every word explaining what the caller
+// did wrong sits in `root_cause[0]`.
+@test:Config {groups: ["docker"]}
+isolated function testContainerQueryDimensionMismatchSurfacesRootCause() returns error? {
+    string indexName = containerIndexName("err-qdim");
+    VectorStore store = check newContainerStore(indexName);
+    check store.add([entry("only", queryVector())]);
+
+    ai:Vector wrongDimension = [0.1, 0.2];
+    ai:VectorMatch[]|ai:Error result = store.query({embedding: wrongDimension, topK: 1});
+    if result !is ai:Error {
+        test:assertFail("a query vector of the wrong dimension should fail");
+    }
+    test:assertEquals(result.detail()["status"], 400);
+    test:assertTrue(result.message().includes("all shards failed"),
+            string `the server's own top-level reason should still be reported, got: ${result.message()}`);
+    test:assertTrue(result.message().includes("Dimension should be: 4"),
+            string `the nested root cause must reach the caller, got: ${result.message()}`);
+    // The wrapper's type names the phase that failed and is useless for branching; the specific
+    // classification is carried alongside it rather than replacing it.
+    test:assertEquals(result.detail()["openSearchErrorType"], "search_phase_execution_exception");
+    test:assertEquals(result.detail()["openSearchRootCauseType"], "query_shard_exception");
+    check store.close();
+}
+
+// A 404 wraps nothing, so its `root_cause` repeats the outer reason verbatim. The message must not
+// say the same thing twice, and there is no distinct classification to carry.
+@test:Config {groups: ["docker"]}
+isolated function testContainerNonWrapperErrorIsNotDuplicated() returns error? {
+    string indexName = containerIndexName("err-nodup");
+    VectorStore store = check storeOnMissingIndex(indexName);
+
+    ai:VectorMatch[]|ai:Error result = store.query({embedding: queryVector(), topK: 1});
+    if result !is ai:Error {
+        test:assertFail("querying a missing index should fail");
+    }
+    string message = result.message();
+    int firstOccurrence = <int>message.indexOf("no such index");
+    test:assertEquals(message.lastIndexOf("no such index"), firstOccurrence,
+            string `a self-referential root cause should not be appended to itself, got: ${message}`);
+    test:assertEquals(result.detail()["openSearchRootCauseType"], (),
+            "there is no nested classification to carry on a non-wrapper error");
+    check store.close();
+}
+
+// Attribution by position, proven against a real `_bulk` response rather than a hand-built one:
+// the failing entry is named by the id the caller supplied, and the ids that succeeded are not
+// dragged into the message.
+@test:Config {groups: ["docker"]}
+isolated function testContainerBulkFailureNamesTheCallersEntry() returns error? {
+    string indexName = containerIndexName("err-attrib");
+    VectorStore store = check newContainerStore(indexName);
+
+    ai:Error? result = store.add([
+        entry("good-0", queryVector()),
+        entry("bad-1", [0.1, 0.2]),
+        entry("good-2", queryVector())
+    ]);
+    if result !is ai:Error {
+        test:assertFail("one bad entry should fail the 'add'");
+    }
+    string message = result.message();
+    test:assertTrue(message.includes("Failed to index 1 of 3 entries"),
+            string `only the one bad entry should be counted, got: ${message}`);
+    test:assertTrue(message.includes("'bad-1'"),
+            string `the failing entry should be named by the caller's own id, got: ${message}`);
+    test:assertFalse(message.includes("good-0") || message.includes("good-2"),
+            string `entries that succeeded should not appear, got: ${message}`);
     check store.close();
 }
 
@@ -128,7 +204,7 @@ isolated function testContainerCreateIndexOnBadMappingIsReported() returns error
     // `dimension` is passed to the server untouched -- the module deliberately enforces no ceiling,
     // because AWS's own documentation disagrees about what it is. This confirms the server's
     // rejection surfaces as a construction failure rather than a silent half-built store.
-    Configuration config = {indexConfig: {dimension: 99999}, refreshOnWrite: true};
+    Configuration config = {indexConfig: {dimension: 99999}};
     VectorStore|ai:Error result = newContainerStore(indexName, config);
 
     if result !is ai:Error {
@@ -148,7 +224,7 @@ isolated function testContainerUnreachableEndpointFailsAfterRetries() returns er
         retryConfig: {maxRetries: 0}
     };
     VectorStore|ai:Error result = new ("http://localhost:9299", CONTAINER_REGION, "unreachable",
-        MANAGED_DOMAIN, containerAuth, config
+        containerDeployment(), config
     );
 
     if result !is ai:Error {

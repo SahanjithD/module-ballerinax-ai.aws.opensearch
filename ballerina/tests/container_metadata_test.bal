@@ -63,11 +63,11 @@ isolated function testContainerMetadataCustomKeysRoundTrip() returns error? {
 
     check store.add([
         entry("md", queryVector(), "doc", {
-            "language": "en",
-            "year": 2024,
-            "published": true,
-            "attrs": {"nested": "value", "depth": 2}
-        })
+                                              "language": "en",
+                                              "year": 2024,
+                                              "published": true,
+                                              "attrs": {"nested": "value", "depth": 2}
+                                          })
     ]);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 1});
@@ -122,8 +122,7 @@ isolated function testContainerMetadataUnderFlatSchemaRoundTrips() returns error
     string indexName = containerIndexName("md-flat");
     Configuration config = {
         indexConfig: {dimension: CONTAINER_DIMENSION},
-        metadataFieldName: "",
-        refreshOnWrite: true
+        metadataFieldName: ""
     };
     VectorStore store = check newContainerStore(indexName, config);
     check store.add([entry("flat", queryVector(), "flat doc", {"language": "en", "year": 2024})]);
@@ -149,8 +148,7 @@ isolated function testContainerFlatSchemaKeyCollisionIsRejectedBeforeWriting() r
     string indexName = containerIndexName("md-collide");
     Configuration config = {
         indexConfig: {dimension: CONTAINER_DIMENSION},
-        metadataFieldName: "",
-        refreshOnWrite: true
+        metadataFieldName: ""
     };
     VectorStore store = check newContainerStore(indexName, config);
 

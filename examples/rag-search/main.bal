@@ -22,7 +22,12 @@ import ballerinax/aws.auth;
 configurable string serviceUrl = ?;
 configurable string region = "us-east-1";
 configurable string indexName = "rag-search-example";
-configurable opensearch:DeploymentType deploymentType = opensearch:MANAGED_DOMAIN;
+// The managed-domain variant of `opensearch:Deployment`. `auth` has no default on any variant, so
+// opting into the ambient AWS credential chain is stated rather than assumed.
+configurable opensearch:ManagedDomainDeployment deployment = {
+    deploymentType: opensearch:MANAGED_DOMAIN,
+    auth: auth:DEFAULT_CREDENTIALS
+};
 
 type Article record {
     string title;
@@ -37,8 +42,7 @@ public function main() returns error? {
         serviceUrl,
         region,
         indexName,
-        deploymentType,
-        auth:DEFAULT_CREDENTIALS,
+        deployment,
         {indexConfig: {dimension: 4}}
     );
 

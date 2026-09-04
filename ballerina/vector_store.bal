@@ -18,7 +18,6 @@ import ballerina/ai;
 import ballerina/http;
 import ballerina/log;
 import ballerinax/aws;
-import ballerinax/aws.auth;
 
 # The maximum number of `_id`s looked up in a single `terms` query, per OpenSearch's cap on the
 # number of terms in a `terms` clause.
@@ -40,9 +39,19 @@ const int DOC_ID_LOOKUP_CHUNK_SIZE = 65536;
 # `SERVERLESS_CLASSIC`; on all types, deleting a non-existent id is treated as success (this
 # module ignores `not_found`, unlike `ai:InMemoryVectorStore`, which errors).
 #
-# Write visibility is immediate on a managed domain when `Configuration.refreshOnWrite` is set,
-# otherwise governed by the index's normal refresh interval; on Serverless it is a fixed,
+# Write visibility is immediate on a managed domain when `ManagedDomainDeployment.refreshOnWrite`
+# is set, otherwise governed by the index's normal refresh interval; on Serverless it is a fixed,
 # unforceable ~10 seconds (NextGen) or ~60 seconds (Classic) — poll rather than assume immediacy.
+#
+# # Construction is not query readiness on Serverless Classic
+# When `init` creates the index on `SERVERLESS_CLASSIC`, a successful construction does not mean
+# the index can be searched yet: `query` can fail with `index_not_found_exception` for roughly ten
+# seconds afterwards, while `_mapping` and `_settings` already report the index as present. It is
+# a propagation delay that clears on its own with no write and no intervention, and `add` is
+# unaffected — a caller that writes before it queries never sees it. Code that queries straight
+# after constructing a Classic store should retry that error for a few seconds rather than treat
+# it as fatal. This is not waited out inside `init`, which would otherwise pay the delay on every
+# Classic construction; see `ensureIndex`.
 #
 # # Similarity score range
 # `VectorMatch.similarityScore` passes the raw OpenSearch `_score` through by default. Its range
@@ -53,6 +62,14 @@ const int DOC_ID_LOOKUP_CHUNK_SIZE = 65536;
 # metadata-only filter, or neither embedding nor filters), OpenSearch's constant score is not a
 # similarity at all, so `similarityScore` is always `0.0` for those matches regardless of this
 # setting.
+#
+# # Returned embeddings
+# `VectorMatch.embedding` is whatever storage holds, read straight back out of `_source`. It is
+# not guaranteed to be the vector that was passed to `add`. On `SERVERLESS_NEXTGEN` under
+# `COSINE`, storage holds a unit-normalized copy, so a round-tripped vector comes back with
+# magnitude 1 and the original magnitude is unrecoverable — AWS discards it at write time, and
+# nothing client-side can restore it. Do not treat a returned embedding as a byte-exact echo of
+# the input, and do not compare one to a locally-held vector with exact float equality.
 #
 # # Scope
 # This release supports dense vectors only; `add`/`query` return an `ai:Error` for a
@@ -68,7 +85,7 @@ public isolated class VectorStore {
 
     private final OpenSearchTransport transport;
     private final string indexName;
-    private final DeploymentType deploymentType;
+    private final Deployment & readonly deployment;
     private final Configuration & readonly config;
 
     # Initializes the AWS OpenSearch vector store.
@@ -80,31 +97,35 @@ public isolated class VectorStore {
     # `https://<account-id>.aoss.<region>.on.aws` for a Serverless NextGen endpoint
     # + region - The AWS region the endpoint is in
     # + indexName - The OpenSearch index this store reads and writes
-    # + deploymentType - The deployment flavour of the target cluster
-    # + auth - The authentication mechanism: an AWS credential source (SigV4), or `BasicAuth`
-    # (`MANAGED_DOMAIN` only)
-    # + config - Index-shape and behavioral configuration
+    # + deployment - The target deployment and its flavour-specific settings — credentials, which
+    # are required rather than defaulted, and whichever of
+    # `engine`/`refreshOnWrite`/`compressionLevel`/`vectorMode` that flavour actually honors.
+    # Settings shared by all three live on `config` instead
+    # + config - Index-shape and behavioral configuration honored on every deployment type
     # + queryMode - Reserved for future sparse/hybrid support; only `ai:DENSE` is accepted in this
     # release
-    # + httpConfig - Underlying HTTP client configuration
+    # + httpConfig - Underlying HTTP client configuration. `httpVersion` and
+    # `http1Settings.chunking` are pinned by this module to `HTTP_1_1` and `CHUNKING_NEVER`
+    # respectively and cannot be overridden: Ballerina's HTTP/2 outbound path corrupts a signed
+    # JSON body, and a chunked body carries no `Content-Length` for SigV4 to be verified against.
+    # Every other field is passed through unchanged
     # + return - An `ai:Error` if construction, validation, or (when
     # `IndexConfig.createIndexIfNotExists` is `true`) index creation fails; otherwise `()`
     public isolated function init(
             @display {label: "Service URL"} string serviceUrl,
             @display {label: "Region"} aws:Region|string region,
             @display {label: "Index Name"} string indexName,
-            @display {label: "Deployment Type"} DeploymentType deploymentType = MANAGED_DOMAIN,
-            @display {label: "Authentication"} Auth auth = auth:DEFAULT_CREDENTIALS,
+            @display {label: "Deployment"} Deployment deployment,
             @display {label: "Configuration"} Configuration config = {indexConfig: {dimension: 1536}},
             @display {label: "Query Mode"} ai:VectorStoreQueryMode queryMode = ai:DENSE,
             @display {label: "HTTP Configuration"} http:ClientConfiguration httpConfig = {})
             returns ai:Error? {
-        check validateConfiguration(serviceUrl, deploymentType, auth, queryMode, config);
+        check validateConfiguration(serviceUrl, deployment, queryMode, config);
 
-        OpenSearchTransport transport = check new (serviceUrl, region, deploymentType, auth,
-            config.additionalHeaders, config.retryConfig, config.refreshOnWrite, httpConfig
+        OpenSearchTransport transport = check new (serviceUrl, region, deployment,
+            config.additionalHeaders, config.retryConfig, httpConfig
         );
-        ai:Error? ensureResult = ensureIndex(transport, indexName, config, deploymentType);
+        ai:Error? ensureResult = ensureIndex(transport, indexName, config, deployment);
         if ensureResult is ai:Error {
             // Best-effort cleanup; the closing outcome is intentionally not surfaced so it
             // cannot mask the more relevant `ensureResult` failure below.
@@ -118,7 +139,7 @@ public isolated class VectorStore {
 
         self.transport = transport;
         self.indexName = indexName;
-        self.deploymentType = deploymentType;
+        self.deployment = deployment.cloneReadOnly();
         self.config = config.cloneReadOnly();
     }
 
@@ -136,9 +157,13 @@ public isolated class VectorStore {
         PreparedEntry[] prepared = check prepareEntries(entries, self.config.indexConfig.similarityMetric);
 
         foreach PreparedEntry[] batch in chunkPreparedEntries(prepared, self.config.maxBulkSize) {
-            byte[] body = check buildAddBulkBody(batch, self.indexName, self.deploymentType, self.config);
+            byte[] body = check buildAddBulkBody(batch, self.indexName, self.deployment, self.config);
             BulkResponse response = check self.transport.bulk(body);
-            BulkFailure[] failures = extractIndexFailures(response);
+            // Attributed by position against this batch's ids, so a failure names the caller's
+            // entry even on `SERVERLESS_CLASSIC`, where the response `_id` is server-generated.
+            string[] submittedIds = from PreparedEntry entry in batch
+                select entry.id;
+            BulkFailure[] failures = extractIndexFailures(response, submittedIds);
             if failures.length() > 0 {
                 return error(string `Failed to index ${failures.length()} of ${batch.length()} ` +
                         string `entries: ${summarizeBulkFailures(failures)}`);
@@ -191,12 +216,12 @@ public isolated class VectorStore {
         if idList.length() == 0 {
             return;
         }
-        if self.deploymentType == SERVERLESS_CLASSIC {
+        if self.deployment is ServerlessClassicDeployment {
             return self.deleteOnServerlessClassic(idList);
         }
         byte[] body = buildDeleteBulkBody(self.indexName, idList);
         BulkResponse response = check self.transport.bulk(body);
-        BulkFailure[] failures = extractDeleteFailures(response);
+        BulkFailure[] failures = extractDeleteFailures(response, idList);
         if failures.length() > 0 {
             return error(string `Failed to delete ${failures.length()} of ${idList.length()} ` +
                     string `entries: ${summarizeBulkFailures(failures)}`);
@@ -224,6 +249,10 @@ public isolated class VectorStore {
     # item fails, or if a lookup could not confirm it saw every duplicate, otherwise `()`
     private isolated function deleteOnServerlessClassic(string[] idList) returns ai:Error? {
         string[] internalIds = [];
+        // Grown in lockstep with `internalIds`: the bulk delete below is submitted against
+        // internal `_id`s, and this is what lets a per-item failure be reported against the
+        // logical id the caller actually asked to delete.
+        string[] logicalIds = [];
         foreach string[] chunk in chunkIds(idList, DOC_ID_LOOKUP_CHUNK_SIZE) {
             json searchBody = buildDocIdLookupBody(self.config.idFieldName, chunk, self.config.maxResultWindow);
             SearchResponse searchResponse = check self.transport.search(self.indexName, searchBody);
@@ -237,6 +266,11 @@ public isolated class VectorStore {
             }
             foreach SearchHit hit in searchResponse.hits.hits {
                 internalIds.push(hit._id);
+                map<json>? hitSource = hit?._source;
+                json logicalId = hitSource is map<json> ? hitSource[self.config.idFieldName] : ();
+                // A document written outside this module may carry no logical id at all; the
+                // internal `_id` is then the only handle there is.
+                logicalIds.push(logicalId is string ? logicalId : hit._id);
             }
         }
         if internalIds.length() == 0 {
@@ -244,7 +278,7 @@ public isolated class VectorStore {
         }
         byte[] body = buildDeleteBulkBody(self.indexName, internalIds);
         BulkResponse response = check self.transport.bulk(body);
-        BulkFailure[] failures = extractDeleteFailures(response);
+        BulkFailure[] failures = extractDeleteFailures(response, logicalIds);
         if failures.length() > 0 {
             return error(string `Failed to delete ${failures.length()} of ${internalIds.length()} ` +
                     string `entries: ${summarizeBulkFailures(failures)}`);
@@ -254,25 +288,21 @@ public isolated class VectorStore {
 
 # Runs the fail-fast construction validations before any network I/O is attempted.
 #
+# Most of what this function once checked is now unrepresentable rather than rejected: `BasicAuth`
+# on a Serverless collection, a non-Faiss engine on Serverless Classic, `refreshOnWrite` off a
+# managed domain, and quantization off NextGen are all type errors since those fields moved onto
+# the `Deployment` variant that honors them. What is left is the range and format checking that no
+# type can express.
+#
 # + serviceUrl - The service URL, checked for a parseable host
-# + deploymentType - The deployment flavour
-# + auth - The authentication mechanism
+# + deployment - The target deployment
 # + queryMode - The requested query mode
 # + config - The vector store configuration
 # + return - An `ai:Error` naming the first failing rule, otherwise `()`
-isolated function validateConfiguration(string serviceUrl, DeploymentType deploymentType, Auth auth,
+isolated function validateConfiguration(string serviceUrl, Deployment deployment,
         ai:VectorStoreQueryMode queryMode, Configuration config) returns ai:Error? {
-    if auth is BasicAuth && deploymentType != MANAGED_DOMAIN {
-        return error("'BasicAuth' is only supported on 'MANAGED_DOMAIN'; OpenSearch Serverless has " +
-                "no basic-auth path and accepts SigV4-signed requests only");
-    }
-    if deploymentType == SERVERLESS_CLASSIC && config.indexConfig.engine != FAISS {
-        return error(string `'IndexConfig.engine' must be 'FAISS' on 'SERVERLESS_CLASSIC' ` +
-                string `(got '${config.indexConfig.engine}'): Serverless Classic vector search ` +
-                "collections only support the HNSW algorithm with Faiss");
-    }
     if queryMode != ai:DENSE {
-        return error(string `This module supports 'ai:DENSE' query mode only in this release; ` +
+        return error(string `This module supports 'ai:DENSE' query mode only; ` +
                 string `got '${queryMode}'`);
     }
     if config.indexConfig.dimension < 1 {
@@ -280,15 +310,29 @@ isolated function validateConfiguration(string serviceUrl, DeploymentType deploy
                 string `${config.indexConfig.dimension}`);
     }
     string _ = check extractHost(serviceUrl);
-    if config.refreshOnWrite && deploymentType != MANAGED_DOMAIN {
-        return error("'Configuration.refreshOnWrite' is only supported on 'MANAGED_DOMAIN'; both " +
-                "OpenSearch Serverless generations have a fixed, unforceable refresh interval");
-    }
     if config.maxBulkSize < 1 {
         return error(string `'Configuration.maxBulkSize' must be a positive integer, got: ${config.maxBulkSize}`);
     }
     if config.maxResultWindow < 1 {
         return error(string `'Configuration.maxResultWindow' must be a positive integer, got: ` +
                 string `${config.maxResultWindow}`);
+    }
+    if deployment is ServerlessNextGenDeployment {
+        check validateQuantization(deployment);
+    }
+}
+
+# Validates the two quantization knobs against each other. Both are `SERVERLESS_NEXTGEN`-only by
+# construction — no other `Deployment` variant declares them — so all that is left to check here is
+# the one combination NextGen itself rejects.
+#
+# + deployment - The NextGen deployment to check
+# + return - An `ai:Error` naming the failing rule, otherwise `()`
+isolated function validateQuantization(ServerlessNextGenDeployment deployment) returns ai:Error? {
+    if deployment.vectorMode == ON_DISK && deployment.compressionLevel == COMPRESSION_1X {
+        return error("'ServerlessNextGenDeployment.compressionLevel' cannot be 'COMPRESSION_1X' when " +
+                "'vectorMode' is 'ON_DISK'; the server rejects that mapping with " +
+                "'Cannot specify \"x1\" compression level when using \"on_disk\" mode'. Use " +
+                "'IN_MEMORY' to store vectors uncompressed");
     }
 }

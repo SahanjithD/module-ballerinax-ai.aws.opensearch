@@ -113,7 +113,8 @@ isolated function testBuildEntrySourceFlatMetadataCollisionIsError() {
 
 @test:Config
 isolated function testAddBulkBodyEmptyEntriesProducesEmptyBytes() returns error? {
-    byte[] body = check buildAddBulkBody([], "my-index", MANAGED_DOMAIN, {indexConfig: {dimension: 2}});
+    byte[] body = check buildAddBulkBody([], "my-index", managedDeployment(),
+            {indexConfig: {dimension: 2}});
     test:assertEquals(body.length(), 0);
 }
 
@@ -121,7 +122,7 @@ isolated function testAddBulkBodyEmptyEntriesProducesEmptyBytes() returns error?
 isolated function testAddBulkBodyManagedDomainWritesId() returns error? {
     Configuration config = {indexConfig: {dimension: 2}};
     PreparedEntry entry = {id: "abc", embedding: [0.1, 0.2], chunk: {'type: "text-chunk", content: "hi"}};
-    byte[] body = check buildAddBulkBody([entry], "my-index", MANAGED_DOMAIN, config);
+    byte[] body = check buildAddBulkBody([entry], "my-index", managedDeployment(), config);
     string ndjson = check string:fromBytes(body);
     test:assertTrue(ndjson.endsWith("\n"), "the NDJSON body must end with a trailing newline");
     string[] lines = re `\n`.split(ndjson);
@@ -133,7 +134,7 @@ isolated function testAddBulkBodyManagedDomainWritesId() returns error? {
 isolated function testAddBulkBodyServerlessClassicOmitsId() returns error? {
     Configuration config = {indexConfig: {dimension: 2}};
     PreparedEntry entry = {id: "abc", embedding: [0.1, 0.2], chunk: {'type: "text-chunk", content: "hi"}};
-    byte[] body = check buildAddBulkBody([entry], "my-index", SERVERLESS_CLASSIC, config);
+    byte[] body = check buildAddBulkBody([entry], "my-index", classicDeployment(), config);
     string ndjson = check string:fromBytes(body);
     json actionLine = check re `\n`.split(ndjson)[0].fromJsonString();
     test:assertEquals(actionLine, {"index": {"_index": "my-index"}});
@@ -143,7 +144,7 @@ isolated function testAddBulkBodyServerlessClassicOmitsId() returns error? {
 isolated function testAddBulkBodyServerlessNextGenWritesId() returns error? {
     Configuration config = {indexConfig: {dimension: 2}};
     PreparedEntry entry = {id: "abc", embedding: [0.1, 0.2], chunk: {'type: "text-chunk", content: "hi"}};
-    byte[] body = check buildAddBulkBody([entry], "my-index", SERVERLESS_NEXTGEN, config);
+    byte[] body = check buildAddBulkBody([entry], "my-index", nextGenDeployment(), config);
     string ndjson = check string:fromBytes(body);
     json actionLine = check re `\n`.split(ndjson)[0].fromJsonString();
     test:assertEquals(actionLine, {"index": {"_index": "my-index", "_id": "abc"}});
@@ -156,7 +157,7 @@ isolated function testAddBulkBodyHasTwoLinesPerEntry() returns error? {
         {id: "1", embedding: [0.1, 0.2], chunk: {'type: "text-chunk", content: "a"}},
         {id: "2", embedding: [0.3, 0.4], chunk: {'type: "text-chunk", content: "b"}}
     ];
-    byte[] body = check buildAddBulkBody(entries, "my-index", MANAGED_DOMAIN, config);
+    byte[] body = check buildAddBulkBody(entries, "my-index", managedDeployment(), config);
     string ndjson = check string:fromBytes(body);
     // trailing newline means the final split element is empty; drop it before counting
     string[] lines = re `\n`.split(ndjson);
@@ -190,13 +191,24 @@ isolated function testDeleteBulkBodyShapeAndTrailingNewline() returns error? {
 @test:Config
 isolated function testDocIdLookupBodyShape() {
     json body = buildDocIdLookupBody("doc_id", ["a", "b"], 10000);
+    // `_source` fetches the logical id field rather than being switched off: the bulk delete this
+    // feeds submits internal `_id`s, and the logical id has to travel back alongside each hit for
+    // a per-item delete failure to be reportable against an id the caller recognises.
     json expected = {
         "size": 10000,
-        "_source": false,
+        "_source": ["doc_id"],
         "track_total_hits": false,
         "query": {"terms": {"doc_id": ["a", "b"]}}
     };
     test:assertEquals(body, expected);
+}
+
+@test:Config
+isolated function testDocIdLookupBodyFetchesConfiguredIdField() {
+    json body = buildDocIdLookupBody("external_ref", ["a"], 500);
+    map<json> asMap = <map<json>>body;
+    test:assertEquals(asMap["_source"], ["external_ref"],
+            "the lookup should fetch whatever field 'Configuration.idFieldName' names");
 }
 
 // --- chunking helpers -------------------------------------------------------------------------
@@ -255,7 +267,7 @@ isolated function testExtractIndexFailuresNoneWhenErrorsFalse() {
             {"index": {"_id": "1", status: 400, 'error: {'type: "x", reason: "should be ignored"}}}
         ]
     };
-    BulkFailure[] failures = extractIndexFailures(response);
+    BulkFailure[] failures = extractIndexFailures(response, ["a"]);
     test:assertEquals(failures.length(), 0);
 }
 
@@ -268,10 +280,52 @@ isolated function testExtractIndexFailuresMixedSuccessAndFailure() {
             {"index": {"_id": "2", status: 400, 'error: {'type: "mapper_parsing_exception", reason: "bad doc"}}}
         ]
     };
-    BulkFailure[] failures = extractIndexFailures(response);
+    BulkFailure[] failures = extractIndexFailures(response, ["first", "second"]);
     test:assertEquals(failures.length(), 1);
-    test:assertEquals(failures[0].id, "2");
+    test:assertEquals(failures[0].id, "second");
     test:assertEquals(failures[0].reason, "bad doc");
+}
+
+// The `SERVERLESS_CLASSIC` shape: the action line carried no `_id`, so every `_id` coming back is
+// one the server invented and none of them is anything the caller can act on. Only the item's
+// position ties a failure back to the entry that caused it.
+@test:Config
+isolated function testExtractIndexFailuresAttributesByPositionNotServerId() {
+    BulkResponse response = {
+        errors: true,
+        items: [
+            {"index": {"_id": "1%3A0%3AjNUSV6ABrlsmLW-dso51", status: 201, result: "created"}},
+            {
+                "index": {
+                    "_id": "1%3A0%3AjNUSV6ABrlsmLW-dso53",
+                    status: 400,
+                    'error: {'type: "mapper_parsing_exception", reason: "failed to parse field"}
+                }
+            },
+            {"index": {"_id": "1%3A0%3AjNUSV6ABrlsmLW-dso57", status: 201, result: "created"}}
+        ]
+    };
+    BulkFailure[] failures = extractIndexFailures(response, ["good-0", "bad-1", "good-2"]);
+    test:assertEquals(failures.length(), 1);
+    test:assertEquals(failures[0].id, "bad-1",
+            "the caller's own id, not the server-generated '_id', should name the failing entry");
+}
+
+// A response carrying more items than were submitted means the positional correspondence this
+// relies on has already broken; the server's `_id` is all that is left.
+@test:Config
+isolated function testExtractIndexFailuresFallsBackToServerIdBeyondSubmitted() {
+    BulkResponse response = {
+        errors: true,
+        items: [
+            {"index": {"_id": "known", status: 400, 'error: {reason: "first"}}},
+            {"index": {"_id": "unexpected", status: 400, 'error: {reason: "second"}}}
+        ]
+    };
+    BulkFailure[] failures = extractIndexFailures(response, ["only-one"]);
+    test:assertEquals(failures.length(), 2);
+    test:assertEquals(failures[0].id, "only-one");
+    test:assertEquals(failures[1].id, "unexpected");
 }
 
 @test:Config
@@ -283,7 +337,7 @@ isolated function testExtractDeleteFailuresIgnoresNotFound() {
             {"delete": {"_id": "2", status: 404, result: "not_found"}}
         ]
     };
-    BulkFailure[] failures = extractDeleteFailures(response);
+    BulkFailure[] failures = extractDeleteFailures(response, ["a", "b"]);
     test:assertEquals(failures.length(), 0);
 }
 
@@ -295,10 +349,42 @@ isolated function testExtractDeleteFailuresReportsRealErrors() {
             {"delete": {"_id": "1", status: 500, 'error: {'type: "internal", reason: "boom"}}}
         ]
     };
-    BulkFailure[] failures = extractDeleteFailures(response);
+    BulkFailure[] failures = extractDeleteFailures(response, ["logical-1"]);
     test:assertEquals(failures.length(), 1);
-    test:assertEquals(failures[0].id, "1");
+    test:assertEquals(failures[0].id, "logical-1");
     test:assertEquals(failures[0].reason, "boom");
+}
+
+// The `SERVERLESS_CLASSIC` delete submits internal `_id`s discovered by a lookup, so without
+// positional attribution a failure would be reported against an id the caller never supplied.
+@test:Config
+isolated function testExtractDeleteFailuresReportsLogicalIdsNotInternalIds() {
+    BulkResponse response = {
+        errors: true,
+        items: [
+            {"delete": {"_id": "jNUSV6ABrlsmLW-dso53", status: 200, result: "deleted"}},
+            {"delete": {"_id": "kNUSV6ABrlsmLW-dso61", status: 409, 'error: {reason: "version conflict"}}}
+        ]
+    };
+    BulkFailure[] failures = extractDeleteFailures(response, ["doc-a", "doc-b"]);
+    test:assertEquals(failures.length(), 1);
+    test:assertEquals(failures[0].id, "doc-b");
+}
+
+// A non-error item that still failed carries no `error` object, only a status; it must be
+// attributed the same way.
+@test:Config
+isolated function testExtractDeleteFailuresStatusOnlyUsesSubmittedId() {
+    BulkResponse response = {
+        errors: true,
+        items: [
+            {"delete": {"_id": "internal-1", status: 503}}
+        ]
+    };
+    BulkFailure[] failures = extractDeleteFailures(response, ["doc-a"]);
+    test:assertEquals(failures.length(), 1);
+    test:assertEquals(failures[0].id, "doc-a");
+    test:assertEquals(failures[0].reason, "HTTP 503");
 }
 
 @test:Config

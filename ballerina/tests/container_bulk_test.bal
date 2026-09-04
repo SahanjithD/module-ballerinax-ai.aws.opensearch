@@ -31,7 +31,6 @@ isolated function testContainerBulkAddChunksLargeBatch() returns error? {
     string indexName = containerIndexName("bulk-large");
     Configuration config = {
         indexConfig: {dimension: CONTAINER_DIMENSION},
-        refreshOnWrite: true,
         maxBulkSize: BULK_CHUNK_SIZE
     };
     VectorStore store = check newContainerStore(indexName, config);
@@ -53,7 +52,6 @@ isolated function testContainerBulkAddStopsAtTheFailingChunk() returns error? {
     string indexName = containerIndexName("bulk-stop");
     Configuration config = {
         indexConfig: {dimension: CONTAINER_DIMENSION},
-        refreshOnWrite: true,
         maxBulkSize: 2
     };
     VectorStore store = check newContainerStore(indexName, config);
