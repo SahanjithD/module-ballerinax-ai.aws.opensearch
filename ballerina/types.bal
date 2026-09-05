@@ -57,19 +57,26 @@ public enum DeploymentType {
 # rejects the `engine` parameter inside the index mapping's `method` block outright, filling in
 # `faiss` itself. Neither variant exposes the field, so a wrong value is not expressible rather
 # than rejected at construction.
+# NMSLIB is deliberately absent: it was deprecated in OpenSearch 2.16 and removed in 3.0, where
+# creating a new NMSLIB index is blocked outright. Offering it would hand callers a value that
+# degrades filtering on 2.x and fails index creation on 3.x.
 public enum Engine {
-    # Facebook AI Similarity Search. The only engine Serverless Classic supports, and the only one
-    # under which efficient k-NN pre-filtering works.
+    # Facebook AI Similarity Search. The only engine Serverless Classic supports, and the engine
+    # the quantization parameters require.
     FAISS = "faiss",
     # Apache Lucene. Supports efficient k-NN pre-filtering; not available on Serverless.
-    LUCENE = "lucene",
-    # Non-Metric Space Library. Historical default on managed domains; does not support efficient
-    # k-NN pre-filtering and is rejected on Serverless.
-    NMSLIB = "nmslib"
+    LUCENE = "lucene"
 }
 
 # The vector quantization ratio applied to the `knn_vector` field, trading recall for memory.
 # `SERVERLESS_NEXTGEN` only — see `ServerlessNextGenDeployment.compressionLevel`.
+#
+# That restriction is this module's own scoping decision, not a server constraint. An earlier note
+# here claimed OpenSearch accepts `compression_level` beside a `method` block while silently
+# emptying the block's `parameters`; that was tested against OpenSearch 2.19.1 and is false. The
+# combination is accepted with `ef_construction`/`m` stored intact, and an incompatible pairing is
+# rejected loudly instead (`"faiss" does not support "4x" compression`). Offering these on a
+# managed domain would therefore be safe, and is simply not in scope for this release.
 public enum CompressionLevel {
     # No compression; vectors are stored at full precision.
     COMPRESSION_1X = "1x",
@@ -156,16 +163,21 @@ public type ServerlessClassicDeployment record {|
 
 # Targets an OpenSearch Serverless "NextGen" vector search collection. The only deployment that
 # exposes vector quantization, which it applies by default whether or not a caller asks.
-#
-# Note that the NextGen endpoint is per-account rather than per-collection, and identifies the
-# target collection through a signed `x-amz-aoss-collection-name` or `x-amz-aoss-collection-id`
-# header — set it via `Configuration.additionalHeaders`.
 public type ServerlessNextGenDeployment record {|
     # Discriminates this variant.
     SERVERLESS_NEXTGEN deploymentType;
     # SigV4 credentials. Serverless has no basic-auth path, so `BasicAuth` is not admitted here.
     # Required rather than defaulted, for the same reason as `ManagedDomainDeployment.auth`.
     auth:AuthConfig auth;
+    # The target collection's name, sent as a signed `x-amz-aoss-collection-name` header.
+    #
+    # The NextGen endpoint is per-account rather than per-collection, so the hostname alone does
+    # not say which collection a request is for — one of this or `collectionId` identifies it.
+    # Neither is required here, since a per-collection endpoint URL needs no such header.
+    string collectionName?;
+    # The target collection's id, sent as a signed `x-amz-aoss-collection-id` header. An
+    # alternative to `collectionName`; setting both is rejected at construction.
+    string collectionId?;
     # The vector quantization ratio, emitted as the `knn_vector` field's `compression_level`.
     #
     # Leaving this unset preserves the server's default, which is not lossless: NextGen provisions
@@ -185,6 +197,28 @@ public type ServerlessNextGenDeployment record {|
 |};
 
 # Configuration for the `knn_vector` field and the index-creation mapping this module generates.
+#
+# # These apply at index creation only
+# Every field here except `createIndexIfNotExists` is sent in exactly one request — the
+# `PUT /<index>` that `init` issues when the index does not yet exist. Once the index exists,
+# `init` sees it and returns without building a mapping at all, so **editing any of these has no
+# effect on an existing index, and produces no error**. The same is true of
+# `ManagedDomainDeployment.engine` and of `ServerlessNextGenDeployment.compressionLevel`/
+# `vectorMode`.
+#
+# Nothing in a later request restates them: a `_bulk` document carries a vector, and a `knn` query
+# carries a vector and `k`. Neither mentions `space_type`, `engine`, or `compression_level`, so the
+# server has nothing to disagree with and reports nothing. A changed `similarityMetric` keeps
+# returning scores computed under the original metric; a `compressionLevel` set to opt out of
+# `SERVERLESS_NEXTGEN`'s default quantization leaves the vectors quantized.
+#
+# `dimension` is not an exception. It is never checked against the embeddings this module sends —
+# a mismatched `dimension` beside unchanged embeddings simply works, and stays wrong silently. An
+# error appears only when the *embeddings themselves* change length, because OpenSearch then
+# rejects the vector against the stored mapping, at the first `add` rather than at `init`.
+#
+# To actually change the shape of an existing index, reindex into a new one. This module does not
+# update mappings.
 public type IndexConfig record {|
     # The dimensionality of the dense vectors stored in this index. No client-side ceiling is
     # enforced — AWS's own documentation disagrees on the maximum (10,000 on some pages, 16,000 on
@@ -255,7 +289,13 @@ public type Configuration record {|
     # Whether to convert a `cosinesimil` `_score` back to a `[-1, 1]` cosine similarity
     # (`cos = 2 * score - 1`) before returning it as `VectorMatch.similarityScore`. Applies only
     # when `indexConfig.similarityMetric` is `COSINE`; ignored otherwise.
-    boolean normalizeCosineScore = false;
+    #
+    # Defaults to `true` so `VectorMatch.similarityScore` means the same thing here as it does in
+    # `ai:InMemoryVectorStore`, which returns a true cosine in `[-1, 1]`. OpenSearch's raw
+    # `cosinesimil` `_score` is `[0, 1]`, so leaving this off would make a threshold tuned against
+    # any other `ai:VectorStore` implementation silently mean something else against this one.
+    # Set `false` to get OpenSearch's `_score` through untouched.
+    boolean normalizeCosineScore = true;
     # The maximum number of entries per `_bulk` request issued by `add`. Large `add` calls are
     # chunked into requests of at most this size, to stay under the endpoint's HTTP payload cap.
     int maxBulkSize = 500;
@@ -263,10 +303,6 @@ public type Configuration record {|
     # upper bound enforced on an explicit `topK`. OpenSearch's own `k`/`size` ceiling is 10,000;
     # raise this only if the index's `index.max_result_window` setting has also been raised.
     int maxResultWindow = 10000;
-    # Extra headers to include, and SigV4-sign, on every request. Needed for AOSS's per-account
-    # NextGen endpoint, which identifies the target collection via a signed
-    # `x-amz-aoss-collection-name` or `x-amz-aoss-collection-id` header rather than the hostname.
-    map<string> additionalHeaders = {};
     # Retry behavior for transient failures.
     RetryConfig retryConfig = {};
 |};

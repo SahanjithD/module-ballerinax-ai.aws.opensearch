@@ -41,18 +41,22 @@ isolated class OpenSearchTransport {
     private final map<string> & readonly additionalHeaders;
     private final RetryConfig & readonly retryConfig;
     private final boolean refreshOnWrite;
+    private final boolean retryWrites;
 
     isolated function init(string serviceUrl, aws:Region|string region, Deployment deployment,
-            map<string> additionalHeaders, RetryConfig retryConfig, http:ClientConfiguration httpConfig)
-            returns ai:Error? {
+            RetryConfig retryConfig, http:ClientConfiguration httpConfig) returns ai:Error? {
         self.host = check extractHost(serviceUrl);
         self.signingName = deployment is ManagedDomainDeployment ? SIGNING_NAME_MANAGED : SIGNING_NAME_SERVERLESS;
         self.region = region;
-        self.additionalHeaders = additionalHeaders.cloneReadOnly();
+        self.additionalHeaders = buildCollectionHeaders(deployment).cloneReadOnly();
         self.retryConfig = retryConfig.cloneReadOnly();
         // Only a managed domain can force a refresh, and only that variant carries the field —
         // the Serverless generations have a fixed, unforceable refresh interval.
         self.refreshOnWrite = deployment is ManagedDomainDeployment && deployment.refreshOnWrite;
+        // Classic rejects a custom document `_id`, so a `_bulk` add carries none and a retry after
+        // a partially-applied batch appends the same documents again. Everywhere else the action
+        // line names an `_id`, which makes the retry an idempotent upsert.
+        self.retryWrites = deployment !is ServerlessClassicDeployment;
 
         Auth authConfig = deployment.auth;
         if authConfig is BasicAuth {
@@ -135,9 +139,15 @@ isolated class OpenSearchTransport {
     # managed domain — both Serverless generations have a fixed, unforceable refresh interval.
     #
     # + body - The exact NDJSON bytes to sign and send; an empty body is a no-op
+    # + isIndexingBatch - Whether this batch indexes documents rather than deleting them. On a
+    # deployment that cannot carry a custom `_id` such a batch is not retried after a `5xx` or a
+    # connection failure: the server may already have applied part of it, and a second attempt
+    # would append those documents again rather than replace them. Delete batches leave this
+    # `false` — a repeated delete is idempotent on every deployment type, and
+    # `extractDeleteFailures` already ignores `not_found`
     # + return - The parsed bulk response (which may itself carry per-item failures — see
     # `extractIndexFailures`/`extractDeleteFailures`), or an `ai:Error` on a transport/HTTP failure
-    isolated function bulk(byte[] body) returns BulkResponse|ai:Error {
+    isolated function bulk(byte[] body, boolean isIndexingBatch = false) returns BulkResponse|ai:Error {
         if body.length() == 0 {
             return {errors: false, items: []};
         }
@@ -145,8 +155,9 @@ isolated class OpenSearchTransport {
         if self.refreshOnWrite {
             queryParams["refresh"] = "wait_for";
         }
+        boolean retryable = self.retryWrites || !isIndexingBatch;
         http:Response resp = check self.sendSigned("POST", "/_bulk", queryParams,
-                {"content-type": "application/x-ndjson"}, body);
+                {"content-type": "application/x-ndjson"}, body, retryable);
         if resp.statusCode != 200 {
             return mapErrorResponse(resp);
         }
@@ -208,10 +219,13 @@ isolated class OpenSearchTransport {
     # + queryParams - Query parameters, unencoded
     # + extraHeaders - Extra headers to sign and send, e.g. `content-type`
     # + payload - The exact request body bytes
+    # + retryable - Whether this request may be re-sent after a retryable status or a connection
+    # failure. `false` for a batch whose replay could duplicate data
     # + return - The HTTP response (any status code), or an `ai:Error` if signing or the transport
     # itself fails after exhausting retries
     private isolated function sendSigned(string method, string path, map<string> queryParams,
-            map<string> extraHeaders, byte[] payload) returns http:Response|ai:Error {
+            map<string> extraHeaders, byte[] payload, boolean retryable = true)
+            returns http:Response|ai:Error {
         map<string> headersToSign = {};
         foreach [string, string] [name, value] in self.additionalHeaders.entries() {
             headersToSign[name] = value;
@@ -257,16 +271,16 @@ isolated class OpenSearchTransport {
         }
 
         string fullPath = queryParams.length() == 0 ? path : path + "?" + check buildQueryString(queryParams);
-        return self.executeWithRetry(method, fullPath, request);
+        return self.executeWithRetry(method, fullPath, request, retryable);
     }
 
-    private isolated function executeWithRetry(string method, string path, http:Request request)
-            returns http:Response|ai:Error {
+    private isolated function executeWithRetry(string method, string path, http:Request request,
+            boolean retryable) returns http:Response|ai:Error {
         int attempt = 0;
         decimal delay = self.retryConfig.initialDelay;
         while true {
             http:Response|http:ClientError result = self.httpClient->execute(method, path, request);
-            boolean shouldRetry = attempt < self.retryConfig.maxRetries &&
+            boolean shouldRetry = retryable && attempt < self.retryConfig.maxRetries &&
                     (result is http:ClientError || isRetryableStatus(result.statusCode));
             if !shouldRetry {
                 if result is http:ClientError {
@@ -275,11 +289,84 @@ isolated class OpenSearchTransport {
                 return result;
             }
             attempt += 1;
-            runtime:sleep(delay);
+            // A `Retry-After` is the server stating when it will have capacity again, which is
+            // better information than the backoff curve's guess. It is still clamped to
+            // `maxDelay`, so a server (or a proxy in front of it) naming an implausible interval
+            // cannot park the calling thread for it.
+            decimal sleepFor = delay;
+            if result is http:Response {
+                decimal? retryAfter = retryAfterSeconds(result);
+                if retryAfter is decimal {
+                    sleepFor = retryAfter < self.retryConfig.maxDelay ? retryAfter : self.retryConfig.maxDelay;
+                }
+            }
+            runtime:sleep(sleepFor);
             decimal nextDelay = delay * self.retryConfig.backoffFactor;
             delay = nextDelay < self.retryConfig.maxDelay ? nextDelay : self.retryConfig.maxDelay;
         }
     }
+}
+
+# Builds the signed headers that identify the target collection on a Serverless NextGen endpoint.
+#
+# The NextGen endpoint is per-account rather than per-collection, so the hostname alone does not
+# say which collection a request is for. Every other deployment type needs no such header, and a
+# per-collection NextGen endpoint does not either — hence both fields being optional.
+#
+# + deployment - The target deployment
+# + return - The headers to sign and send on every request, empty when none apply
+isolated function buildCollectionHeaders(Deployment deployment) returns map<string> {
+    if deployment !is ServerlessNextGenDeployment {
+        return {};
+    }
+    string? collectionName = deployment?.collectionName;
+    if collectionName is string {
+        return {"x-amz-aoss-collection-name": collectionName};
+    }
+    string? collectionId = deployment?.collectionId;
+    if collectionId is string {
+        return {"x-amz-aoss-collection-id": collectionId};
+    }
+    return {};
+}
+
+# Reads a `Retry-After` header as a whole number of seconds.
+#
+# Only the delay-seconds form is honored. RFC 9110 also permits an HTTP-date, but neither
+# OpenSearch nor the AOSS proxy sends one, and misreading a date as a duration would produce a
+# sleep far longer than any backoff this module would otherwise choose. An unparseable or negative
+# value falls back to the computed delay.
+#
+# + response - The HTTP response to read
+# + return - The delay in seconds, or `()` when the header is absent or not a usable duration
+isolated function retryAfterSeconds(http:Response response) returns decimal? {
+    string|error header = response.getHeader("retry-after");
+    if header !is string {
+        return ();
+    }
+    int|error seconds = int:fromString(header.trim());
+    if seconds !is int || seconds < 0 {
+        return ();
+    }
+    return <decimal>seconds;
+}
+
+# Extracts the AWS request id from a response, for correlating a failure with AWS support.
+#
+# The header name differs by endpoint: AOSS returns `x-amzn-RequestId`, while managed domains and
+# the S3-style edge return `x-amz-request-id`. HTTP header lookup is case-insensitive, so the
+# lower-case spellings here match either casing on the wire.
+#
+# + response - The HTTP response to read
+# + return - The request id, or `()` when the response carries none
+isolated function extractRequestId(http:Response response) returns string? {
+    foreach string name in ["x-amzn-requestid", "x-amz-request-id", "x-amzn-request-id"] {
+        string|error value = response.getHeader(name);
+        if value is string && value.trim().length() > 0 {
+            return value;
+        }
+    }
+    return ();
 }
 
 # Determines whether an HTTP status code warrants a retry with exponential backoff.
@@ -379,9 +466,13 @@ isolated function isUnreservedCodepoint(int codepoint) returns boolean {
 # keeps working; `openSearchRootCauseType` carries the nested classification, and is present only
 # when the response actually wraps a different one.
 #
+# `requestId` carries the AWS request id from the response headers when the endpoint sent one. It
+# is the identifier AWS support asks for, and it exists nowhere else in the response body, so a
+# failure that has to be escalated is otherwise unattributable after the fact.
+#
 # + response - The non-2xx HTTP response
-# + return - The mapped error, carrying `status` and (when available) `openSearchErrorType` and
-# `openSearchRootCauseType` as detail fields
+# + return - The mapped error, carrying `status`, `requestId`, `openSearchErrorType` and
+# `openSearchRootCauseType` as detail fields, each nil when the response did not supply it
 isolated function mapErrorResponse(http:Response response) returns ai:Error {
     int status = response.statusCode;
     string reason = "";
@@ -404,14 +495,11 @@ isolated function mapErrorResponse(http:Response response) returns ai:Error {
         : string `OpenSearch request failed with status ${status}`;
     message += hintForStatus(status);
 
-    if errorType is string {
-        if rootCauseType is string {
-            return error ai:Error(message, status = status, openSearchErrorType = errorType,
-                    openSearchRootCauseType = rootCauseType);
-        }
-        return error ai:Error(message, status = status, openSearchErrorType = errorType);
-    }
-    return error ai:Error(message, status = status);
+    // Every field is attached unconditionally, absent ones as nil. An absent key and a nil-valued
+    // key read the same way through `detail()[...]`, and one construction site is easier to keep
+    // correct than the eight branches the combinations would otherwise need.
+    return error ai:Error(message, status = status, requestId = extractRequestId(response),
+            openSearchErrorType = errorType, openSearchRootCauseType = rootCauseType);
 }
 
 # Builds the actionable, status-specific hint appended to a mapped error message.

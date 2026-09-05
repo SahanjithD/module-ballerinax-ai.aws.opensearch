@@ -248,3 +248,65 @@ isolated function testCompressionLevelWithoutVectorModeIsAllowed() {
     test:assertTrue(result is (),
             "'COMPRESSION_1X' is only rejected alongside 'ON_DISK', which is not set here");
 }
+
+// --- rule 6: the two NextGen collection headers are alternatives -------------------------------
+
+@test:Config
+isolated function testBothCollectionIdentifiersRejected() {
+    ServerlessNextGenDeployment deployment = {
+        deploymentType: SERVERLESS_NEXTGEN,
+        auth: TEST_CREDENTIALS,
+        collectionName: "vectors",
+        collectionId: "abc123"
+    };
+    ai:Error? result = validateConfiguration(VALID_URL, deployment, ai:DENSE, validConfig());
+    if result !is ai:Error {
+        test:assertFail("naming a collection twice should be rejected, not silently resolved");
+    }
+    test:assertTrue(result.message().includes("alternatives"),
+            string `the message should say they are alternatives, got: ${result.message()}`);
+}
+
+@test:Config
+isolated function testEitherCollectionIdentifierAloneIsAccepted() {
+    ServerlessNextGenDeployment byName = {
+        deploymentType: SERVERLESS_NEXTGEN,
+        auth: TEST_CREDENTIALS,
+        collectionName: "vectors"
+    };
+    ServerlessNextGenDeployment byId = {
+        deploymentType: SERVERLESS_NEXTGEN,
+        auth: TEST_CREDENTIALS,
+        collectionId: "abc123"
+    };
+    test:assertTrue(validateConfiguration(VALID_URL, byName, ai:DENSE, validConfig()) is ());
+    test:assertTrue(validateConfiguration(VALID_URL, byId, ai:DENSE, validConfig()) is ());
+}
+
+// --- the signed collection headers -------------------------------------------------------------
+
+@test:Config
+isolated function testCollectionHeadersOnlyOnNextGen() {
+    test:assertEquals(buildCollectionHeaders(managedDeployment()), {},
+                                                                   "a managed domain identifies its target by hostname");
+    test:assertEquals(buildCollectionHeaders(classicDeployment()), {},
+                                                                   "a Classic endpoint is per-collection, so it needs no header");
+    test:assertEquals(buildCollectionHeaders(nextGenDeployment()), {},
+                                                                   "an unset collection means a per-collection NextGen endpoint; no header to send");
+}
+
+@test:Config
+isolated function testCollectionNameAndIdMapToTheirHeaders() {
+    ServerlessNextGenDeployment byName = {
+        deploymentType: SERVERLESS_NEXTGEN,
+        auth: TEST_CREDENTIALS,
+        collectionName: "vectors"
+    };
+    ServerlessNextGenDeployment byId = {
+        deploymentType: SERVERLESS_NEXTGEN,
+        auth: TEST_CREDENTIALS,
+        collectionId: "abc123"
+    };
+    test:assertEquals(buildCollectionHeaders(byName), {"x-amz-aoss-collection-name": "vectors"});
+    test:assertEquals(buildCollectionHeaders(byId), {"x-amz-aoss-collection-id": "abc123"});
+}

@@ -120,20 +120,20 @@ opensearch:VectorStore vectorStore = check new (
     serviceUrl = "https://my-domain.us-east-1.es.amazonaws.com",
     region = "us-east-1",
     indexName = "my-knowledge-base",
-    deployment = {
+    deploymentConfig = {
         deploymentType: opensearch:MANAGED_DOMAIN,
         auth: auth:DEFAULT_CREDENTIALS
     },
-    config = {indexConfig: {dimension: 1536}}
+    storeConfig = {indexConfig: {dimension: 1536}}
 );
 ```
 
-`deployment` is required, and selects one of three record types. Each exposes only the settings its
+`deploymentConfig` is required, and selects one of three record types. Each exposes only the settings its
 flavour actually honors — so a setting that does not apply cannot be named at all:
 
 ```ballerina
 // Managed domain: the only flavour with a selectable engine, basic auth, or a forced refresh.
-deployment = {
+deploymentConfig = {
     deploymentType: opensearch:MANAGED_DOMAIN,
     auth: {username: "...", password: "..."},
     engine: opensearch:LUCENE,
@@ -142,15 +142,16 @@ deployment = {
 
 // Serverless Classic: credentials only. Faiss is the sole engine it supports, and its refresh
 // interval is fixed, so neither is a choice.
-deployment = {
+deploymentConfig = {
     deploymentType: opensearch:SERVERLESS_CLASSIC,
     auth: auth:DEFAULT_CREDENTIALS
 }
 
 // Serverless NextGen: the only flavour exposing vector quantization.
-deployment = {
+deploymentConfig = {
     deploymentType: opensearch:SERVERLESS_NEXTGEN,
     auth: auth:DEFAULT_CREDENTIALS,
+    collectionName: "my-collection",   // or collectionId; needed on a per-account endpoint
     vectorMode: opensearch:IN_MEMORY,
     compressionLevel: opensearch:COMPRESSION_1X
 }
@@ -162,7 +163,7 @@ misconfiguration until it surfaces as a 403 from a principal nobody intended to 
 `auth:DEFAULT_CREDENTIALS` to opt into that chain explicitly.
 
 Settings honored identically everywhere — `dimension`, `similarityMetric`, `efConstruction`, `m`,
-field names, bulk sizing, retries — live on `config` instead, so switching deployments carries
+field names, bulk sizing, retries — live on `storeConfig` instead, so switching deployments carries
 them across untouched.
 
 By default (`IndexConfig.createIndexIfNotExists = true`), `init` creates the index with the
@@ -228,19 +229,19 @@ platform, not a bug in this module.
 
 ### Authentication
 
-Credentials are part of the `deployment` argument, since which mechanisms are available depends on
+Credentials are part of the `deploymentConfig` argument, since which mechanisms are available depends on
 the flavour.
 
 ```ballerina
 // Static keys
-deployment = {..., auth: {accessKeyId: "...", secretAccessKey: "..."}}
+deploymentConfig = {..., auth: {accessKeyId: "...", secretAccessKey: "..."}}
 
 // The standard AWS credential chain (recommended)
-deployment = {..., auth: auth:DEFAULT_CREDENTIALS}
+deploymentConfig = {..., auth: auth:DEFAULT_CREDENTIALS}
 
 // HTTP basic auth — requires FGAC + an internal user database, and is accepted only by
 // `ManagedDomainDeployment`. Neither Serverless variant's `auth` field admits this type.
-deployment = {deploymentType: opensearch:MANAGED_DOMAIN, auth: {username: "...", password: "..."}}
+deploymentConfig = {deploymentType: opensearch:MANAGED_DOMAIN, auth: {username: "...", password: "..."}}
 ```
 
 ### Index configuration (`IndexConfig`)
@@ -280,6 +281,27 @@ compile.
 > Both fields are declared on `ServerlessNextGenDeployment` alone, so they are simply not
 > expressible against a managed domain or a Classic collection.
 
+> [!WARNING]
+> **Index-shape settings apply only when the index is created.** `dimension`, `similarityMetric`,
+> `efConstruction`, `m`, `engine`, `compressionLevel` and `vectorMode` are sent in exactly one
+> request — the `PUT /<index>` that `init` issues when the index does not yet exist. After that,
+> `init` sees the index and returns without building a mapping, so **editing any of them has no
+> effect and produces no error.**
+>
+> Nothing in a later request restates them: a `_bulk` document carries a vector, and a `knn` query
+> carries a vector and `k`. Neither mentions `space_type`, `engine` or `compression_level`, so the
+> server has nothing to disagree with. A changed `similarityMetric` keeps returning scores computed
+> under the original metric; a `compressionLevel` set to opt out of NextGen's default quantization
+> leaves the vectors quantized.
+>
+> `dimension` is not an exception — it is never checked against the embeddings this module sends. A
+> mismatched `dimension` beside unchanged embeddings simply works and stays wrong silently. An error
+> appears only when the *embeddings themselves* change length, at the first `add` rather than at
+> `init`.
+>
+> To change the shape of an existing index, reindex into a new one. This module does not update
+> mappings.
+
 ### Other configuration (`Configuration`)
 
 | Field | Default | Notes |
@@ -289,21 +311,25 @@ compile.
 | `idFieldName` | `"doc_id"` | The field carrying the logical entry id; always written, and the only identity handle on `SERVERLESS_CLASSIC` |
 | `metadataFieldName` | `"metadata"` | Set to `""` to address bare `<key>` paths — for pointing this module at a pre-existing index with a flat schema. A metadata key that would then collide with a reserved field name (`embedding`, `content`, `doc_id`, `chunk_type`) is rejected with an `ai:Error` rather than silently overwriting that field |
 | `includeEmbeddingsInResults` | `true` | Set `false` to exclude the vector from `_source` — a meaningful bandwidth saving at high dimensions and large `topK` |
-| `normalizeCosineScore` | `false` | Converts a `cosinesimil` `_score` back to `[-1, 1]` (`cos = 2 * score - 1`); see below |
+| `normalizeCosineScore` | `true` | Converts a `cosinesimil` `_score` back to `[-1, 1]` (`cos = 2 * score - 1`), so scores mean the same thing as in `ai:InMemoryVectorStore`. Set `false` for OpenSearch's raw `_score`; see below |
 | `maxBulkSize` | `500` | Entries per `_bulk` request; `add` chunks larger batches automatically |
 | `maxResultWindow` | `10000` | The `size` used when `topK < 1` ("return all"), and the ceiling enforced on an explicit `topK` |
-| `additionalHeaders` | `{}` | Extra headers, **SigV4-signed** — needed for a Serverless NextGen per-account endpoint's `x-amz-aoss-collection-name`/`x-amz-aoss-collection-id` header |
 | `retryConfig` | exponential backoff, 3 retries | Applied to `429`/`408`/`5xx` responses |
 
 ### Similarity score range
 
-`VectorMatch.similarityScore` passes OpenSearch's raw `_score` through by default, and its range
-is space-dependent: `l2` gives `(0, 1]`, `innerproduct` is piecewise, and `cosinesimil` gives
-`[0, 1]` rather than the `[-1, 1]` a caller may expect from "cosine similarity". Set
-`normalizeCosineScore = true` (with `similarityMetric: ai:COSINE`) to convert it back to
-`[-1, 1]`. When a query has no embedding (a metadata-only filter, or neither embedding nor
-filters), OpenSearch's constant score is not a similarity at all, so `similarityScore` is always
-`0.0` for those matches.
+Under `ai:COSINE`, `VectorMatch.similarityScore` is a true cosine in `[-1, 1]` — the same range
+`ai:InMemoryVectorStore` returns, so a threshold tuned against one store means the same thing
+against the other. That conversion (`cos = 2 * score - 1`) is what `normalizeCosineScore = true`
+does, and it is the default for exactly that reason.
+
+Set `normalizeCosineScore = false` to get OpenSearch's raw `_score` instead. Its range is
+space-dependent: `cosinesimil` gives `[0, 1]`, `l2` gives `(0, 1]`, and `innerproduct` is
+piecewise. The setting applies only under `ai:COSINE`; the other metrics always pass through.
+
+When a query has no embedding (a metadata-only filter, or neither embedding nor filters),
+OpenSearch's constant score is not a similarity at all, so `similarityScore` is always `0.0` for
+those matches regardless of this setting.
 
 ## Limitations
 

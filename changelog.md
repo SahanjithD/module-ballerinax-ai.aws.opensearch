@@ -5,6 +5,16 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
 ## [Unreleased]
 
 ### Added
+- `ServerlessNextGenDeployment.collectionName` and `.collectionId`, which become the signed
+  `x-amz-aoss-collection-name`/`x-amz-aoss-collection-id` headers a per-account NextGen endpoint
+  needs to know which collection a request is for. They replace the free-form
+  `Configuration.additionalHeaders` map, which offered the same capability untyped and on every
+  deployment type, including the two where no such header means anything. Setting both is rejected
+  at construction.
+- The AWS request id is now carried on every mapped error as a `requestId` detail field, read from
+  `x-amzn-RequestId` (AOSS) or `x-amz-request-id` (managed domains). It appears nowhere in the
+  response body, so a failure that has to be escalated to AWS support was previously
+  unattributable after the fact. This module read no response headers at all before.
 - Initial implementation of `VectorStore` integration with Amazon OpenSearch, covering
   managed domains and both OpenSearch Serverless generations (Classic and NextGen).
 - SigV4 request signing via `ballerinax/aws.auth`, plus HTTP basic auth for managed domains
@@ -41,7 +51,31 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   and a `hybrid` query with a normalization search pipeline for `HYBRID`, both behind an
   opt-in `Configuration.searchPipeline` field.
 
+### Changed
+- `init`'s `config` parameter is renamed `storeConfig` (display label "Store Configuration"), so it
+  reads as a pair with `deploymentConfig` rather than as a second unqualified "Configuration".
+- `Configuration.normalizeCosineScore` now defaults to `true`. `ai:InMemoryVectorStore` returns a
+  true cosine in `[-1, 1]`; OpenSearch's raw `cosinesimil` `_score` is `[0, 1]`. With the old
+  default, a similarity threshold tuned against any other `ai:VectorStore` implementation silently
+  meant something different against this one. Set `false` for the raw `_score`.
+- `Engine.NMSLIB` is removed. NMSLIB was deprecated in OpenSearch 2.16 and removed in 3.0, where
+  creating a new NMSLIB index is blocked outright; it also never supported efficient k-NN
+  pre-filtering. `Engine` is now `FAISS`/`LUCENE`, and is selectable only on a managed domain.
+- `Configuration.additionalHeaders` is removed in favour of the two typed NextGen fields above.
+
 ### Fixed
+- A `_bulk` batch that indexes documents is no longer retried after a `5xx` or a connection failure
+  on `SERVERLESS_CLASSIC`. That deployment rejects a custom document `_id`, so the action line
+  carries none, and a retry after the server had already applied part of the batch appended those
+  documents a second time — silently, since `add` then reported success. Everywhere else the
+  action line names an `_id`, which makes the retry an idempotent upsert, so retries are unchanged
+  there. Delete batches are retried on every deployment type: a repeated delete is idempotent and
+  `not_found` is already ignored.
+- A `Retry-After` header on a `429`/`503` is now honoured instead of being ignored in favour of the
+  computed backoff delay, clamped to `RetryConfig.maxDelay` so an implausible value cannot park the
+  calling thread. Only the delay-seconds form is read; the RFC 9110 HTTP-date form is not sent by
+  OpenSearch or the AOSS proxy, and misreading one as a duration would be worse than falling back
+  to the curve.
 - HNSW tuning (`IndexConfig.efConstruction`/`m`) now reaches `SERVERLESS_NEXTGEN`. The module
   previously sent NextGen no `method` block at all, because the block it built always carried
   `engine`, which the AOSS proxy rejects with a flat
@@ -71,6 +105,18 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   `error.type`.
 
 ### Documentation
+- `IndexConfig` and the README now state that index-shape settings apply only at index creation.
+  `dimension`, `similarityMetric`, `efConstruction`, `m`, `engine`, `compressionLevel` and
+  `vectorMode` are sent in the single `PUT /<index>` that `init` issues when the index does not
+  exist; afterwards `init` returns early and editing them has no effect and raises no error,
+  because no later request restates them. `dimension` is not an exception — it is never compared
+  against the embeddings this module sends, so a mismatched value beside unchanged embeddings stays
+  wrong silently, and an error appears only when the embeddings themselves change length.
+- The note claiming OpenSearch accepts `compression_level` beside a `method` block while silently
+  emptying the block's `parameters` is withdrawn: tested against OpenSearch 2.19.1, the combination
+  is accepted with `ef_construction`/`m` stored intact, and an incompatible pairing is rejected
+  loudly instead (`"faiss" does not support "4x" compression`). Keeping the quantization fields
+  `SERVERLESS_NEXTGEN`-only is therefore this module's scoping decision, not a server constraint.
 - Documented that on `SERVERLESS_CLASSIC`, a successful construction does not mean the index can
   be queried yet: a newly created index answers `_mapping` and `_settings` immediately while
   `_search`/`_count` still fail with `index_not_found_exception` for roughly ten seconds. It is a

@@ -97,11 +97,11 @@ public isolated class VectorStore {
     # `https://<account-id>.aoss.<region>.on.aws` for a Serverless NextGen endpoint
     # + region - The AWS region the endpoint is in
     # + indexName - The OpenSearch index this store reads and writes
-    # + deployment - The target deployment and its flavour-specific settings — credentials, which
-    # are required rather than defaulted, and whichever of
-    # `engine`/`refreshOnWrite`/`compressionLevel`/`vectorMode` that flavour actually honors.
-    # Settings shared by all three live on `config` instead
-    # + config - Index-shape and behavioral configuration honored on every deployment type
+    # + deploymentConfig - The target deployment and its flavour-specific settings — credentials,
+    # which are required rather than defaulted, and whichever of
+    # `engine`/`refreshOnWrite`/`collectionName`/`collectionId`/`compressionLevel`/`vectorMode`
+    # that flavour actually honors. Settings shared by all three live on `storeConfig` instead
+    # + storeConfig - Index-shape and behavioral configuration honored on every deployment type
     # + queryMode - Reserved for future sparse/hybrid support; only `ai:DENSE` is accepted in this
     # release
     # + httpConfig - Underlying HTTP client configuration. `httpVersion` and
@@ -115,17 +115,17 @@ public isolated class VectorStore {
             @display {label: "Service URL"} string serviceUrl,
             @display {label: "Region"} aws:Region|string region,
             @display {label: "Index Name"} string indexName,
-            @display {label: "Deployment"} Deployment deployment,
-            @display {label: "Configuration"} Configuration config = {indexConfig: {dimension: 1536}},
+            @display {label: "Deployment Configuration"} Deployment deploymentConfig,
+            @display {label: "Store Configuration"} Configuration storeConfig = {indexConfig: {dimension: 1536}},
             @display {label: "Query Mode"} ai:VectorStoreQueryMode queryMode = ai:DENSE,
             @display {label: "HTTP Configuration"} http:ClientConfiguration httpConfig = {})
             returns ai:Error? {
-        check validateConfiguration(serviceUrl, deployment, queryMode, config);
+        check validateConfiguration(serviceUrl, deploymentConfig, queryMode, storeConfig);
 
-        OpenSearchTransport transport = check new (serviceUrl, region, deployment,
-            config.additionalHeaders, config.retryConfig, httpConfig
+        OpenSearchTransport transport = check new (serviceUrl, region, deploymentConfig,
+            storeConfig.retryConfig, httpConfig
         );
-        ai:Error? ensureResult = ensureIndex(transport, indexName, config, deployment);
+        ai:Error? ensureResult = ensureIndex(transport, indexName, storeConfig, deploymentConfig);
         if ensureResult is ai:Error {
             // Best-effort cleanup; the closing outcome is intentionally not surfaced so it
             // cannot mask the more relevant `ensureResult` failure below.
@@ -139,8 +139,8 @@ public isolated class VectorStore {
 
         self.transport = transport;
         self.indexName = indexName;
-        self.deployment = deployment.cloneReadOnly();
-        self.config = config.cloneReadOnly();
+        self.deployment = deploymentConfig.cloneReadOnly();
+        self.config = storeConfig.cloneReadOnly();
     }
 
     # Adds vector entries to the store. Entries without an `id` receive a generated UUID.
@@ -158,7 +158,7 @@ public isolated class VectorStore {
 
         foreach PreparedEntry[] batch in chunkPreparedEntries(prepared, self.config.maxBulkSize) {
             byte[] body = check buildAddBulkBody(batch, self.indexName, self.deployment, self.config);
-            BulkResponse response = check self.transport.bulk(body);
+            BulkResponse response = check self.transport.bulk(body, isIndexingBatch = true);
             // Attributed by position against this batch's ids, so a failure names the caller's
             // entry even on `SERVERLESS_CLASSIC`, where the response `_id` is server-generated.
             string[] submittedIds = from PreparedEntry entry in batch
@@ -318,6 +318,11 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
                 string `${config.maxResultWindow}`);
     }
     if deployment is ServerlessNextGenDeployment {
+        if deployment?.collectionName is string && deployment?.collectionId is string {
+            return error("'ServerlessNextGenDeployment.collectionName' and '.collectionId' are " +
+                    "alternatives; set at most one. Sending both collection headers leaves it to " +
+                    "the AOSS proxy to decide which one identifies the target collection");
+        }
         check validateQuantization(deployment);
     }
 }

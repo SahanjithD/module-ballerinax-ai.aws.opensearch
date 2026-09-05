@@ -124,7 +124,11 @@ isolated function testContainerQueryIncludesEmbeddingsByDefault() returns error?
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryRawCosineScore() returns error? {
     string indexName = containerIndexName("q-rawscore");
-    VectorStore store = check newContainerStore(indexName);
+    Configuration config = {
+        indexConfig: {dimension: CONTAINER_DIMENSION},
+        normalizeCosineScore: false
+    };
+    VectorStore store = check newContainerStore(indexName, config);
     check store.add([entry("same", vec(1.0)), entry("orthogonal", vec(0.0, 1.0))]);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 2});
@@ -139,6 +143,7 @@ isolated function testContainerQueryRawCosineScore() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryNormalizedCosineScore() returns error? {
     string indexName = containerIndexName("q-normscore");
+    // Normalization is the default; named explicitly here so the test reads against its opposite.
     Configuration config = {
         indexConfig: {dimension: CONTAINER_DIMENSION},
         normalizeCosineScore: true

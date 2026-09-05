@@ -19,6 +19,11 @@ import ballerina/test;
 
 isolated function queryConfig() returns Configuration => {indexConfig: {dimension: 3}};
 
+// `normalizeCosineScore` defaults to `true`, so a test that wants OpenSearch's raw `_score` has to
+// ask for it. See `testHitToVectorMatchNormalizesCosineByDefault` for why that is the default.
+isolated function rawScoreConfig() returns Configuration =>
+    {indexConfig: {dimension: 3}, normalizeCosineScore: false};
+
 isolated function asJsonMap(json value) returns map<json>|error => value.ensureType();
 
 // --- the four (embedding, filters) combinations ------------------------------------------------
@@ -209,7 +214,8 @@ isolated function testHitToVectorMatchNestedMetadata() returns error? {
     test:assertEquals('match.embedding, <ai:Vector>[0.1, 0.2, 0.3]);
     test:assertEquals('match.chunk.content, "hello");
     test:assertEquals('match.chunk.metadata, {"language": "en"});
-    test:assertEquals('match.similarityScore, 0.75);
+    // 0.75 normalized: `2 * 0.75 - 1`.
+    test:assertEquals('match.similarityScore, 0.5);
 }
 
 @test:Config
@@ -258,8 +264,19 @@ isolated function testHitToVectorMatchScoreZeroedWhenNotMeaningful() returns err
 @test:Config
 isolated function testHitToVectorMatchScorePassedThroughWhenMeaningful() returns error? {
     SearchHit hit = {_id: "1", _score: 0.42, _source: {"content": "x"}};
-    ai:VectorMatch 'match = check hitToVectorMatch(hit, queryConfig(), true);
+    ai:VectorMatch 'match = check hitToVectorMatch(hit, rawScoreConfig(), true);
     test:assertEquals('match.similarityScore, 0.42);
+}
+
+// The default exists so `similarityScore` means the same thing here as in
+// `ai:InMemoryVectorStore`, which returns a true cosine in [-1, 1]. OpenSearch's `cosinesimil`
+// `_score` is [0, 1], so without this a threshold tuned against any other `ai:VectorStore`
+// implementation would silently mean something else against this one.
+@test:Config
+isolated function testHitToVectorMatchNormalizesCosineByDefault() returns error? {
+    SearchHit hit = {_id: "1", _score: 0.42, _source: {"content": "x"}};
+    ai:VectorMatch 'match = check hitToVectorMatch(hit, queryConfig(), true);
+    test:assertEquals('match.similarityScore, <float>(2 * 0.42 - 1));
 }
 
 @test:Config
