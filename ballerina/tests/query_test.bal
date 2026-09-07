@@ -314,3 +314,156 @@ isolated function testHitToVectorMatchDefaultsToTextChunkWhenTypeAbsent() return
     ai:VectorMatch 'match = check hitToVectorMatch(hit, queryMode(), {}, true);
     test:assertEquals('match.chunk.'type, "text-chunk");
 }
+
+// --- sparse query bodies ----------------------------------------------------------------------
+
+@test:Config
+isolated function testSparseQueryUsesNeuralSparseWithQueryTokens() returns error? {
+    ai:VectorStoreQuery query = {embedding: {indices: [1055, 2048], values: [5.5, 1.25]}};
+    json body = check buildSearchBody(query, sparseMode(), {});
+    map<json> bodyMap = check asJsonMap(body);
+    map<json> queryClause = check asJsonMap(bodyMap["query"]);
+    map<json> neuralSparse = check asJsonMap(queryClause["neural_sparse"]);
+    map<json> sparseField = check asJsonMap(neuralSparse["sparse_embedding"]);
+    test:assertEquals(sparseField["query_tokens"], <json>{"1055": 5.5, "2048": 1.25});
+    test:assertFalse(queryClause.hasKey("knn"), "a SPARSE query must carry no knn clause");
+}
+
+// `neural_sparse` over a rank_features field has no `filter` parameter of its own, so the filter
+// has to be a sibling inside a `bool`. A bool.filter clause does not contribute to `_score`, so
+// the sparse dot product stays the sole score.
+@test:Config
+isolated function testSparseQueryPutsFilterAsBoolSibling() returns error? {
+    ai:VectorStoreQuery query = {
+        embedding: {indices: [1055], values: [5.5]},
+        filters: {filters: [{key: "language", operator: ai:EQUAL, value: "en"}]}
+    };
+    json body = check buildSearchBody(query, sparseMode(), {});
+    map<json> bodyMap = check asJsonMap(body);
+    map<json> boolClause = check asJsonMap((check asJsonMap(bodyMap["query"]))["bool"]);
+    json[] must = check boolClause["must"].ensureType();
+    json[] filter = check boolClause["filter"].ensureType();
+    test:assertEquals(must.length(), 1);
+    test:assertEquals(filter.length(), 1);
+    map<json> neuralSparse = check asJsonMap((check asJsonMap(must[0]))["neural_sparse"]);
+    map<json> sparseField = check asJsonMap(neuralSparse["sparse_embedding"]);
+    test:assertFalse(sparseField.hasKey("filter"),
+            "neural_sparse over rank_features takes no filter parameter; it must be a bool sibling");
+}
+
+@test:Config
+isolated function testSparseQueryHonoursCustomFieldName() returns error? {
+    ai:VectorStoreQuery query = {embedding: {indices: [1], values: [0.5]}};
+    json body = check buildSearchBody(query, sparseMode("tokens"), {});
+    map<json> neuralSparse = check asJsonMap((check asJsonMap((check asJsonMap(body))["query"]))["neural_sparse"]);
+    test:assertTrue(neuralSparse.hasKey("tokens"));
+}
+
+@test:Config
+isolated function testSparseQueryExcludesSparseFieldFromSource() returns error? {
+    json body = check buildSearchBody({}, sparseMode(), {includeEmbeddingsInResults: false});
+    map<json> sourceDirective = check asJsonMap((check asJsonMap(body))["_source"]);
+    test:assertEquals(sourceDirective["excludes"], <json[]>["sparse_embedding"]);
+}
+
+// A query weight outside Lucene's (0, 64] fails the search with a shard exception naming nothing
+// useful, so it is caught here instead.
+@test:Config
+isolated function testSparseQueryRejectsWeightAboveLuceneCeiling() {
+    ai:VectorStoreQuery query = {embedding: {indices: [1], values: [64.1]}};
+    json|ai:Error result = buildSearchBody(query, sparseMode(), {});
+    if result !is ai:Error {
+        test:assertFail("a query weight above 64 must be rejected before the request is sent");
+    }
+    test:assertTrue(result.message().includes("(0, 64]"));
+}
+
+// One Lucene clause per term, bounded by the cluster's indices.query.bool.max_clause_count.
+// Exceeding it is a `too_many_clauses` shard exception that names neither the limit nor the query.
+@test:Config
+isolated function testSparseQueryRejectsTooManyTokens() {
+    int[] indices = [];
+    float[] values = [];
+    foreach int index in 0 ..< 5 {
+        indices.push(index);
+        values.push(1.0);
+    }
+    ai:VectorStoreQuery query = {embedding: {indices, values}};
+    json|ai:Error result = buildSearchBody(query, sparseMode("sparse_embedding", 4), {});
+    if result !is ai:Error {
+        test:assertFail("a query wider than 'maxQueryTokens' must be rejected before the wire");
+    }
+    test:assertTrue(result.message().includes("max_clause_count"),
+            string `the message should explain the ceiling, got: ${result.message()}`);
+}
+
+@test:Config
+isolated function testSparseQueryWithoutEmbeddingIsMatchAll() returns error? {
+    json body = check buildSearchBody({}, sparseMode(), {});
+    map<json> queryClause = check asJsonMap((check asJsonMap(body))["query"]);
+    test:assertTrue(queryClause.hasKey("match_all"));
+}
+
+// --- mode/embedding strictness on the query path ----------------------------------------------
+
+@test:Config
+isolated function testSparseModeRejectsDenseQueryEmbedding() {
+    json|ai:Error result = buildSearchBody({embedding: [0.1, 0.2, 0.3]}, sparseMode(), {});
+    if result !is ai:Error {
+        test:assertFail("a dense query embedding must be rejected by a SPARSE store");
+    }
+    test:assertTrue(result.message().includes("ai:SparseVector"));
+}
+
+@test:Config
+isolated function testDenseModeRejectsSparseQueryEmbedding() {
+    json|ai:Error result = buildSearchBody({embedding: {indices: [1], values: [0.5]}}, queryMode(), {});
+    if result !is ai:Error {
+        test:assertFail("a sparse query embedding must be rejected by a DENSE store");
+    }
+    test:assertTrue(result.message().includes("ai:Vector"));
+}
+
+@test:Config
+isolated function testDenseModeRejectsHybridQueryEmbedding() {
+    ai:VectorStoreQuery query = {embedding: {dense: [0.1], sparse: {indices: [1], values: [0.5]}}};
+    json|ai:Error result = buildSearchBody(query, queryMode(), {});
+    test:assertTrue(result is ai:Error, "a hybrid query embedding must be rejected by a DENSE store");
+}
+
+// --- reading a sparse hit back ----------------------------------------------------------------
+
+@test:Config
+isolated function testHitToVectorMatchSparseReturnsSparseVector() returns error? {
+    SearchHit hit = {
+        _id: "1",
+        _score: 14.75,
+        _source: {"sparse_embedding": {"9": 0.1, "2": 0.2}, "content": "hello", "doc_id": "1"}
+    };
+    ai:VectorMatch hitMatch = check hitToVectorMatch(hit, sparseMode(), {}, true);
+    ai:Embedding embedding = hitMatch.embedding;
+    if embedding !is ai:SparseVector {
+        test:assertFail("a SPARSE store must return an ai:SparseVector");
+    }
+    test:assertEquals(embedding.indices, [2, 9]);
+}
+
+// A sparse score is an unbounded dot product. The cosine transform lives on DenseSearch and is
+// unreachable here, so the raw score has to come through untouched.
+@test:Config
+isolated function testSparseScoreIsNotCosineNormalized() returns error? {
+    SearchHit hit = {_id: "1", _score: 14.75, _source: {"doc_id": "1"}};
+    ai:VectorMatch hitMatch = check hitToVectorMatch(hit, sparseMode(), {}, true);
+    test:assertEquals(hitMatch.similarityScore, 14.75);
+}
+
+@test:Config
+isolated function testSparseHitWithNoStoredVectorReturnsEmptySparseVector() returns error? {
+    SearchHit hit = {_id: "1", _score: 1.0, _source: {"content": "hello", "doc_id": "1"}};
+    ai:VectorMatch hitMatch = check hitToVectorMatch(hit, sparseMode(), {}, true);
+    ai:Embedding embedding = hitMatch.embedding;
+    if embedding !is ai:SparseVector {
+        test:assertFail("a SPARSE store must return an ai:SparseVector even when the field is excluded");
+    }
+    test:assertEquals(embedding.indices, []);
+}

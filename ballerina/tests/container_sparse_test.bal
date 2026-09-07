@@ -80,3 +80,94 @@ isolated function testContainerSparseZeroWeightIsRejectedBeforeTheWire() returns
     test:assertEquals(check documentCount(indexName), 0, "nothing should have reached the server");
     check store.close();
 }
+// The gating test for the whole sparse design: it proves the `neural-search` plugin is present in
+// the container image and that raw `query_tokens` scoring works with no model deployed anywhere.
+// The expected order is the plain dot product of the query weights against the stored ones.
+@test:Config {groups: ["docker"]}
+isolated function testContainerSparseQueryRanksByDotProduct() returns error? {
+    string indexName = containerIndexName("sparse-rank");
+    VectorStore store = check newSparseContainerStore(indexName);
+    check store.add([
+        // against query {1055: 2.0, 2048: 3.0}: 2*5.5 + 3*1.25 = 14.75
+        sparseVectorEntry("alpha", [1055, 2048], [5.5, 1.25]),
+        // 3*4.0 = 12.0
+        sparseVectorEntry("gamma", [2048], [4.0]),
+        // 2*1.0 = 2.0
+        sparseVectorEntry("beta", [1055, 3000], [1.0, 9.0], "fr")
+    ]);
+
+    ai:VectorMatch[] matches = check store.query({
+        embedding: {indices: [1055, 2048], values: [2.0, 3.0]},
+        topK: 10
+    });
+    test:assertEquals(matches.length(), 3);
+    test:assertEquals(matches[0].id, "alpha");
+    test:assertEquals(matches[1].id, "gamma");
+    test:assertEquals(matches[2].id, "beta");
+    check store.close();
+}
+
+// A sparse score is an unbounded dot product, not a similarity in [0, 1]. This pins that the
+// cosine transform is never applied to it -- 14.75 could not survive `2 * score - 1`.
+@test:Config {groups: ["docker"]}
+isolated function testContainerSparseScoreIsUnboundedAndUntransformed() returns error? {
+    string indexName = containerIndexName("sparse-score");
+    VectorStore store = check newSparseContainerStore(indexName);
+    check store.add([sparseVectorEntry("alpha", [1055, 2048], [5.5, 1.25])]);
+
+    ai:VectorMatch[] matches = check store.query({
+        embedding: {indices: [1055, 2048], values: [2.0, 3.0]},
+        topK: 1
+    });
+    test:assertTrue(matches[0].similarityScore > 1.0,
+            string `a sparse dot product is unbounded above 1.0, got: ${matches[0].similarityScore}`);
+    assertScoreCloseTo(matches[0].similarityScore, 14.75, "the score should be the raw dot product");
+    check store.close();
+}
+
+// `neural_sparse` over a rank_features field takes no `filter` parameter of its own, so the filter
+// travels as a sibling inside a `bool`. This proves that shape actually filters.
+@test:Config {groups: ["docker"]}
+isolated function testContainerSparseFilterAppliesAsBoolSibling() returns error? {
+    string indexName = containerIndexName("sparse-filter");
+    VectorStore store = check newSparseContainerStore(indexName);
+    check store.add([
+        sparseVectorEntry("english", [1055], [5.0], "en"),
+        sparseVectorEntry("french", [1055], [9.0], "fr")
+    ]);
+
+    ai:VectorMatch[] matches = check store.query({
+        embedding: {indices: [1055], values: [2.0]},
+        filters: {filters: [{key: "language", operator: ai:EQUAL, value: "en"}]},
+        topK: 10
+    });
+    test:assertEquals(matches.length(), 1, "the French entry should have been filtered out");
+    test:assertEquals(matches[0].id, "english");
+    check store.close();
+}
+
+
+// `rank_features` keeps roughly nine significant bits, so a round-tripped weight carries about
+// 0.4% relative error. Asserted as a tolerance so nobody later writes an exact-equality check
+// here and watches it flake.
+@test:Config {groups: ["docker"]}
+isolated function testContainerSparseRoundTripIsLossy() returns error? {
+    string indexName = containerIndexName("sparse-roundtrip");
+    VectorStore store = check newSparseContainerStore(indexName);
+    check store.add([sparseVectorEntry("alpha", [7, 9], [0.3, 2.5])]);
+
+    ai:VectorMatch[] matches = check store.query({embedding: {indices: [7], values: [1.0]}, topK: 1});
+    ai:Embedding embedding = matches[0].embedding;
+    if embedding !is ai:SparseVector {
+        test:assertFail("a SPARSE store must return an ai:SparseVector");
+    }
+    test:assertEquals(embedding.indices, [7, 9], "indices must come back sorted ascending");
+    foreach int position in 0 ..< 2 {
+        float expected = [0.3, 2.5][position];
+        float actual = embedding.values[position];
+        float drift = (actual - expected) / expected;
+        test:assertTrue(drift < 0.01 && drift > -0.01,
+                string `a stored weight should be within 1% of the original, got ${actual} for ${expected}`);
+    }
+    check store.close();
+}

@@ -398,19 +398,20 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
     json queryClause;
     if embedding is () {
         queryClause = filterClause is () ? {"match_all": {}} : {"bool": {"filter": [filterClause]}};
-    } else {
-        if searchMode !is DenseSearch {
-            return error(string `Querying with an embedding is not yet implemented for ` +
-                    string `'${searchMode.queryMode}' query mode`);
+    } else if searchMode is SparseSearch {
+        if embedding !is ai:SparseVector {
+            return embeddingMismatchError("The query", embedding, searchMode);
         }
+        queryClause = check buildSparseQueryClause(embedding, searchMode.sparseVectorFieldName,
+                searchMode.maxQueryTokens, filterClause);
+    } else if searchMode is HybridSearch {
+        return error(string `Querying with an embedding is not yet implemented for ` +
+                string `'${searchMode.queryMode}' query mode`);
+    } else {
         if embedding !is ai:Vector {
             return embeddingMismatchError("The query", embedding, searchMode);
         }
-        map<json> knnBody = {"vector": embedding.cloneReadOnly(), "k": size};
-        if filterClause !is () {
-            knnBody["filter"] = filterClause;
-        }
-        queryClause = {"knn": {[<string>denseFieldNameOf(searchMode)]: knnBody}};
+        queryClause = buildDenseQueryClause(embedding, searchMode.vectorFieldName, size, filterClause);
     }
 
     return {
@@ -419,6 +420,59 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
         "track_total_hits": false,
         "query": queryClause
     };
+}
+
+# Builds the `knn` clause for a dense query, pre-filtering inside the clause rather than with
+# `post_filter`, which can silently return fewer than `k` results.
+#
+# + embedding - The query vector
+# + vectorFieldName - The `knn_vector` field to search
+# + size - The `k` to request
+# + filterClause - The translated metadata filter, or `()`
+# + return - The `knn` clause
+isolated function buildDenseQueryClause(ai:Vector embedding, string vectorFieldName, int size,
+        json? filterClause) returns json {
+    map<json> knnBody = {"vector": embedding.cloneReadOnly(), "k": size};
+    if filterClause !is () {
+        knnBody["filter"] = filterClause;
+    }
+    return {"knn": {[vectorFieldName]: knnBody}};
+}
+
+# Builds the `neural_sparse` clause for a sparse query, wrapped in a `bool` when there is a filter.
+#
+# The filter is a **sibling** of the `neural_sparse` clause rather than a parameter of it: a
+# `neural_sparse` query over a `rank_features` field has no `filter` parameter at all (only the
+# `sparse_vector` ANN field type, which is OpenSearch 3.3+, accepts one under `method_parameters`).
+# `bool.filter` clauses do not contribute to `_score`, so the sparse dot product remains the sole
+# score.
+#
+# The token-count ceiling is checked here rather than left to the server. A `neural_sparse` query
+# compiles to one Lucene clause per term, so a query vector with more terms than the cluster's
+# `indices.query.bool.max_clause_count` fails as a `too_many_clauses` shard exception that names
+# neither the limit that was hit nor the query that hit it.
+#
+# + embedding - The query sparse vector
+# + sparseVectorFieldName - The `rank_features` field to search
+# + maxQueryTokens - The client-side ceiling on the number of non-zero terms
+# + filterClause - The translated metadata filter, or `()`
+# + return - The query clause, or an `ai:Error` if the vector is invalid or too wide
+isolated function buildSparseQueryClause(ai:SparseVector embedding, string sparseVectorFieldName,
+        int maxQueryTokens, json? filterClause) returns json|ai:Error {
+    int tokenCount = embedding.indices.length();
+    if tokenCount > maxQueryTokens {
+        return error(string `The query sparse vector has ${tokenCount} terms, which exceeds the ` +
+                string `configured 'maxQueryTokens' (${maxQueryTokens}). A 'neural_sparse' query ` +
+                "becomes one Lucene clause per term and is bounded by the cluster's " +
+                "'indices.query.bool.max_clause_count'; prune the query vector to its highest-weighted " +
+                "terms, or raise both that cluster setting and 'maxQueryTokens'");
+    }
+    map<float> queryTokens = check toSparseTokenMap(embedding, "The query", MAX_QUERY_TOKEN_WEIGHT);
+    json neuralSparse = {"neural_sparse": {[sparseVectorFieldName]: {"query_tokens": queryTokens}}};
+    if filterClause is () {
+        return neuralSparse;
+    }
+    return {"bool": {"must": [neuralSparse], "filter": [filterClause]}};
 }
 
 # Recursively translates `ai:MetadataFilters`/`ai:MetadataFilter` into an OpenSearch `bool` query
@@ -609,16 +663,7 @@ isolated function hitToVectorMatch(SearchHit hit, SearchMode searchMode, Configu
     json idValue = src[config.idFieldName];
     string id = idValue is string ? idValue : hit._id;
 
-    ai:Vector embedding = [];
-    string? denseFieldName = denseFieldNameOf(searchMode);
-    json vectorValue = denseFieldName is string ? src[denseFieldName] : ();
-    if vectorValue is json[] {
-        ai:Vector|error converted = vectorValue.cloneWithType();
-        if converted is error {
-            return error(string `Failed to parse the stored embedding for entry '${id}'`, converted);
-        }
-        embedding = converted;
-    }
+    ai:Embedding embedding = check readStoredEmbedding(src, searchMode, id);
 
     string content = "";
     json contentValue = src[config.contentFieldName];
@@ -658,6 +703,65 @@ isolated function hitToVectorMatch(SearchHit hit, SearchMode searchMode, Configu
         chunk,
         similarityScore
     };
+}
+
+# Reads whichever `ai:Embedding` member this store's `SearchMode` stores back out of a `_source`
+# document.
+#
+# An absent or excluded field yields that member's empty value rather than an error, since
+# `Configuration.includeEmbeddingsInResults = false` legitimately omits it and
+# `ai:VectorMatch.embedding` is not optional.
+#
+# + src - The stored `_source` document
+# + searchMode - The store's search mode
+# + id - The entry id, used to name the offending entry in an error message
+# + return - The embedding, or an `ai:Error` if what is stored cannot be parsed
+isolated function readStoredEmbedding(map<json> src, SearchMode searchMode, string id)
+        returns ai:Embedding|ai:Error {
+    if searchMode is SparseSearch {
+        return readStoredSparse(src, searchMode.sparseVectorFieldName, id);
+    }
+    if searchMode is HybridSearch {
+        return {
+            dense: check readStoredDense(src, searchMode.vectorFieldName, id),
+            sparse: check readStoredSparse(src, searchMode.sparseVectorFieldName, id)
+        };
+    }
+    return readStoredDense(src, searchMode.vectorFieldName, id);
+}
+
+# Reads the stored dense vector, or `[]` when the field is absent or excluded.
+#
+# + src - The stored `_source` document
+# + vectorFieldName - The `knn_vector` field
+# + id - The entry id, used to name the offending entry in an error message
+# + return - The vector, or an `ai:Error` if what is stored is not an array of numbers
+isolated function readStoredDense(map<json> src, string vectorFieldName, string id)
+        returns ai:Vector|ai:Error {
+    json vectorValue = src[vectorFieldName];
+    if vectorValue !is json[] {
+        return [];
+    }
+    ai:Vector|error converted = vectorValue.cloneWithType();
+    if converted is error {
+        return error(string `Failed to parse the stored embedding for entry '${id}'`, converted);
+    }
+    return converted;
+}
+
+# Reads the stored sparse vector, or an empty one when the field is absent or excluded.
+#
+# + src - The stored `_source` document
+# + sparseVectorFieldName - The `rank_features` field
+# + id - The entry id, used to name the offending entry in an error message
+# + return - The sparse vector, or an `ai:Error` if a stored token is not an integer index
+isolated function readStoredSparse(map<json> src, string sparseVectorFieldName, string id)
+        returns ai:SparseVector|ai:Error {
+    json sparseValue = src[sparseVectorFieldName];
+    if sparseValue !is map<json> {
+        return {indices: [], values: []};
+    }
+    return sparseFromRankFeatures(sparseValue, id);
 }
 
 # Extracts the metadata portion of a stored `_source` document, honoring
