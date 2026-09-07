@@ -46,12 +46,53 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   `on_disk`/`32x` when nothing is configured, so vectors are quantized by default with no
   diagnostic; `IN_MEMORY` with `COMPRESSION_1X` opts out. Both are unset by default, which leaves
   the server's behavior exactly as it was.
-- Dense-vector search only in this release; `SPARSE`/`HYBRID` embeddings return a clear
-  `ai:Error`. Planned for a future release: `rank_features` + `neural_sparse` for `SPARSE`,
-  and a `hybrid` query with a normalization search pipeline for `HYBRID`, both behind an
-  opt-in `Configuration.searchPipeline` field.
+- `SPARSE` search, backed by a `rank_features` field and a `neural_sparse` query carrying
+  precomputed `query_tokens`. An `ai:SparseVector`'s `indices` become the token names and its
+  `values` the weights, sent as they are — no ML model, ingest pipeline or `index.knn` setting is
+  involved. Metadata filters travel as a `bool` sibling of the `neural_sparse` clause, since that
+  clause has no `filter` parameter of its own over a `rank_features` field.
+- `HYBRID` search, issuing a `knn` and a `neural_sparse` sub-query as one `hybrid` query with the
+  scores normalized and combined server-side. The `normalization-processor` is sent inline in the
+  request body on every query and nothing is provisioned: fusion weights are query-time semantics,
+  so binding them to durable cluster state would leave them silently stale after a retune; an AOSS
+  search pipeline is a collection-scoped resource, so provisioning would widen this module's IAM
+  surface beyond index scope; and it avoids AWS's documented up-to-15-second Serverless pipeline
+  propagation delay. `HybridSearchConfig` exposes the normalization technique, the combination
+  technique and a dense/sparse weight pair. A pipeline already on the cluster can be named
+  instead, via `NamedSearchPipeline` — a separate union member, so naming one and setting the
+  inline knobs cannot both happen, which OpenSearch rejects outright.
+- Hybrid metadata filters are duplicated into each sub-query rather than sent as a top-level
+  `hybrid.filter`, which is OpenSearch 3.0+ only. The two forms are documented as equivalent, and
+  duplicating works on every version that has the `hybrid` query at all.
+- Sparse weights are validated against Lucene's bounds before anything is sent: a stored weight
+  must be finite and at least `Float.MIN_NORMAL` (so zero and negative weights are rejected rather
+  than silently dropped), a query weight must additionally be in `(0, 64]`, and a repeated index is
+  rejected. They are rejected rather than clamped, because clamping would silently rewrite the
+  ranking the caller's encoder produced. A query is also capped at `maxQueryTokens` terms (default
+  1024), since `neural_sparse` compiles to one Lucene clause per term and the cluster's
+  `indices.query.bool.max_clause_count` bounds it.
+- Colliding document field names are rejected at construction. Every configurable name addresses a
+  field in the same document, so a duplicate previously produced a broken index with no diagnostic
+  — `vectorFieldName: "content"` mapped the chunk text as a `knn_vector` and then overwrote it on
+  every write. `HYBRID` makes this easier to hit, since it names two vector fields.
 
 ### Changed
+- `init` takes a `searchMode` parameter, a closed union of `DenseSearch`, `SparseSearch` and
+  `HybridSearch`, in place of the `queryMode` enum that only ever accepted `ai:DENSE`. This
+  mirrors what `Deployment` already does for the cluster flavours: each variant declares only the
+  settings its mode honors, so a combination that does not apply is a type error rather than a
+  silently ignored field. `Configuration.indexConfig`, `.vectorFieldName` and
+  `.normalizeCosineScore` moved onto the variants that honor them, and a `SparseSearch` therefore
+  cannot name a vector dimension, a similarity metric, an HNSW parameter or a cosine transform at
+  all — a `rank_features` index has no use for any of them.
+- A caller moving a `DENSE` store to `HYBRID` loses `normalizeCosineScore`. This is deliberate
+  rather than an oversight: a hybrid score has already been normalized to `(0.0, 1.0]` by the
+  fusion pipeline, so there is no cosine left to recover and the transform would corrupt it. It is
+  still a capability that does not carry across, and is named here rather than left to be
+  discovered.
+- `IndexConfig.createIndexIfNotExists` moved to `Configuration.createIndexIfNotExists`. It governs
+  whether `init` performs any network I/O, not what the index looks like, and every search mode
+  needs the same opt-out — `IndexConfig` already singled it out as the exception among its fields.
 - `init`'s `config` parameter is renamed `storeConfig` (display label "Store Configuration"), so it
   reads as a pair with `deploymentConfig` rather than as a second unqualified "Configuration".
 - `Configuration.normalizeCosineScore` now defaults to `true`. `ai:InMemoryVectorStore` returns a

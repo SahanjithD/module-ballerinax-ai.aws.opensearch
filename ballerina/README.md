@@ -16,8 +16,10 @@ user database).
 
 - Managed OpenSearch Service domains and both OpenSearch Serverless generations (Classic and
   NextGen), each with correct SigV4 signing, index-mapping, and delete semantics
-- Automatic index creation with a `knn_vector` mapping, opt-out-able for least-privilege
-  deployments
+- Dense, sparse and hybrid search, selected once at construction through a closed `SearchMode`
+  union so a setting that does not apply to the chosen mode cannot be named at all
+- Automatic index creation with the right mapping for the mode — `knn_vector`, `rank_features`,
+  or both — opt-out-able for least-privilege deployments
 - Full metadata filtering (`==`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `nin`, nested `AND`/`OR`)
   translated to native OpenSearch `bool` queries, pre-filtered inside the `knn` clause
 - `time:Utc` metadata round-trips through RFC 3339 strings; `fileSize` round-trips through
@@ -26,12 +28,66 @@ user database).
   partial-failure responses (OpenSearch returns HTTP 200 even when individual items fail)
 - GraalVM-compatible
 
-### Scope
+### Search modes
 
-This release supports **dense vectors only**. `add`/`query` return an `ai:Error` for a
-`SparseVector`/`HybridVector` embedding. Sparse/hybrid support is left as a documented future
-extension point (see `changelog.md`) built on OpenSearch's `neural_sparse`/`hybrid` query
-features and a search pipeline, once those are needed.
+The `searchMode` argument decides the index mapping, which `ai:Embedding` member `add` and `query`
+accept, and how results are scored. The match is checked in both directions: a store built for one
+mode and handed another's embedding fails rather than writing a field no query reads.
+
+| Mode | Embedding | Index field | Query clause | `similarityScore` range |
+|---|---|---|---|---|
+| `DenseSearch` | `ai:Vector` | `knn_vector` | `knn` | `[-1, 1]` cosine by default; otherwise space-dependent |
+| `SparseSearch` | `ai:SparseVector` | `rank_features` | `neural_sparse` | **unbounded** positive dot product |
+| `HybridSearch` | `ai:HybridVector` | both | `hybrid` + fusion pipeline | `(0.0, 1.0]` |
+
+```ballerina
+// Sparse: no dimension, no similarity metric, no HNSW tuning -- a rank_features index has none.
+searchMode = {queryMode: ai:SPARSE}
+
+// Hybrid: both vector fields, and how their scores are fused.
+searchMode = {
+    queryMode: ai:HYBRID,
+    indexConfig: {dimension: 1536},
+    fusion: {denseWeight: 0.3, sparseWeight: 0.7}
+}
+```
+
+Sparse vectors are **precomputed by the caller**: an `ai:SparseVector`'s `indices` become
+`rank_features` token names and its `values` become the weights, sent as-is. No ML model, ingest
+pipeline or `index.knn` setting is involved, and nothing needs to be deployed server-side.
+
+> [!IMPORTANT]
+> `SPARSE` and `HYBRID` need the `neural-search` plugin. It ships in the standard OpenSearch
+> distribution and is present on AWS managed domains from **2.9**; raw sparse `query_tokens`
+> additionally need **2.14+**, and the `hybrid` query needs **2.11+**. AWS documents
+> `neural_sparse` and `hybrid` for Serverless without distinguishing collection generation, so
+> both are permitted on every deployment type here — but neither has been verified against a real
+> Serverless collection, and a Classic vector search collection may yet reject a `rank_features`
+> mapping.
+
+#### Hybrid score fusion
+
+A `hybrid` query needs a normalization search pipeline; without one OpenSearch does not fail, it
+leaks large negative sentinel scores into the results. This module sends the pipeline **inline in
+the request body on every query** and provisions nothing:
+
+- fusion weights are query-time semantics, so binding them to durable cluster state would leave
+  them silently stale the moment you retuned one;
+- an OpenSearch Serverless search pipeline is a *collection*-scoped resource, so provisioning
+  would require `aoss:CreateCollectionItems` on top of this module's index-scoped needs;
+- it sidesteps AWS's documented **up-to-15-second** Serverless pipeline propagation delay.
+
+`HybridSearchConfig` exposes `normalization` (`MIN_MAX`, `L2`), `combination` (`ARITHMETIC_MEAN`,
+`GEOMETRIC_MEAN`, `HARMONIC_MEAN`) and the two weights, which must each be in `[0.0, 1.0]` and sum
+to `1.0`. To use a pipeline already on the cluster instead — for a least-privilege deployment, or
+to share one tuned pipeline — name it:
+
+```ballerina
+fusion = {name: "my-hybrid-pipeline"}
+```
+
+That is a separate union member, not an extra field, so naming a pipeline *and* setting the inline
+knobs is not expressible: OpenSearch rejects a request carrying both forms.
 
 ## Prerequisites
 
@@ -98,7 +154,7 @@ granting at least:
 ]
 ```
 
-Drop `aoss:CreateIndex` if you set `IndexConfig.createIndexIfNotExists = false` and manage the
+Drop `aoss:CreateIndex` if you set `Configuration.createIndexIfNotExists = false` and manage the
 index yourself.
 
 ## Quickstart
@@ -254,7 +310,6 @@ deploymentConfig = {deploymentType: opensearch:MANAGED_DOMAIN, auth: {username: 
 | `similarityMetric` | `ai:COSINE` | Maps to OpenSearch `space_type`: `COSINE`→`cosinesimil`, `EUCLIDEAN`→`l2`, `DOT_PRODUCT`→`innerproduct` |
 | `efConstruction` | `128` | HNSW build-time accuracy/speed trade-off. Honored on all three deployment types |
 | `m` | `16` | HNSW max bi-directional links per node. Honored on all three deployment types |
-| `createIndexIfNotExists` | `true` | When `false`, `init` performs **no network I/O at all** — including no existence check. See the warning below before setting it |
 
 `engine`, `compressionLevel`, and `vectorMode` are not here: they live on the `Deployment` variant
 that honors them (`ManagedDomainDeployment.engine`, and `compressionLevel`/`vectorMode` on
@@ -266,8 +321,10 @@ compile.
 > **`createIndexIfNotExists = false` against an index that does not exist corrupts silently.**
 > `init` does no existence check, and a missing index does not make `add` fail — OpenSearch ships
 > with `action.auto_create_index: true`, so the first `_bulk` write creates an index from the
-> document's inferred shape. That index has no `index.knn` setting and maps the vector as a plain
-> `float` array instead of a `knn_vector`. Writes keep succeeding; every `query` then fails with a
+> document's inferred shape. That index carries none of the mapping this module would have built:
+> under `DENSE`/`HYBRID` it has no `index.knn` setting and maps the vector as a plain `float`
+> array instead of a `knn_vector`, and under `SPARSE`/`HYBRID` it maps the token map as a nested
+> object instead of `rank_features`. Writes keep succeeding; every `query` then fails with a
 > `400`. Recovery means deleting the index and reindexing from source. Only set this to `false`
 > against an index you know was provisioned out of band with a compatible mapping.
 
@@ -304,21 +361,34 @@ compile.
 > To change the shape of an existing index, reindex into a new one. This module does not update
 > mappings.
 
+`IndexConfig` is reachable only from `DenseSearch` and `HybridSearch`. A `SparseSearch` maps no
+`knn_vector` field, so none of these settings exist there rather than being ignored.
+
 ### Other configuration (`Configuration`)
 
 | Field | Default | Notes |
 |---|---|---|
-| `vectorFieldName` | `"embedding"` | |
 | `contentFieldName` | `"content"` | |
 | `idFieldName` | `"doc_id"` | The field carrying the logical entry id; always written, and the only identity handle on `SERVERLESS_CLASSIC` |
-| `metadataFieldName` | `"metadata"` | Set to `""` to address bare `<key>` paths — for pointing this module at a pre-existing index with a flat schema. A metadata key that would then collide with a reserved field name (`embedding`, `content`, `doc_id`, `chunk_type`) is rejected with an `ai:Error` rather than silently overwriting that field |
-| `includeEmbeddingsInResults` | `true` | Set `false` to exclude the vector from `_source` — a meaningful bandwidth saving at high dimensions and large `topK` |
-| `normalizeCosineScore` | `true` | Converts a `cosinesimil` `_score` back to `[-1, 1]` (`cos = 2 * score - 1`), so scores mean the same thing as in `ai:InMemoryVectorStore`. Set `false` for OpenSearch's raw `_score`; see below |
+| `metadataFieldName` | `"metadata"` | Set to `""` to address bare `<key>` paths — for pointing this module at a pre-existing index with a flat schema. A metadata key that would then collide with a reserved field name (`embedding`, `sparse_embedding`, `content`, `doc_id`, `chunk_type`) is rejected with an `ai:Error` rather than silently overwriting that field |
+| `includeEmbeddingsInResults` | `true` | Set `false` to exclude every vector field the mode declares from `_source` — a meaningful bandwidth saving at high dimensions and large `topK`, and a larger one under `SPARSE`/`HYBRID` |
+| `createIndexIfNotExists` | `true` | When `false`, `init` performs **no network I/O at all** — including no existence check. See the warning under `IndexConfig` before setting it |
 | `maxBulkSize` | `500` | Entries per `_bulk` request; `add` chunks larger batches automatically |
 | `maxResultWindow` | `10000` | The `size` used when `topK < 1` ("return all"), and the ceiling enforced on an explicit `topK` |
 | `retryConfig` | exponential backoff, 3 retries | Applied to `429`/`408`/`5xx` responses |
 
+`vectorFieldName` and `normalizeCosineScore` are not here: they live on the `SearchMode` variant
+that honors them, alongside `sparseVectorFieldName` and `maxQueryTokens`. All the configurable
+field names must be distinct from each other and from the fixed `chunk_type`; a collision is
+rejected at construction rather than silently producing an index where one field overwrites
+another.
+
 ### Similarity score range
+
+**This section describes `DenseSearch` only.** A `SPARSE` score is an unbounded dot product and a
+`HYBRID` score is already normalized to `(0.0, 1.0]` by the fusion pipeline — see the table under
+"Search modes". `normalizeCosineScore` is not a field either of those modes declares, so the
+conversion below cannot be applied to them.
 
 Under `ai:COSINE`, `VectorMatch.similarityScore` is a true cosine in `[-1, 1]` — the same range
 `ai:InMemoryVectorStore` returns, so a threshold tuned against one store means the same thing
@@ -335,7 +405,25 @@ those matches regardless of this setting.
 
 ## Limitations
 
-- **Dense vectors only** in this release — see Scope above.
+- **A sparse `similarityScore` is not comparable to a dense one.** It is an unbounded dot
+  product, so a relevance threshold tuned against a dense store means nothing against a sparse
+  one.
+- **Sparse weights round-trip lossily.** `rank_features` keeps roughly nine significant bits, so
+  a returned weight carries about 0.4% relative error, and a returned sparse vector is always
+  sorted by index ascending regardless of the order it was written in. Never compare one to a
+  locally-held weight with exact float equality.
+- **Sparse weights are bounded by Lucene.** A stored weight must be finite and at least
+  `Float.MIN_NORMAL` — zero and negative weights cannot be indexed, so drop those terms rather
+  than sending them. A *query* weight must additionally be in `(0, 64]`. Both are rejected before
+  the request is sent rather than clamped, since clamping would silently rewrite your ranking.
+- **A sparse query is capped at `maxQueryTokens` terms** (default 1024), because `neural_sparse`
+  compiles to one Lucene clause per term and the cluster's `indices.query.bool.max_clause_count`
+  bounds it. Prune the query vector to its highest-weighted terms, or raise both.
+- **Hybrid metadata filters are duplicated into each sub-query** rather than sent as a top-level
+  `hybrid.filter`, which is OpenSearch 3.0+ only. The two are documented as equivalent.
+- **Sparse and hybrid are unverified on OpenSearch Serverless.** Both are exercised against
+  OpenSearch 2.19.1 in the integration suite; AWS documents the underlying queries for Serverless
+  but this module has not been run against a real collection.
 - **`topK` above `maxResultWindow`** is rejected; raise `maxResultWindow` (and the index's own
   `index.max_result_window` setting) if you need more than 10,000 results.
 - **A pre-existing index** this module did not create must map `metadata.*` (or, under a flat
@@ -356,7 +444,10 @@ those matches regardless of this setting.
 
 ## Examples
 
-The `ai.aws.opensearch` package provides a practical example illustrating real-world use.
+The `ai.aws.opensearch` package provides practical examples illustrating real-world use.
 
 1. [RAG search](https://github.com/ballerina-platform/module-ballerinax-ai.aws.opensearch/tree/main/examples/rag-search) —
    indexes a handful of text chunks and answers a similarity query with a metadata filter.
+2. [Hybrid search](https://github.com/ballerina-platform/module-ballerinax-ai.aws.opensearch/tree/main/examples/hybrid-search) —
+   indexes entries carrying both a dense and a sparse vector, and shows how the fusion weights
+   decide which sub-query wins.

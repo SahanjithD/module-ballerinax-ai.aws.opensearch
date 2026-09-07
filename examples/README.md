@@ -1,11 +1,16 @@
 ## Examples
 
-The Ballerina AWS OpenSearch vector store module provides a practical example illustrating usage.
-Explore this [example](https://github.com/ballerina-platform/module-ballerinax-ai.aws.opensearch/tree/main/examples).
+The Ballerina AWS OpenSearch vector store module provides practical examples illustrating usage.
+Explore these [examples](https://github.com/ballerina-platform/module-ballerinax-ai.aws.opensearch/tree/main/examples).
 
 1. [RAG search](https://github.com/ballerina-platform/module-ballerinax-ai.aws.opensearch/tree/main/examples/rag-search)
    This example shows how to use the AWS OpenSearch vector store APIs to index a handful of text
    chunks and run a similarity query combined with a metadata filter.
+
+2. [Hybrid search](https://github.com/ballerina-platform/module-ballerinax-ai.aws.opensearch/tree/main/examples/hybrid-search)
+   This example shows `HYBRID` mode, where each entry carries both a dense embedding and a sparse
+   term-weight vector and OpenSearch fuses the two scores. It also shows how the fusion weights
+   change which article wins.
 
 ## Prerequisites
 
