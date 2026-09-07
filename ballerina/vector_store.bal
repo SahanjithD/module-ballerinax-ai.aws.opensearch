@@ -23,6 +23,10 @@ import ballerinax/aws;
 # number of terms in a `terms` clause.
 const int DOC_ID_LOOKUP_CHUNK_SIZE = 65536;
 
+# How far the hybrid fusion weights may sum from 1.0 and still be accepted. Binary floating point
+# does not sum 0.7 and 0.3 to exactly 1.0, and rejecting that split would be absurd.
+const float WEIGHT_SUM_TOLERANCE = 1.0e-6;
+
 # The `SearchMode` a caller who names none gets: dense search over a 1536-dimensional vector, the
 # width of the most common general-purpose embedding models.
 #
@@ -45,7 +49,8 @@ final DenseSearch & readonly DEFAULT_SEARCH_MODE = {queryMode: ai:DENSE, indexCo
 # duplicate document there, since Serverless Classic vector collections reject a custom `_id` on
 # write. `delete` is a single `_bulk` call on the first two, and a search-then-bulk-delete on
 # `SERVERLESS_CLASSIC`; on all types, deleting a non-existent id is treated as success (this
-# module ignores `not_found`, unlike `ai:InMemoryVectorStore`, which errors).
+# module ignores `not_found`, unlike `ai:InMemoryVectorStore`, which errors). None of this varies
+# by `SearchMode` — `delete` never touches a vector field.
 #
 # Write visibility is immediate on a managed domain when `ManagedDomainDeployment.refreshOnWrite`
 # is set, otherwise governed by the index's normal refresh interval; on Serverless it is a fixed,
@@ -61,27 +66,56 @@ final DenseSearch & readonly DEFAULT_SEARCH_MODE = {queryMode: ai:DENSE, indexCo
 # it as fatal. This is not waited out inside `init`, which would otherwise pay the delay on every
 # Classic construction; see `ensureIndex`.
 #
+# # Search modes
+# The `SearchMode` chosen at construction decides the index mapping, which `ai:Embedding` member
+# `add` and `query` accept, and how a query is scored. The match is strict in both directions: a
+# store built for one mode and handed another's embedding fails rather than indexing a field no
+# query reads.
+#
+# `DENSE` maps a `knn_vector` field and queries it with a `knn` clause. `SPARSE` maps a
+# `rank_features` field and queries it with `neural_sparse` carrying precomputed `query_tokens`.
+# `HYBRID` maps both and issues them as one `hybrid` query, with the two scores normalized and
+# combined server-side.
+#
+# `SPARSE` and `HYBRID` need the `neural-search` plugin, which ships in the standard OpenSearch
+# distribution and is present on AWS managed domains from 2.9; raw `query_tokens` additionally
+# need OpenSearch 2.14 or later, and the `hybrid` query needs 2.11. AWS documents `neural_sparse`
+# and `hybrid` for Serverless without distinguishing collection generation, so both are permitted
+# on every `Deployment` here — but neither has been verified against a real Serverless collection,
+# and a Classic vector search collection may yet reject a `rank_features` mapping.
+#
 # # Similarity score range
-# `VectorMatch.similarityScore` passes the raw OpenSearch `_score` through by default. Its range
-# is space-dependent: `l2` gives `(0, 1]`, `innerproduct` is piecewise, and `cosinesimil` gives
-# `[0, 1]` rather than the `[-1, 1]` a caller may expect from "cosine similarity". Set
-# `Configuration.normalizeCosineScore = true` (valid only with `SimilarityMetric.COSINE`) to
-# convert it back to `[-1, 1]` (`cos = 2 * score - 1`). When a query has no embedding (a
-# metadata-only filter, or neither embedding nor filters), OpenSearch's constant score is not a
-# similarity at all, so `similarityScore` is always `0.0` for those matches regardless of this
-# setting.
+# What `VectorMatch.similarityScore` means depends on the mode, and the ranges do not line up:
+#
+# Under `DENSE`, it is the raw OpenSearch `_score`, whose range is space-dependent — `l2` gives
+# `(0, 1]`, `innerproduct` is piecewise, and `cosinesimil` gives `[0, 1]` rather than the
+# `[-1, 1]` a caller may expect from "cosine similarity". `DenseSearch.normalizeCosineScore`
+# (default `true`, and honored only under `COSINE`) converts it back to `[-1, 1]` via
+# `cos = 2 * score - 1`.
+#
+# Under `SPARSE`, it is the dot product of the query weights against the stored ones. It is
+# **unbounded above** and is not a similarity in `[0, 1]` at all — a threshold tuned against a
+# dense store means nothing here. The cosine transform is never applied, and cannot be: it is not
+# a field `SparseSearch` declares.
+#
+# Under `HYBRID`, it is the fused score, which `min_max` + `arithmetic_mean` puts in `(0.0, 1.0]`.
+# It has already been normalized by the pipeline, so no further transform applies.
+#
+# In every mode, a query with no embedding (a metadata-only filter, or neither embedding nor
+# filters) gets OpenSearch's constant score, which is not a similarity, so `similarityScore` is
+# always `0.0` for those matches.
 #
 # # Returned embeddings
-# `VectorMatch.embedding` is whatever storage holds, read straight back out of `_source`. It is
-# not guaranteed to be the vector that was passed to `add`. On `SERVERLESS_NEXTGEN` under
-# `COSINE`, storage holds a unit-normalized copy, so a round-tripped vector comes back with
-# magnitude 1 and the original magnitude is unrecoverable — AWS discards it at write time, and
-# nothing client-side can restore it. Do not treat a returned embedding as a byte-exact echo of
-# the input, and do not compare one to a locally-held vector with exact float equality.
+# `VectorMatch.embedding` is whatever storage holds, read straight back out of `_source`, in the
+# member this store's mode uses — an `ai:Vector`, an `ai:SparseVector`, or an `ai:HybridVector`.
+# It is not guaranteed to be what was passed to `add`, in any mode:
 #
-# # Scope
-# This release supports dense vectors only; `add`/`query` return an `ai:Error` for a
-# `SparseVector`/`HybridVector` embedding.
+# A stored `rank_features` weight keeps roughly nine significant bits, so a round-tripped sparse
+# weight carries about 0.4% relative error. A sparse vector also comes back sorted by index
+# ascending, whatever order it was written in. On `SERVERLESS_NEXTGEN` under `COSINE`, storage
+# holds a unit-normalized copy of the dense vector, so its original magnitude is unrecoverable —
+# AWS discards it at write time. A `HYBRID` round trip is therefore inexact on both halves at
+# once. Never compare a returned embedding to a locally-held one with exact float equality.
 #
 # # Note
 # The `close` method releases the underlying AWS credential provider's background refresh
@@ -158,8 +192,10 @@ public isolated class VectorStore {
     # Adds vector entries to the store. Entries without an `id` receive a generated UUID.
     # Chunked into `_bulk` requests of at most `Configuration.maxBulkSize` entries.
     #
-    # + entries - The vector entries to add. A `SparseVector`/`HybridVector` embedding on any
-    # entry fails the call — this release supports dense vectors only
+    # + entries - The vector entries to add. Every embedding must be the `ai:Embedding` member
+    # this store's `SearchMode` requires — an `ai:Vector` under `DENSE`, an `ai:SparseVector`
+    # under `SPARSE`, an `ai:HybridVector` under `HYBRID` — or the call fails naming the entry.
+    # A sparse weight outside Lucene's accepted range fails the same way, before anything is sent
     # + return - An `ai:Error` naming the failing entries if any `_bulk` item fails (OpenSearch
     # returns HTTP 200 even on partial failure — this is always checked explicitly), otherwise `()`
     public isolated function add(ai:VectorEntry[] entries) returns ai:Error? {
@@ -189,13 +225,15 @@ public isolated class VectorStore {
     # entry is returned (subject to `topK`) with `similarityScore: 0.0`.
     #
     # + query - The vector store query. Any `topK < 1` means "return all", capped at
-    # `Configuration.maxResultWindow`; an explicit `topK` above that ceiling is rejected. A
-    # `SparseVector`/`HybridVector` embedding fails the call — this release supports dense vectors
-    # only
+    # `Configuration.maxResultWindow`; an explicit `topK` above that ceiling is rejected. The
+    # embedding, when given, must be the member this store's `SearchMode` requires, matching
+    # `add`; under `SPARSE`/`HYBRID` it must also carry no more than `maxQueryTokens` terms, and
+    # every sparse weight must be in `(0, 64]`
     # + return - The matching entries, or an `ai:Error` on failure
     public isolated function query(ai:VectorStoreQuery query) returns ai:VectorMatch[]|ai:Error {
         json body = check buildSearchBody(query, self.searchMode, self.config);
-        SearchResponse response = check self.transport.search(self.indexName, body);
+        SearchResponse response = check self.transport.search(self.indexName, body,
+                searchPipelineName(self.searchMode));
         // buildSearchBody already rejected an embedding that does not match this store's
         // `SearchMode`, so any embedding still present here produced a scoring clause.
         boolean scoreIsMeaningful = query.embedding !is ();
@@ -314,13 +352,16 @@ public isolated class VectorStore {
 # + return - An `ai:Error` naming the first failing rule, otherwise `()`
 isolated function validateConfiguration(string serviceUrl, Deployment deployment,
         SearchMode searchMode, Configuration config) returns ai:Error? {
-    if searchMode is HybridSearch {
-        return error(string `This module supports 'ai:DENSE' and 'ai:SPARSE' query modes only; ` +
-                string `got '${searchMode.queryMode}'`);
-    }
     if searchMode is SparseSearch && searchMode.maxQueryTokens < 1 {
         return error(string `'SparseSearch.maxQueryTokens' must be a positive integer, got: ` +
                 string `${searchMode.maxQueryTokens}`);
+    }
+    if searchMode is HybridSearch {
+        if searchMode.maxQueryTokens < 1 {
+            return error(string `'HybridSearch.maxQueryTokens' must be a positive integer, got: ` +
+                    string `${searchMode.maxQueryTokens}`);
+        }
+        check validateHybridFusion(searchMode.fusion);
     }
     IndexConfig? indexConfig = indexConfigOf(searchMode);
     if indexConfig is IndexConfig && indexConfig.dimension < 1 {
@@ -352,6 +393,40 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
                     "the AOSS proxy to decide which one identifies the target collection");
         }
         check validateQuantization(deployment);
+    }
+}
+
+# Validates the fusion settings a `HYBRID` store will send, against the rules the
+# `normalization-processor` enforces server-side.
+#
+# Checked at construction rather than left to the server because a rejected weight list fails the
+# whole search, and the pipeline is sent inline on every query — so the same mistake would surface
+# on every call rather than once.
+#
+# + fusion - The fusion configuration to check
+# + return - An `ai:Error` naming the failing rule, otherwise `()`
+isolated function validateHybridFusion(HybridFusion fusion) returns ai:Error? {
+    if fusion is NamedSearchPipeline {
+        if fusion.name.trim() == "" {
+            return error("'NamedSearchPipeline.name' must not be blank; a blank " +
+                    "'?search_pipeline=' is rejected by OpenSearch. Set a 'HybridSearchConfig' " +
+                    "instead to have this module send the pipeline inline");
+        }
+        return;
+    }
+    float denseWeight = fusion.denseWeight;
+    float sparseWeight = fusion.sparseWeight;
+    if denseWeight < 0.0 || denseWeight > 1.0 || sparseWeight < 0.0 || sparseWeight > 1.0 {
+        return error(string `'HybridSearchConfig.denseWeight' and '.sparseWeight' must each be ` +
+                string `between 0.0 and 1.0, got: ${denseWeight} and ${sparseWeight}`);
+    }
+    // A tolerance rather than an equality test: a caller writing 0.7 and 0.3 has expressed a
+    // valid split, and binary floating point does not sum those to exactly 1.0.
+    float sum = denseWeight + sparseWeight;
+    if sum - 1.0 > WEIGHT_SUM_TOLERANCE || 1.0 - sum > WEIGHT_SUM_TOLERANCE {
+        return error(string `'HybridSearchConfig.denseWeight' and '.sparseWeight' must sum to 1.0, ` +
+                string `got: ${denseWeight} + ${sparseWeight} = ${sum}. The ` +
+                "'normalization-processor' rejects a weight list that does not sum to 1.0");
     }
 }
 

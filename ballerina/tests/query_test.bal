@@ -467,3 +467,156 @@ isolated function testSparseHitWithNoStoredVectorReturnsEmptySparseVector() retu
     }
     test:assertEquals(embedding.indices, []);
 }
+
+// --- hybrid query bodies ----------------------------------------------------------------------
+
+isolated function hybridQuery() returns ai:VectorStoreQuery =>
+    {embedding: {dense: [0.1, 0.2, 0.3], sparse: {indices: [1055], values: [5.5]}}};
+
+isolated function hybridClauseOf(json body) returns map<json>|error {
+    map<json> bodyMap = check asJsonMap(body);
+    map<json> queryClause = check asJsonMap(bodyMap["query"]);
+    return asJsonMap(queryClause["hybrid"]);
+}
+
+// `hybrid` must be the top-level query: OpenSearch rejects it inside bool, function_score,
+// constant_score, script_score or boosting.
+@test:Config
+isolated function testHybridQueryIsTopLevelWithTwoSubQueries() returns error? {
+    json body = check buildSearchBody(hybridQuery(), hybridMode(), {});
+    map<json> bodyMap = check asJsonMap(body);
+    map<json> queryClause = check asJsonMap(bodyMap["query"]);
+    test:assertTrue(queryClause.hasKey("hybrid"), "the hybrid clause must sit directly under 'query'");
+    test:assertFalse(queryClause.hasKey("bool"), "a hybrid query must never be wrapped in a bool");
+
+    map<json> hybrid = check asJsonMap(queryClause["hybrid"]);
+    json[] subQueries = check hybrid["queries"].ensureType();
+    test:assertEquals(subQueries.length(), 2);
+    test:assertTrue((check asJsonMap(subQueries[0])).hasKey("knn"), "the dense sub-query comes first");
+    map<json> sparseSub = check asJsonMap(subQueries[1]);
+    test:assertTrue(sparseSub.hasKey("neural_sparse"), "the sparse sub-query comes second");
+    test:assertFalse(hybrid.hasKey("boost"), "the hybrid query does not accept a boost");
+}
+
+@test:Config
+isolated function testHybridQueryEmitsInlineNormalizationPipeline() returns error? {
+    json body = check buildSearchBody(hybridQuery(), hybridMode(), {});
+    map<json> bodyMap = check asJsonMap(body);
+    map<json> pipeline = check asJsonMap(bodyMap["search_pipeline"]);
+    json[] processors = check pipeline["phase_results_processors"].ensureType();
+    map<json> normalization = check asJsonMap((check asJsonMap(processors[0]))["normalization-processor"]);
+    test:assertEquals((check asJsonMap(normalization["normalization"]))["technique"], "min_max");
+    map<json> combination = check asJsonMap(normalization["combination"]);
+    test:assertEquals(combination["technique"], "arithmetic_mean");
+    test:assertEquals((check asJsonMap(combination["parameters"]))["weights"], <json[]>[0.5, 0.5]);
+}
+
+// The weights array is positional against the sub-query array. An asymmetric split is what makes
+// a swapped pair detectable at all -- with the 0.5/0.5 default it would pass either way.
+@test:Config
+isolated function testHybridWeightsAreOrderedDenseThenSparse() returns error? {
+    HybridSearch mode = hybridMode({normalization: L2, combination: GEOMETRIC_MEAN,
+            denseWeight: 0.3, sparseWeight: 0.7});
+    json body = check buildSearchBody(hybridQuery(), mode, {});
+    map<json> pipeline = check asJsonMap((check asJsonMap(body))["search_pipeline"]);
+    json[] processors = check pipeline["phase_results_processors"].ensureType();
+    map<json> normalization = check asJsonMap((check asJsonMap(processors[0]))["normalization-processor"]);
+    test:assertEquals((check asJsonMap(normalization["normalization"]))["technique"], "l2");
+    map<json> combination = check asJsonMap(normalization["combination"]);
+    test:assertEquals(combination["technique"], "geometric_mean");
+    test:assertEquals((check asJsonMap(combination["parameters"]))["weights"], <json[]>[0.3, 0.7],
+            "weights are positional: dense first, matching the sub-query order");
+}
+
+// A top-level hybrid.filter is OpenSearch 3.0+. AWS still offers 2.x domains, so the filter is
+// duplicated into each sub-query instead -- documented as equivalent, and the two shapes differ.
+@test:Config
+isolated function testHybridFilterIsDuplicatedIntoBothSubQueries() returns error? {
+    ai:VectorStoreQuery query = {
+        embedding: {dense: [0.1, 0.2, 0.3], sparse: {indices: [1055], values: [5.5]}},
+        filters: {filters: [{key: "language", operator: ai:EQUAL, value: "en"}]}
+    };
+    json body = check buildSearchBody(query, hybridMode(), {});
+    map<json> hybrid = check hybridClauseOf(body);
+    test:assertFalse(hybrid.hasKey("filter"),
+            "a top-level hybrid.filter is 3.0+ only and must not be emitted");
+
+    json[] subQueries = check hybrid["queries"].ensureType();
+    map<json> knnField = check asJsonMap((check asJsonMap((check asJsonMap(subQueries[0]))["knn"]))["embedding"]);
+    test:assertTrue(knnField.hasKey("filter"), "the knn sub-query takes its filter inside the vector object");
+    map<json> sparseBool = check asJsonMap((check asJsonMap(subQueries[1]))["bool"]);
+    json[] sparseFilter = check sparseBool["filter"].ensureType();
+    test:assertEquals(sparseFilter.length(), 1, "the sparse sub-query needs a bool sibling filter");
+}
+
+// A NamedSearchPipeline travels as ?search_pipeline=, never as a body object. OpenSearch rejects a
+// request carrying both with "Both named and inline search pipeline were specified".
+@test:Config
+isolated function testHybridNamedPipelineEmitsNoInlineObject() returns error? {
+    HybridSearch mode = hybridMode({name: "my-pipeline"});
+    json body = check buildSearchBody(hybridQuery(), mode, {});
+    map<json> bodyMap = check asJsonMap(body);
+    test:assertFalse(bodyMap.hasKey("search_pipeline"),
+            "a named pipeline must not also be sent inline in the body");
+    test:assertEquals(searchPipelineName(mode), "my-pipeline");
+}
+
+@test:Config
+isolated function testInlineFusionSendsNoPipelineQueryParameter() {
+    test:assertTrue(searchPipelineName(hybridMode()) is (),
+            "inline fusion must not also set the ?search_pipeline= parameter");
+    test:assertTrue(searchPipelineName(denseMode()) is ());
+    test:assertTrue(searchPipelineName(sparseMode()) is ());
+}
+
+// A query with no embedding scores nothing, so there is nothing to normalize. Emitting a pipeline
+// would ask OpenSearch to fuse a constant score with itself.
+@test:Config
+isolated function testHybridQueryWithoutEmbeddingEmitsNoPipeline() returns error? {
+    json body = check buildSearchBody({}, hybridMode(), {});
+    map<json> bodyMap = check asJsonMap(body);
+    test:assertFalse(bodyMap.hasKey("search_pipeline"));
+    map<json> queryClause = check asJsonMap(bodyMap["query"]);
+    test:assertTrue(queryClause.hasKey("match_all"));
+}
+
+@test:Config
+isolated function testHybridExcludesBothVectorFieldsFromSource() returns error? {
+    json body = check buildSearchBody({}, hybridMode(), {includeEmbeddingsInResults: false});
+    map<json> sourceDirective = check asJsonMap((check asJsonMap(body))["_source"]);
+    test:assertEquals(sourceDirective["excludes"], <json[]>["embedding", "sparse_embedding"]);
+}
+
+@test:Config
+isolated function testHybridModeRejectsDenseOnlyQueryEmbedding() {
+    json|ai:Error result = buildSearchBody({embedding: [0.1, 0.2, 0.3]}, hybridMode(), {});
+    if result !is ai:Error {
+        test:assertFail("a dense-only query embedding must be rejected by a HYBRID store");
+    }
+    test:assertTrue(result.message().includes("ai:HybridVector"));
+}
+
+@test:Config
+isolated function testHybridModeRejectsSparseOnlyQueryEmbedding() {
+    json|ai:Error result = buildSearchBody({embedding: {indices: [1], values: [0.5]}}, hybridMode(), {});
+    test:assertTrue(result is ai:Error, "a sparse-only query embedding must be rejected by a HYBRID store");
+}
+
+@test:Config
+isolated function testHitToVectorMatchHybridReturnsBothHalves() returns error? {
+    SearchHit hit = {
+        _id: "1",
+        _score: 0.5005,
+        _source: {"embedding": [0.1, 0.2], "sparse_embedding": {"7": 0.5}, "doc_id": "1"}
+    };
+    ai:VectorMatch hitMatch = check hitToVectorMatch(hit, hybridMode(), {}, true);
+    ai:Embedding embedding = hitMatch.embedding;
+    if embedding !is ai:HybridVector {
+        test:assertFail("a HYBRID store must return an ai:HybridVector");
+    }
+    test:assertEquals(embedding.dense, <ai:Vector>[0.1, 0.2]);
+    test:assertEquals(embedding.sparse.indices, [7]);
+    // Already normalized to (0.0, 1.0] by the fusion pipeline; the cosine transform is unreachable
+    // here because HybridSearch declares no normalizeCosineScore.
+    test:assertEquals(hitMatch.similarityScore, 0.5005);
+}

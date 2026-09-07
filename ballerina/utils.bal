@@ -396,6 +396,9 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
         : {"excludes": vectorFieldNamesOf(searchMode)};
 
     json queryClause;
+    // Set only when a `HYBRID` query actually produced a `hybrid` clause. A query with no
+    // embedding scores nothing, so there is nothing to normalize and no pipeline to attach.
+    HybridSearchConfig? hybridFusion = ();
     if embedding is () {
         queryClause = filterClause is () ? {"match_all": {}} : {"bool": {"filter": [filterClause]}};
     } else if searchMode is SparseSearch {
@@ -405,8 +408,17 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
         queryClause = check buildSparseQueryClause(embedding, searchMode.sparseVectorFieldName,
                 searchMode.maxQueryTokens, filterClause);
     } else if searchMode is HybridSearch {
-        return error(string `Querying with an embedding is not yet implemented for ` +
-                string `'${searchMode.queryMode}' query mode`);
+        if embedding !is ai:HybridVector {
+            return embeddingMismatchError("The query", embedding, searchMode);
+        }
+        // Only the inline variant contributes a body-level `search_pipeline`; a
+        // `NamedSearchPipeline` travels as a query parameter instead, and sending both is an
+        // error OpenSearch raises outright.
+        HybridFusion fusion = searchMode.fusion;
+        if fusion is HybridSearchConfig {
+            hybridFusion = fusion;
+        }
+        queryClause = check buildHybridQueryClause(embedding, searchMode, size, filterClause);
     } else {
         if embedding !is ai:Vector {
             return embeddingMismatchError("The query", embedding, searchMode);
@@ -414,12 +426,96 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
         queryClause = buildDenseQueryClause(embedding, searchMode.vectorFieldName, size, filterClause);
     }
 
-    return {
+    map<json> body = {
         "size": size,
         "_source": sourceDirective,
         "track_total_hits": false,
         "query": queryClause
     };
+    if hybridFusion is HybridSearchConfig {
+        body["search_pipeline"] = buildInlineFusionPipeline(hybridFusion);
+    }
+    return body;
+}
+
+# Builds the `hybrid` clause: a `knn` sub-query and a `neural_sparse` sub-query, scored separately
+# and then normalized and combined by the fusion pipeline.
+#
+# `hybrid` must be the top-level query. OpenSearch rejects it inside `bool`, `function_score`,
+# `constant_score`, `script_score` or `boosting`, so this clause is returned for `query` directly
+# and is never wrapped.
+#
+# # Why the filter is duplicated
+# A top-level `hybrid.filter` is OpenSearch 3.0+. AWS still offers 2.x domains and the container
+# suite runs 2.19.1, so the filter goes into each sub-query instead — documented as equivalent,
+# and working on every version that has the `hybrid` query at all. The two shapes differ: `knn`
+# takes a `filter` inside the vector object, while `neural_sparse` needs the `bool` sibling.
+#
+# + embedding - The query hybrid vector
+# + searchMode - The hybrid search mode, supplying both field names and the token ceiling
+# + size - The `k` to request from the dense sub-query
+# + filterClause - The translated metadata filter, or `()`
+# + return - The `hybrid` clause, or an `ai:Error` if the sparse half is invalid
+isolated function buildHybridQueryClause(ai:HybridVector embedding, HybridSearch searchMode, int size,
+        json? filterClause) returns json|ai:Error {
+    // Order is load-bearing: `buildInlineFusionPipeline` emits its weights positionally against
+    // this array, dense first and sparse second.
+    json[] subQueries = [
+        buildDenseQueryClause(embedding.dense, searchMode.vectorFieldName, size, filterClause),
+        check buildSparseQueryClause(embedding.sparse, searchMode.sparseVectorFieldName,
+                searchMode.maxQueryTokens, filterClause)
+    ];
+    return {"hybrid": {"queries": subQueries}};
+}
+
+# Builds the inline `search_pipeline` object that normalizes and combines the two sub-query scores.
+#
+# Sent with every hybrid query rather than provisioned once as a named pipeline. Fusion weights are
+# query-time semantics, and binding them to durable cluster state would make them silently stale
+# the moment a caller changed one — the trap `IndexConfig` already documents for index-creation
+# settings. It also keeps this module's IAM surface at index scope, since an AOSS search pipeline
+# is a collection-scoped resource, and avoids AWS's documented up-to-15-second Serverless
+# propagation delay during which a freshly created pipeline is not yet resolvable.
+#
+# A `hybrid` query without this does not fail cleanly: OpenSearch delimits each sub-query's results
+# with sentinel scores of about `-9.5e9` and `-4.4e9`, and it is the `normalization-processor` that
+# strips them. Without one they reach the caller as results.
+#
+# + fusion - The normalization and combination settings
+# + return - The inline pipeline object
+isolated function buildInlineFusionPipeline(HybridSearchConfig fusion) returns json {
+    // Positional against the sub-query array built in `buildHybridQueryClause`.
+    float[] weights = [fusion.denseWeight, fusion.sparseWeight];
+    return {
+        "phase_results_processors": [
+            {
+                "normalization-processor": {
+                    "normalization": {"technique": fusion.normalization},
+                    "combination": {
+                        "technique": fusion.combination,
+                        "parameters": {"weights": weights}
+                    }
+                }
+            }
+        ]
+    };
+}
+
+# The named search pipeline to send as `?search_pipeline=`, or `()` when this store sends its
+# fusion configuration inline in the request body instead.
+#
+# Never both: OpenSearch rejects a request carrying an inline pipeline object and a named pipeline
+# parameter with "Both named and inline search pipeline were specified". The `HybridFusion` union
+# is what makes sending both unrepresentable rather than merely unlikely.
+#
+# + searchMode - The store's search mode
+# + return - The pipeline name, or `()`
+isolated function searchPipelineName(SearchMode searchMode) returns string? {
+    if searchMode !is HybridSearch {
+        return ();
+    }
+    HybridFusion fusion = searchMode.fusion;
+    return fusion is NamedSearchPipeline ? fusion.name : ();
 }
 
 # Builds the `knn` clause for a dense query, pre-filtering inside the clause rather than with

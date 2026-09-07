@@ -91,10 +91,64 @@ isolated function testSparseModeNeedsNoDimension() {
 }
 
 @test:Config
-isolated function testHybridQueryModeNotYetSupported() {
+isolated function testHybridModeConstructsWithDefaultFusion() {
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
             {queryMode: ai:HYBRID, indexConfig: {dimension: 8}}, {});
-    test:assertTrue(result is ai:Error);
+    test:assertTrue(result is (), "a HYBRID store should construct with the default inline fusion");
+}
+
+// --- rule 1b: hybrid fusion settings -----------------------------------------------------------
+
+// The `normalization-processor` rejects a weight list that does not sum to 1.0. The pipeline is
+// sent inline on every query, so an unchecked mistake would fail every call rather than one.
+@test:Config
+isolated function testHybridWeightsMustSumToOne() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:HYBRID, indexConfig: {dimension: 8}, fusion: {denseWeight: 0.7, sparseWeight: 0.5}}, {});
+    if result !is ai:Error {
+        test:assertFail("fusion weights that do not sum to 1.0 must be rejected");
+    }
+    test:assertTrue(result.message().includes("sum to 1.0"));
+}
+
+// Binary floating point does not sum 0.7 and 0.3 to exactly 1.0; rejecting that split would be
+// absurd, so the check carries a tolerance.
+@test:Config
+isolated function testHybridWeightsAcceptAnUnevenButValidSplit() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:HYBRID, indexConfig: {dimension: 8}, fusion: {denseWeight: 0.7, sparseWeight: 0.3}}, {});
+    test:assertTrue(result is (), string `0.7/0.3 is a valid split, got: ${(result is ai:Error).toString()}`);
+}
+
+@test:Config
+isolated function testHybridWeightsMustBeInRange() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:HYBRID, indexConfig: {dimension: 8}, fusion: {denseWeight: 1.5, sparseWeight: -0.5}}, {});
+    if result !is ai:Error {
+        test:assertFail("a weight outside [0.0, 1.0] must be rejected");
+    }
+    test:assertTrue(result.message().includes("between 0.0 and 1.0"));
+}
+
+@test:Config
+isolated function testHybridNamedPipelineMustNotBeBlank() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:HYBRID, indexConfig: {dimension: 8}, fusion: {name: "  "}}, {});
+    if result !is ai:Error {
+        test:assertFail("a blank pipeline name must be rejected");
+    }
+    test:assertTrue(result.message().includes("HybridSearchConfig"),
+            string `the message should name the alternative, got: ${result.message()}`);
+}
+
+// A named pipeline defines the normalization technique, combination technique and weights itself,
+// so naming one and setting the inline knobs are alternatives rather than layers. The union is
+// what makes the combination unrepresentable instead of a runtime rule.
+@test:Config
+isolated function testHybridNamedPipelineConstructs() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:HYBRID, indexConfig: {dimension: 8}, fusion: {name: "my-pipeline"}}, {});
+    test:assertTrue(result is ());
 }
 
 @test:Config
