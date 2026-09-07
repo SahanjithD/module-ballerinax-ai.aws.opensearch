@@ -43,7 +43,7 @@ public function main() returns error? {
         region,
         indexName,
         deployment,
-        {indexConfig: {dimension: 4}}
+        {queryMode: ai:DENSE, indexConfig: {dimension: 4}}
     );
 
     Article[] articles = [

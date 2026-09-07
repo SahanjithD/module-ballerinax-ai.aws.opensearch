@@ -124,7 +124,7 @@ opensearch:VectorStore vectorStore = check new (
         deploymentType: opensearch:MANAGED_DOMAIN,
         auth: auth:DEFAULT_CREDENTIALS
     },
-    storeConfig = {indexConfig: {dimension: 1536}}
+    searchMode = {queryMode: ai:DENSE, indexConfig: {dimension: 1536}}
 );
 ```
 
@@ -162,12 +162,14 @@ deploymentConfig = {
 misconfiguration until it surfaces as a 403 from a principal nobody intended to use. Pass
 `auth:DEFAULT_CREDENTIALS` to opt into that chain explicitly.
 
-Settings honored identically everywhere — `dimension`, `similarityMetric`, `efConstruction`, `m`,
-field names, bulk sizing, retries — live on `storeConfig` instead, so switching deployments carries
-them across untouched.
+Settings honored identically on every deployment are split by whether they depend on the kind of
+search being performed. The index shape and the vector field names live on `searchMode`
+(`dimension`, `similarityMetric`, `efConstruction`, `m`, `vectorFieldName`); the rest — the other
+field names, bulk sizing, retries — live on `storeConfig`. Switching deployments carries both
+across untouched.
 
-By default (`IndexConfig.createIndexIfNotExists = true`), `init` creates the index with the
-correct `knn_vector` mapping if it does not already exist.
+By default (`Configuration.createIndexIfNotExists = true`), `init` creates the index with the
+correct mapping if it does not already exist.
 
 ### Step 3: Add, query, and delete vector entries
 

@@ -23,6 +23,14 @@ import ballerinax/aws;
 # number of terms in a `terms` clause.
 const int DOC_ID_LOOKUP_CHUNK_SIZE = 65536;
 
+# The `SearchMode` a caller who names none gets: dense search over a 1536-dimensional vector, the
+# width of the most common general-purpose embedding models.
+#
+# Named rather than written inline as `init`'s default, because a bare record literal is ambiguous
+# against a union whose variants share field names — `queryMode` discriminates the type but does
+# not, on its own, resolve the literal.
+final DenseSearch & readonly DEFAULT_SEARCH_MODE = {queryMode: ai:DENSE, indexConfig: {dimension: 1536}};
+
 # An `ai:VectorStore` backed by Amazon OpenSearch — either a managed OpenSearch Service domain, or
 # an OpenSearch Serverless vector search collection (Classic or NextGen).
 #
@@ -86,6 +94,7 @@ public isolated class VectorStore {
     private final OpenSearchTransport transport;
     private final string indexName;
     private final Deployment & readonly deployment;
+    private final SearchMode & readonly searchMode;
     private final Configuration & readonly config;
 
     # Initializes the AWS OpenSearch vector store.
@@ -101,31 +110,33 @@ public isolated class VectorStore {
     # which are required rather than defaulted, and whichever of
     # `engine`/`refreshOnWrite`/`collectionName`/`collectionId`/`compressionLevel`/`vectorMode`
     # that flavour actually honors. Settings shared by all three live on `storeConfig` instead
-    # + storeConfig - Index-shape and behavioral configuration honored on every deployment type
-    # + queryMode - Reserved for future sparse/hybrid support; only `ai:DENSE` is accepted in this
-    # release
+    # + searchMode - The kind of search this store performs — `DenseSearch`, `SparseSearch` or
+    # `HybridSearch` — together with the index shape, field names and fusion settings that only
+    # that kind honors
+    # + storeConfig - Behavioral configuration honored under every search mode and on every
+    # deployment type
     # + httpConfig - Underlying HTTP client configuration. `httpVersion` and
     # `http1Settings.chunking` are pinned by this module to `HTTP_1_1` and `CHUNKING_NEVER`
     # respectively and cannot be overridden: Ballerina's HTTP/2 outbound path corrupts a signed
     # JSON body, and a chunked body carries no `Content-Length` for SigV4 to be verified against.
     # Every other field is passed through unchanged
     # + return - An `ai:Error` if construction, validation, or (when
-    # `IndexConfig.createIndexIfNotExists` is `true`) index creation fails; otherwise `()`
+    # `Configuration.createIndexIfNotExists` is `true`) index creation fails; otherwise `()`
     public isolated function init(
             @display {label: "Service URL"} string serviceUrl,
             @display {label: "Region"} aws:Region|string region,
             @display {label: "Index Name"} string indexName,
             @display {label: "Deployment Configuration"} Deployment deploymentConfig,
-            @display {label: "Store Configuration"} Configuration storeConfig = {indexConfig: {dimension: 1536}},
-            @display {label: "Query Mode"} ai:VectorStoreQueryMode queryMode = ai:DENSE,
+            @display {label: "Search Mode"} SearchMode searchMode = DEFAULT_SEARCH_MODE,
+            @display {label: "Store Configuration"} Configuration storeConfig = {},
             @display {label: "HTTP Configuration"} http:ClientConfiguration httpConfig = {})
             returns ai:Error? {
-        check validateConfiguration(serviceUrl, deploymentConfig, queryMode, storeConfig);
+        check validateConfiguration(serviceUrl, deploymentConfig, searchMode, storeConfig);
 
         OpenSearchTransport transport = check new (serviceUrl, region, deploymentConfig,
             storeConfig.retryConfig, httpConfig
         );
-        ai:Error? ensureResult = ensureIndex(transport, indexName, storeConfig, deploymentConfig);
+        ai:Error? ensureResult = ensureIndex(transport, indexName, searchMode, storeConfig, deploymentConfig);
         if ensureResult is ai:Error {
             // Best-effort cleanup; the closing outcome is intentionally not surfaced so it
             // cannot mask the more relevant `ensureResult` failure below.
@@ -140,6 +151,7 @@ public isolated class VectorStore {
         self.transport = transport;
         self.indexName = indexName;
         self.deployment = deploymentConfig.cloneReadOnly();
+        self.searchMode = searchMode.cloneReadOnly();
         self.config = storeConfig.cloneReadOnly();
     }
 
@@ -154,10 +166,11 @@ public isolated class VectorStore {
         if entries.length() == 0 {
             return;
         }
-        PreparedEntry[] prepared = check prepareEntries(entries, self.config.indexConfig.similarityMetric);
+        PreparedEntry[] prepared = check prepareEntries(entries, self.searchMode);
 
         foreach PreparedEntry[] batch in chunkPreparedEntries(prepared, self.config.maxBulkSize) {
-            byte[] body = check buildAddBulkBody(batch, self.indexName, self.deployment, self.config);
+            byte[] body = check buildAddBulkBody(batch, self.indexName, self.deployment, self.searchMode,
+                    self.config);
             BulkResponse response = check self.transport.bulk(body, isIndexingBatch = true);
             // Attributed by position against this batch's ids, so a failure names the caller's
             // entry even on `SERVERLESS_CLASSIC`, where the response `_id` is server-generated.
@@ -181,14 +194,14 @@ public isolated class VectorStore {
     # only
     # + return - The matching entries, or an `ai:Error` on failure
     public isolated function query(ai:VectorStoreQuery query) returns ai:VectorMatch[]|ai:Error {
-        json body = check buildSearchBody(query, self.config);
+        json body = check buildSearchBody(query, self.searchMode, self.config);
         SearchResponse response = check self.transport.search(self.indexName, body);
-        // buildSearchBody already rejected a sparse/hybrid embedding, so by this point
-        // query.embedding is either absent or an ai:Vector.
-        boolean scoreIsMeaningful = query.embedding is ai:Vector;
+        // buildSearchBody already rejected an embedding that does not match this store's
+        // `SearchMode`, so any embedding still present here produced a scoring clause.
+        boolean scoreIsMeaningful = query.embedding !is ();
         ai:VectorMatch[] matches = [];
         foreach SearchHit hit in response.hits.hits {
-            matches.push(check hitToVectorMatch(hit, self.config, scoreIsMeaningful));
+            matches.push(check hitToVectorMatch(hit, self.searchMode, self.config, scoreIsMeaningful));
         }
         return matches;
     }
@@ -296,18 +309,19 @@ public isolated class VectorStore {
 #
 # + serviceUrl - The service URL, checked for a parseable host
 # + deployment - The target deployment
-# + queryMode - The requested query mode
+# + searchMode - The requested search mode
 # + config - The vector store configuration
 # + return - An `ai:Error` naming the first failing rule, otherwise `()`
 isolated function validateConfiguration(string serviceUrl, Deployment deployment,
-        ai:VectorStoreQueryMode queryMode, Configuration config) returns ai:Error? {
-    if queryMode != ai:DENSE {
+        SearchMode searchMode, Configuration config) returns ai:Error? {
+    if searchMode !is DenseSearch {
         return error(string `This module supports 'ai:DENSE' query mode only; ` +
-                string `got '${queryMode}'`);
+                string `got '${searchMode.queryMode}'`);
     }
-    if config.indexConfig.dimension < 1 {
+    IndexConfig? indexConfig = indexConfigOf(searchMode);
+    if indexConfig is IndexConfig && indexConfig.dimension < 1 {
         return error(string `'IndexConfig.dimension' must be a positive integer, got: ` +
-                string `${config.indexConfig.dimension}`);
+                string `${indexConfig.dimension}`);
     }
     string _ = check extractHost(serviceUrl);
     if config.maxBulkSize < 1 {

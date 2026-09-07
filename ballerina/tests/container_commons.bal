@@ -100,11 +100,19 @@ isolated function trackedIndexNames() returns string[] {
     }
 }
 
-# The configuration most container tests use: an index sized to `CONTAINER_DIMENSION`.
+# The configuration most container tests use. Everything mode-specific now lives on the
+# `SearchMode` instead, so this is simply the defaults.
 #
 # + return - The default container test configuration
-isolated function containerConfig() returns Configuration => {
-    indexConfig: {dimension: CONTAINER_DIMENSION}
+isolated function containerConfig() returns Configuration => {};
+
+# The dense search mode most container tests use: an index sized to `CONTAINER_DIMENSION`.
+#
+# + similarityMetric - The similarity metric
+# + return - The default container test search mode
+isolated function containerDenseMode(ai:SimilarityMetric similarityMetric = ai:COSINE) returns DenseSearch => {
+    queryMode: ai:DENSE,
+    indexConfig: {dimension: CONTAINER_DIMENSION, similarityMetric}
 };
 
 # The deployment every container test uses: a managed domain with `refreshOnWrite` set, so a write
@@ -124,17 +132,19 @@ isolated function containerDeployment(Engine engine = FAISS) returns ManagedDoma
 # Constructs a store against the plain-HTTP container.
 #
 # + indexName - The target index
+# + searchMode - The search mode, defaulting to dense over `CONTAINER_DIMENSION`
 # + config - The store configuration
 # + deployment - The deployment, defaulting to a managed domain with `refreshOnWrite` set
 # + return - The store, or an `ai:Error` if construction fails
-isolated function newContainerStore(string indexName, Configuration config = {
+isolated function newContainerStore(string indexName, SearchMode searchMode = {
+            queryMode: ai:DENSE,
             indexConfig: {dimension: CONTAINER_DIMENSION}
-        }, ManagedDomainDeployment deployment = {
+        }, Configuration config = {}, ManagedDomainDeployment deployment = {
             deploymentType: MANAGED_DOMAIN,
             auth: containerAuth,
             refreshOnWrite: true
         }) returns VectorStore|ai:Error =>
-    new (containerUrl, CONTAINER_REGION, indexName, deployment, config);
+    new (containerUrl, CONTAINER_REGION, indexName, deployment, searchMode, config);
 
 # Builds a dense test vector of `CONTAINER_DIMENSION` components.
 #

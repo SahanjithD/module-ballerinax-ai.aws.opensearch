@@ -28,9 +28,7 @@ import ballerina/test;
 # + indexName - The index that will not exist
 # + return - The store, or an `ai:Error`
 isolated function storeOnMissingIndex(string indexName) returns VectorStore|ai:Error =>
-    newContainerStore(indexName, {
-                                     indexConfig: {dimension: CONTAINER_DIMENSION, createIndexIfNotExists: false}
-                                 });
+    newContainerStore(indexName, containerDenseMode(), {createIndexIfNotExists: false});
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryOnMissingIndexMapsTo404() returns error? {
@@ -204,8 +202,8 @@ isolated function testContainerCreateIndexOnBadMappingIsReported() returns error
     // `dimension` is passed to the server untouched -- the module deliberately enforces no ceiling,
     // because AWS's own documentation disagrees about what it is. This confirms the server's
     // rejection surfaces as a construction failure rather than a silent half-built store.
-    Configuration config = {indexConfig: {dimension: 99999}};
-    VectorStore|ai:Error result = newContainerStore(indexName, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 99999}};
+    VectorStore|ai:Error result = newContainerStore(indexName, configMode);
 
     if result !is ai:Error {
         check result.close();
@@ -219,12 +217,10 @@ isolated function testContainerCreateIndexOnBadMappingIsReported() returns error
 isolated function testContainerUnreachableEndpointFailsAfterRetries() returns error? {
     // Nothing is listening on 9299. With retries switched off this is a single attempt, so the
     // test asserts `executeWithRetry`'s give-up path without waiting out any backoff.
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION},
-        retryConfig: {maxRetries: 0}
-    };
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
+    Configuration config = {retryConfig: {maxRetries: 0}};
     VectorStore|ai:Error result = new ("http://localhost:9299", CONTAINER_REGION, "unreachable",
-        containerDeployment(), config
+        containerDeployment(), configMode, config
     );
 
     if result !is ai:Error {

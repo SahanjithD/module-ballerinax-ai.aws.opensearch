@@ -63,11 +63,9 @@ isolated function testContainerQueryTopKLimitsResults() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryNegativeTopKReturnsEverything() returns error? {
     string indexName = containerIndexName("q-all");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION},
-        maxResultWindow: 100
-    };
-    VectorStore store = check newContainerStore(indexName, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
+    Configuration config = {maxResultWindow: 100};
+    VectorStore store = check newContainerStore(indexName, configMode, config);
     check seedProximityEntries(store);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: -1});
@@ -78,11 +76,9 @@ isolated function testContainerQueryNegativeTopKReturnsEverything() returns erro
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryMaxResultWindowCapsReturnAll() returns error? {
     string indexName = containerIndexName("q-window");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION},
-        maxResultWindow: 2
-    };
-    VectorStore store = check newContainerStore(indexName, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
+    Configuration config = {maxResultWindow: 2};
+    VectorStore store = check newContainerStore(indexName, configMode, config);
     check seedProximityEntries(store);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: -1});
@@ -94,11 +90,9 @@ isolated function testContainerQueryMaxResultWindowCapsReturnAll() returns error
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryExcludesEmbeddingsWhenConfigured() returns error? {
     string indexName = containerIndexName("q-noembed");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION},
-        includeEmbeddingsInResults: false
-    };
-    VectorStore store = check newContainerStore(indexName, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
+    Configuration config = {includeEmbeddingsInResults: false};
+    VectorStore store = check newContainerStore(indexName, configMode, config);
     check store.add([entry("e", queryVector(), "content survives")]);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 1});
@@ -124,11 +118,12 @@ isolated function testContainerQueryIncludesEmbeddingsByDefault() returns error?
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryRawCosineScore() returns error? {
     string indexName = containerIndexName("q-rawscore");
-    Configuration config = {
+    DenseSearch configMode = {
+        queryMode: ai:DENSE,
         indexConfig: {dimension: CONTAINER_DIMENSION},
         normalizeCosineScore: false
     };
-    VectorStore store = check newContainerStore(indexName, config);
+    VectorStore store = check newContainerStore(indexName, configMode);
     check store.add([entry("same", vec(1.0)), entry("orthogonal", vec(0.0, 1.0))]);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 2});
@@ -144,11 +139,12 @@ isolated function testContainerQueryRawCosineScore() returns error? {
 isolated function testContainerQueryNormalizedCosineScore() returns error? {
     string indexName = containerIndexName("q-normscore");
     // Normalization is the default; named explicitly here so the test reads against its opposite.
-    Configuration config = {
+    DenseSearch configMode = {
+        queryMode: ai:DENSE,
         indexConfig: {dimension: CONTAINER_DIMENSION},
         normalizeCosineScore: true
     };
-    VectorStore store = check newContainerStore(indexName, config);
+    VectorStore store = check newContainerStore(indexName, configMode);
     check store.add([entry("same", vec(1.0)), entry("orthogonal", vec(0.0, 1.0))]);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 2});
@@ -206,11 +202,9 @@ isolated function testContainerQueryOnEmptyIndexReturnsNoMatches() returns error
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryRejectsTopKAboveMaxResultWindow() returns error? {
     string indexName = containerIndexName("q-overwindow");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION},
-        maxResultWindow: 5
-    };
-    VectorStore store = check newContainerStore(indexName, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
+    Configuration config = {maxResultWindow: 5};
+    VectorStore store = check newContainerStore(indexName, configMode, config);
 
     ai:VectorMatch[]|ai:Error result = store.query({embedding: queryVector(), topK: 6});
     test:assertTrue(result is ai:Error, "'topK' above 'maxResultWindow' should be rejected client-side");

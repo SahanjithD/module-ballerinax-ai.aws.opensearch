@@ -29,11 +29,9 @@ const int BULK_CHUNK_SIZE = 100;
 @test:Config {groups: ["docker"]}
 isolated function testContainerBulkAddChunksLargeBatch() returns error? {
     string indexName = containerIndexName("bulk-large");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION},
-        maxBulkSize: BULK_CHUNK_SIZE
-    };
-    VectorStore store = check newContainerStore(indexName, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
+    Configuration config = {maxBulkSize: BULK_CHUNK_SIZE};
+    VectorStore store = check newContainerStore(indexName, configMode, config);
 
     ai:VectorEntry[] entries = [];
     foreach int i in 0 ..< BULK_ENTRY_COUNT {
@@ -50,11 +48,9 @@ isolated function testContainerBulkAddChunksLargeBatch() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerBulkAddStopsAtTheFailingChunk() returns error? {
     string indexName = containerIndexName("bulk-stop");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION},
-        maxBulkSize: 2
-    };
-    VectorStore store = check newContainerStore(indexName, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
+    Configuration config = {maxBulkSize: 2};
+    VectorStore store = check newContainerStore(indexName, configMode, config);
 
     // Batches at `maxBulkSize: 2` are [ok-1, bad], [ok-3, ok-4]. `add` fails on the first batch,
     // so the second is never sent -- which is what distinguishes real chunking from one large

@@ -25,6 +25,69 @@ import ballerina/uuid;
 # through a query instead of every match being reconstructed as a hardcoded `ai:TextChunk`.
 const string CHUNK_TYPE_FIELD = "chunk_type";
 
+# The `IndexConfig` this `SearchMode` declares, or `()` under `SPARSE`, which maps no
+# `knn_vector` field and so has no dimension, space type or HNSW tuning to describe.
+#
+# + searchMode - The kind of search
+# + return - The `knn_vector` shape, or `()` if this mode has no dense vector
+isolated function indexConfigOf(SearchMode searchMode) returns IndexConfig? {
+    if searchMode is DenseSearch {
+        return searchMode.indexConfig;
+    }
+    if searchMode is HybridSearch {
+        return searchMode.indexConfig;
+    }
+    return ();
+}
+
+# The document field holding the dense vector, or `()` under `SPARSE`.
+#
+# + searchMode - The kind of search
+# + return - The `knn_vector` field name, or `()` if this mode stores no dense vector
+isolated function denseFieldNameOf(SearchMode searchMode) returns string? {
+    if searchMode is DenseSearch {
+        return searchMode.vectorFieldName;
+    }
+    if searchMode is HybridSearch {
+        return searchMode.vectorFieldName;
+    }
+    return ();
+}
+
+# The document field holding the sparse vector, or `()` under `DENSE`.
+#
+# + searchMode - The kind of search
+# + return - The `rank_features` field name, or `()` if this mode stores no sparse vector
+isolated function sparseFieldNameOf(SearchMode searchMode) returns string? {
+    if searchMode is SparseSearch {
+        return searchMode.sparseVectorFieldName;
+    }
+    if searchMode is HybridSearch {
+        return searchMode.sparseVectorFieldName;
+    }
+    return ();
+}
+
+# Every document field this `SearchMode` stores a vector in — one name under `DENSE`/`SPARSE`, two
+# under `HYBRID`. Used to build the `_source` exclusion list when
+# `Configuration.includeEmbeddingsInResults` is `false`, and to keep vector fields out of the
+# metadata collected under a flat schema.
+#
+# + searchMode - The kind of search
+# + return - The vector field names, in dense-then-sparse order
+isolated function vectorFieldNamesOf(SearchMode searchMode) returns string[] {
+    string[] names = [];
+    string? denseName = denseFieldNameOf(searchMode);
+    if denseName is string {
+        names.push(denseName);
+    }
+    string? sparseName = sparseFieldNameOf(searchMode);
+    if sparseName is string {
+        names.push(sparseName);
+    }
+    return names;
+}
+
 # A prepared vector entry ready to be serialized into a `_bulk` action/source pair: the embedding
 # is confirmed dense and non-zero, and the id is resolved (generated if the caller omitted one).
 type PreparedEntry record {|
@@ -39,9 +102,12 @@ type PreparedEntry record {|
 # Validates and normalizes a batch of vector entries prior to indexing.
 #
 # + entries - The caller-supplied entries
-# + metric - The index's configured similarity metric, used for the zero-vector guard
+# + searchMode - The store's search mode, which decides which `ai:Embedding` member is required
+# and supplies the similarity metric the zero-vector guard needs
 # + return - The prepared entries, or an `ai:Error` naming the offending entry
-isolated function prepareEntries(ai:VectorEntry[] entries, ai:SimilarityMetric metric) returns PreparedEntry[]|ai:Error {
+isolated function prepareEntries(ai:VectorEntry[] entries, SearchMode searchMode) returns PreparedEntry[]|ai:Error {
+    IndexConfig? indexConfig = indexConfigOf(searchMode);
+    ai:SimilarityMetric metric = indexConfig is IndexConfig ? indexConfig.similarityMetric : ai:COSINE;
     PreparedEntry[] prepared = [];
     foreach ai:VectorEntry entry in entries {
         ai:Embedding embedding = entry.embedding;
@@ -121,17 +187,24 @@ isolated function validateEmbedding(ai:Vector embedding, ai:SimilarityMetric met
 # entry and key instead.
 #
 # + entry - The prepared entry
+# + searchMode - The store's search mode, which decides which vector field(s) are written
 # + config - The vector store configuration
 # + return - The document to index, or an `ai:Error` if a flat-schema metadata key collides with
 # a reserved field name
-isolated function buildEntrySource(PreparedEntry entry, Configuration config) returns map<json>|ai:Error {
+isolated function buildEntrySource(PreparedEntry entry, SearchMode searchMode, Configuration config)
+        returns map<json>|ai:Error {
     anydata content = entry.chunk.content;
     map<json> sourceDoc = {
-        [config.vectorFieldName]: entry.embedding.cloneReadOnly(),
         [config.contentFieldName]: content is string ? content : content.toString(),
         [config.idFieldName]: entry.id,
         [CHUNK_TYPE_FIELD]: entry.chunk.'type
     };
+    // Written before the flat-schema metadata loop below, so the reserved-name collision guard
+    // there covers the vector fields too.
+    string? denseFieldName = denseFieldNameOf(searchMode);
+    if denseFieldName is string {
+        sourceDoc[denseFieldName] = entry.embedding.cloneReadOnly();
+    }
     map<json> metadata = transformMetadata(entry.chunk?.metadata);
     if config.metadataFieldName == "" {
         foreach [string, json] [metaKey, metaValue] in metadata.entries() {
@@ -156,12 +229,13 @@ isolated function buildEntrySource(PreparedEntry entry, Configuration config) re
 # + entries - The prepared entries to index, already sized to fit one `_bulk` request
 # + indexName - The target index
 # + deployment - The target deployment, which gates whether `_id` is written
+# + searchMode - The store's search mode, passed through to the document builder
 # + config - The vector store configuration
 # + return - The exact bytes to sign and send. Empty entries produce an empty byte array. An
 # `ai:Error` if a flat-schema metadata key collides with a reserved field name (see
 # `buildEntrySource`)
 isolated function buildAddBulkBody(PreparedEntry[] entries, string indexName, Deployment deployment,
-        Configuration config) returns byte[]|ai:Error {
+        SearchMode searchMode, Configuration config) returns byte[]|ai:Error {
     if entries.length() == 0 {
         return [];
     }
@@ -171,7 +245,7 @@ isolated function buildAddBulkBody(PreparedEntry[] entries, string indexName, De
             ? {"index": {"_index": indexName}}
             : {"index": {"_index": indexName, "_id": entry.id}};
         lines.push(action.toJsonString());
-        lines.push((check buildEntrySource(entry, config)).toJsonString());
+        lines.push((check buildEntrySource(entry, searchMode, config)).toJsonString());
     }
     return (string:'join("\n", ...lines) + "\n").toBytes();
 }
@@ -226,9 +300,11 @@ isolated function buildDocIdLookupBody(string idFieldName, string[] ids, int max
 # `post_filter`, since `post_filter` can silently return fewer than `k` results.
 #
 # + query - The vector store query
+# + searchMode - The store's search mode, which decides the scoring clause
 # + config - The vector store configuration
 # + return - The search request body, or an `ai:Error` if `topK` or the filters are invalid
-isolated function buildSearchBody(ai:VectorStoreQuery query, Configuration config) returns json|ai:Error {
+isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMode, Configuration config)
+        returns json|ai:Error {
     int topK = query.topK;
     if topK > config.maxResultWindow {
         return error(string `'topK' (${topK}) exceeds the configured 'maxResultWindow' ` +
@@ -246,7 +322,7 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, Configuration confi
 
     json sourceDirective = config.includeEmbeddingsInResults
         ? true
-        : {"excludes": [config.vectorFieldName]};
+        : {"excludes": vectorFieldNamesOf(searchMode)};
 
     json queryClause;
     if embedding is () {
@@ -260,7 +336,7 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, Configuration confi
         if filterClause !is () {
             knnBody["filter"] = filterClause;
         }
-        queryClause = {"knn": {[config.vectorFieldName]: knnBody}};
+        queryClause = {"knn": {[<string>denseFieldNameOf(searchMode)]: knnBody}};
     }
 
     return {
@@ -445,21 +521,23 @@ isolated function normalizeScore(float score, ai:SimilarityMetric metric, boolea
 # result is not a lie), anything else reconstructs as a plain `ai:Chunk` carrying that `'type`.
 #
 # + hit - The search hit
+# + searchMode - The store's search mode, which decides the shape of the returned embedding
 # + config - The vector store configuration
 # + scoreIsMeaningful - Whether `hit._score` reflects an actual similarity computation. `false`
 # for the two query shapes with no embedding (`match_all` / a bare `bool` filter), where
 # OpenSearch returns a constant score that is not a similarity — the result is `0.0` regardless
 # of `hit._score`, matching `ai:InMemoryVectorStore` and this module's own documented behavior
 # + return - The converted match, or an `ai:Error` if the stored embedding or metadata is malformed
-isolated function hitToVectorMatch(SearchHit hit, Configuration config, boolean scoreIsMeaningful)
-        returns ai:VectorMatch|ai:Error {
+isolated function hitToVectorMatch(SearchHit hit, SearchMode searchMode, Configuration config,
+        boolean scoreIsMeaningful) returns ai:VectorMatch|ai:Error {
     map<json> src = hit?._source ?: {};
 
     json idValue = src[config.idFieldName];
     string id = idValue is string ? idValue : hit._id;
 
     ai:Vector embedding = [];
-    json vectorValue = src[config.vectorFieldName];
+    string? denseFieldName = denseFieldNameOf(searchMode);
+    json vectorValue = denseFieldName is string ? src[denseFieldName] : ();
     if vectorValue is json[] {
         ai:Vector|error converted = vectorValue.cloneWithType();
         if converted is error {
@@ -480,7 +558,7 @@ isolated function hitToVectorMatch(SearchHit hit, Configuration config, boolean 
         chunkType = chunkTypeValue;
     }
 
-    map<json>? rawMetadata = extractStoredMetadata(src, config);
+    map<json>? rawMetadata = extractStoredMetadata(src, searchMode, config);
     ai:Metadata? metadata = rawMetadata is () ? () : check createAiMetadata(rawMetadata);
 
     ai:Chunk chunk;
@@ -490,9 +568,16 @@ isolated function hitToVectorMatch(SearchHit hit, Configuration config, boolean 
         chunk = {'type: chunkType, content, metadata};
     }
 
-    float similarityScore = scoreIsMeaningful
-        ? normalizeScore(hit._score, config.indexConfig.similarityMetric, config.normalizeCosineScore)
-        : 0.0;
+    // `normalizeScore` is reached only through `DenseSearch`, which is the only mode that declares
+    // a `similarityMetric` and a `normalizeCosineScore` at all. A `SPARSE` score is an unbounded
+    // dot product with no cosine in it, and a `HYBRID` score has already been normalized to
+    // `(0.0, 1.0]` by the fusion pipeline; applying `2 * score - 1` to either would corrupt it.
+    float similarityScore = 0.0;
+    if scoreIsMeaningful {
+        similarityScore = searchMode is DenseSearch
+            ? normalizeScore(hit._score, searchMode.indexConfig.similarityMetric, searchMode.normalizeCosineScore)
+            : hit._score;
+    }
     return {
         id,
         embedding,
@@ -506,13 +591,16 @@ isolated function hitToVectorMatch(SearchHit hit, Configuration config, boolean 
 # schema fields (vector, content, id, chunk type).
 #
 # + src - The stored `_source` document
+# + searchMode - The store's search mode, which decides which vector field names are reserved
 # + config - The vector store configuration
 # + return - The metadata map, or `()` if there is none
-isolated function extractStoredMetadata(map<json> src, Configuration config) returns map<json>? {
+isolated function extractStoredMetadata(map<json> src, SearchMode searchMode, Configuration config)
+        returns map<json>? {
     if config.metadataFieldName == "" {
+        string[] vectorFieldNames = vectorFieldNamesOf(searchMode);
         map<json> flat = {};
         foreach [string, json] [key, value] in src.entries() {
-            if key != config.vectorFieldName && key != config.contentFieldName &&
+            if vectorFieldNames.indexOf(key) is () && key != config.contentFieldName &&
                     key != config.idFieldName && key != CHUNK_TYPE_FIELD {
                 flat[key] = value;
             }

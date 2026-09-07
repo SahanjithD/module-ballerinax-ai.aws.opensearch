@@ -52,10 +52,9 @@ isolated function testContainerInitOnExistingIndexIsANoOp() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerCreateIndexIfNotExistsFalseSkipsCreation() returns error? {
     string indexName = containerIndexName("init-nocreate");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION, createIndexIfNotExists: false}
-    };
-    VectorStore store = check newContainerStore(indexName, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
+    Configuration config = {createIndexIfNotExists: false};
+    VectorStore store = check newContainerStore(indexName, configMode, config);
     test:assertFalse(check rawIndexExists(indexName),
             "'createIndexIfNotExists: false' must perform no network I/O and create nothing");
     check store.close();
@@ -77,10 +76,8 @@ isolated function testContainerMappingEnablesKnn() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerMappingVectorFieldShape() returns error? {
     string indexName = containerIndexName("init-vecfield");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION, efConstruction: 200, m: 24}
-    };
-    VectorStore store = check newContainerStore(indexName, config, containerDeployment(FAISS));
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION, efConstruction: 200, m: 24}};
+    VectorStore store = check newContainerStore(indexName, configMode, {}, containerDeployment(FAISS));
 
     map<json> mappings = check indexMapping(indexName);
     map<json> properties = check mapField(mappings, "properties");
@@ -102,10 +99,8 @@ isolated function testContainerMappingVectorFieldShape() returns error? {
 isolated function testContainerMappingSpaceType(ai:SimilarityMetric metric, string expectedSpaceType)
         returns error? {
     string indexName = containerIndexName("init-space");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION, similarityMetric: metric}
-    };
-    VectorStore store = check newContainerStore(indexName, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION, similarityMetric: metric}};
+    VectorStore store = check newContainerStore(indexName, configMode);
 
     map<json> mappings = check indexMapping(indexName);
     map<json> properties = check mapField(mappings, "properties");
@@ -125,8 +120,8 @@ isolated function spaceTypeDataProvider() returns [ai:SimilarityMetric, string][
 @test:Config {groups: ["docker"]}
 isolated function testContainerLuceneEngineIsAccepted() returns error? {
     string indexName = containerIndexName("init-lucene");
-    Configuration config = {indexConfig: {dimension: CONTAINER_DIMENSION}};
-    VectorStore store = check newContainerStore(indexName, config, containerDeployment(LUCENE));
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
+    VectorStore store = check newContainerStore(indexName, configMode, {}, containerDeployment(LUCENE));
 
     map<json> mappings = check indexMapping(indexName);
     map<json> properties = check mapField(mappings, "properties");
@@ -144,14 +139,13 @@ isolated function testContainerLuceneEngineIsAccepted() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerMappingHonoursCustomFieldNames() returns error? {
     string indexName = containerIndexName("init-fields");
-    Configuration config = {
+    DenseSearch configMode = {
+        queryMode: ai:DENSE,
         indexConfig: {dimension: CONTAINER_DIMENSION},
-        vectorFieldName: "vec",
-        contentFieldName: "body",
-        idFieldName: "entry_id",
-        metadataFieldName: "props"
+        vectorFieldName: "vec"
     };
-    VectorStore store = check newContainerStore(indexName, config);
+    Configuration config = {contentFieldName: "body", idFieldName: "entry_id", metadataFieldName: "props"};
+    VectorStore store = check newContainerStore(indexName, configMode, config);
 
     map<json> mappings = check indexMapping(indexName);
     map<json> properties = check mapField(mappings, "properties");

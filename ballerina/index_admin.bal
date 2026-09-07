@@ -16,16 +16,12 @@
 
 import ballerina/ai;
 
-# Builds the `PUT /<index>` request body: a `knn_vector` field sized and spaced per `IndexConfig`,
-# the fixed schema fields (content/id/chunk type), and a `dynamic_templates` block mapping
-# metadata strings to `keyword` — without it, `term` filters on string metadata silently return
-# zero hits, because the default dynamic mapping would map them as analyzed `text`.
+# Builds the `knn_vector` field definition, sized and spaced per `IndexConfig`.
 #
 # Every deployment type gets an explicit `method` block carrying the HNSW `parameters`, since
 # relying on the default engine is what silently breaks k-NN pre-filtering on Serverless Classic.
 # What varies is only what may accompany the block.
 #
-# # What each deployment gets
 # `MANAGED_DOMAIN` and `SERVERLESS_CLASSIC` carry `engine` and `space_type` inside the block —
 # Classic hard-coded to Faiss, the only engine it supports. `SERVERLESS_NEXTGEN` gets neither:
 # `engine` inside the block fails there with a flat 400 reading "Field parameter 'engine' is not
@@ -35,9 +31,7 @@ import ballerina/ai;
 #
 # A block of `{"name": "hnsw", "parameters": {...}}` without `engine` was verified accepted on
 # NextGen with its parameters stored intact; the stored mapping comes back with `engine: faiss`
-# supplied by NextGen itself, alongside the `mode` and `compression_level` it was sent. Sending no
-# block at all — which this module did previously — was a self-imposed limitation that cost HNSW
-# tuning on NextGen, not a restriction AWS imposes.
+# supplied by NextGen itself, alongside the `mode` and `compression_level` it was sent.
 #
 # # Quantization on NextGen
 # A NextGen field created without them comes back mapped as `on_disk`/`32x`, so every vector is
@@ -46,15 +40,15 @@ import ballerina/ai;
 # that choice can be made explicit. Both are unset by default, which reproduces the server's
 # behavior exactly.
 #
-# + config - The vector store configuration
+# + indexConfig - The `knn_vector` shape
 # + deployment - The deployment, which gates `engine` and the quantization parameters
-# + return - The index-creation request body
-isolated function buildIndexMapping(Configuration config, Deployment deployment) returns json {
-    string spaceType = toSpaceType(config.indexConfig.similarityMetric);
+# + return - The field definition
+isolated function buildDenseVectorField(IndexConfig indexConfig, Deployment deployment) returns json {
+    string spaceType = toSpaceType(indexConfig.similarityMetric);
 
     map<json> vectorField = {
         "type": "knn_vector",
-        "dimension": config.indexConfig.dimension
+        "dimension": indexConfig.dimension
     };
     map<json> method = {"name": "hnsw"};
     if deployment is ServerlessNextGenDeployment {
@@ -72,17 +66,51 @@ isolated function buildIndexMapping(Configuration config, Deployment deployment)
         method["space_type"] = spaceType;
     }
     method["parameters"] = {
-        "ef_construction": config.indexConfig.efConstruction,
-        "m": config.indexConfig.m
+        "ef_construction": indexConfig.efConstruction,
+        "m": indexConfig.m
     };
     vectorField["method"] = method;
+    return vectorField;
+}
 
+# Builds the `PUT /<index>` request body: whichever vector field(s) the `SearchMode` calls for, the
+# fixed schema fields (content/id/chunk type), and a `dynamic_templates` block mapping metadata
+# strings to `keyword` — without it, `term` filters on string metadata silently return zero hits,
+# because the default dynamic mapping would map them as analyzed `text`.
+#
+# # What each mode gets
+# `DenseSearch` maps a `knn_vector` field; `SparseSearch` maps a `rank_features` field;
+# `HybridSearch` maps both, because a `hybrid` query scores every document on both sub-queries.
+#
+# `index.knn` is set only when a `knn_vector` field is actually present. It is not an inert flag:
+# it switches the index onto the k-NN codec and wires up per-shard native-memory circuit-breaker
+# accounting. Setting it on a `SPARSE` index would buy that for a field that does not exist, and
+# would misdescribe the index to anyone reading `_settings`. Verified against OpenSearch 2.19.1
+# that a `rank_features`-only index is created and queried successfully with no `settings` block
+# at all.
+#
+# + searchMode - The kind of search, which decides which vector field(s) the mapping declares
+# + config - The vector store configuration
+# + deployment - The deployment, which gates `engine` and the quantization parameters
+# + return - The index-creation request body
+isolated function buildIndexMapping(SearchMode searchMode, Configuration config, Deployment deployment)
+        returns json {
     map<json> properties = {
-        [config.vectorFieldName]: vectorField,
         [config.contentFieldName]: {"type": "text"},
         [config.idFieldName]: {"type": "keyword"},
         "chunk_type": {"type": "keyword"}
     };
+
+    IndexConfig? indexConfig = indexConfigOf(searchMode);
+    string? denseFieldName = denseFieldNameOf(searchMode);
+    if indexConfig is IndexConfig && denseFieldName is string {
+        properties[denseFieldName] = buildDenseVectorField(indexConfig, deployment);
+    }
+    string? sparseFieldName = sparseFieldNameOf(searchMode);
+    if sparseFieldName is string {
+        properties[sparseFieldName] = {"type": "rank_features"};
+    }
+
     if config.metadataFieldName != "" {
         properties[config.metadataFieldName] = {
             "type": "object",
@@ -98,10 +126,7 @@ isolated function buildIndexMapping(Configuration config, Deployment deployment)
 
     string metadataPathMatch = config.metadataFieldName == "" ? "*" : string `${config.metadataFieldName}.*`;
 
-    return {
-        "settings": {
-            "index": {"knn": true}
-        },
+    map<json> mapping = {
         "mappings": {
             "dynamic_templates": [
                 {
@@ -115,6 +140,10 @@ isolated function buildIndexMapping(Configuration config, Deployment deployment)
             "properties": properties
         }
     };
+    if denseFieldName is string {
+        mapping["settings"] = {"index": {"knn": true}};
+    }
+    return mapping;
 }
 
 # Maps `ai:SimilarityMetric` to the OpenSearch `space_type`.
@@ -135,14 +164,14 @@ isolated function toSpaceType(ai:SimilarityMetric metric) returns string {
     }
 }
 
-# Ensures the target index exists, creating it if `IndexConfig.createIndexIfNotExists` allows it.
+# Ensures the target index exists, creating it if `Configuration.createIndexIfNotExists` allows it.
 # When it is `false`, this function performs no network I/O at all — this is what lets `init` run
 # fully offline for least-privilege deployments and for testing.
 #
 # Note that "no network I/O" also means no existence check, and a missing index is not
 # self-announcing: OpenSearch's `action.auto_create_index` default silently creates one from the
 # first document's inferred shape, without `index.knn` and with the vector mapped as a plain
-# `float` array. See the hazard note on `IndexConfig.createIndexIfNotExists`.
+# `float` array. See the hazard note on `Configuration.createIndexIfNotExists`.
 #
 # A `resource_already_exists_exception` on creation is treated as success, covering two instances
 # racing to create the same index.
@@ -164,19 +193,20 @@ isolated function toSpaceType(ai:SimilarityMetric metric) returns string {
 #
 # + transport - The transport to issue `HEAD`/`PUT` requests through
 # + indexName - The index to ensure
+# + searchMode - The kind of search, passed through to the mapping builder
 # + config - The vector store configuration
 # + deployment - The deployment, passed through to the mapping builder
 # + return - An `ai:Error` on failure, otherwise `()`
-isolated function ensureIndex(OpenSearchTransport transport, string indexName, Configuration config,
-        Deployment deployment) returns ai:Error? {
-    if !config.indexConfig.createIndexIfNotExists {
+isolated function ensureIndex(OpenSearchTransport transport, string indexName, SearchMode searchMode,
+        Configuration config, Deployment deployment) returns ai:Error? {
+    if !config.createIndexIfNotExists {
         return;
     }
     boolean exists = check transport.indexExists(indexName);
     if exists {
         return;
     }
-    json mapping = buildIndexMapping(config, deployment);
+    json mapping = buildIndexMapping(searchMode, config, deployment);
     ai:Error? result = transport.createIndex(indexName, mapping);
     if result is ai:Error && !isAlreadyExistsError(result) {
         return result;

@@ -120,11 +120,9 @@ isolated function testContainerEntryWithoutMetadataRoundTrips() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerMetadataUnderFlatSchemaRoundTrips() returns error? {
     string indexName = containerIndexName("md-flat");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION},
-        metadataFieldName: ""
-    };
-    VectorStore store = check newContainerStore(indexName, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
+    Configuration config = {metadataFieldName: ""};
+    VectorStore store = check newContainerStore(indexName, configMode, config);
     check store.add([entry("flat", queryVector(), "flat doc", {"language": "en", "year": 2024})]);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 1});
@@ -146,11 +144,9 @@ isolated function testContainerMetadataUnderFlatSchemaRoundTrips() returns error
 @test:Config {groups: ["docker"]}
 isolated function testContainerFlatSchemaKeyCollisionIsRejectedBeforeWriting() returns error? {
     string indexName = containerIndexName("md-collide");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION},
-        metadataFieldName: ""
-    };
-    VectorStore store = check newContainerStore(indexName, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
+    Configuration config = {metadataFieldName: ""};
+    VectorStore store = check newContainerStore(indexName, configMode, config);
 
     // A metadata key literally named `content` would clobber the chunk content under a flat
     // schema. The guard fires client-side, so the index is left untouched.

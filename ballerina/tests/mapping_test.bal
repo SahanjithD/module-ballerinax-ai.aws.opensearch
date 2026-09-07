@@ -17,7 +17,8 @@
 import ballerina/ai;
 import ballerina/test;
 
-isolated function baseConfig(ai:SimilarityMetric metric = ai:COSINE) returns Configuration => {
+isolated function baseMode(ai:SimilarityMetric metric = ai:COSINE) returns DenseSearch => {
+    queryMode: ai:DENSE,
     indexConfig: {dimension: 1536, similarityMetric: metric}
 };
 
@@ -32,7 +33,7 @@ isolated function testSpaceTypeMapping() {
 
 @test:Config
 isolated function testMappingHasKnnSettingEnabled() returns error? {
-    map<json> mapping = check asMap(buildIndexMapping(baseConfig(), managedDeployment()));
+    map<json> mapping = check asMap(buildIndexMapping(baseMode(), {}, managedDeployment()));
     map<json> settings = check asMap(mapping["settings"]);
     map<json> index = check asMap(settings["index"]);
     test:assertEquals(index["knn"], true);
@@ -49,7 +50,7 @@ isolated function vectorFieldOf(json mapping) returns map<json>|error {
 
 @test:Config
 isolated function testManagedDomainEmitsMethodBlock() returns error? {
-    json mapping = buildIndexMapping(baseConfig(), managedDeployment());
+    json mapping = buildIndexMapping(baseMode(), {}, managedDeployment());
     map<json> vectorField = check vectorFieldOf(mapping);
     test:assertEquals(vectorField["type"], "knn_vector");
     test:assertEquals(vectorField["dimension"], 1536);
@@ -64,7 +65,7 @@ isolated function testManagedDomainEmitsMethodBlock() returns error? {
 @test:Config
 isolated function testManagedDomainEngineIsSelectable() returns error? {
     map<json> vectorField = check vectorFieldOf(
-            buildIndexMapping(baseConfig(), managedDeployment(LUCENE)));
+            buildIndexMapping(baseMode(), {}, managedDeployment(LUCENE)));
     map<json> method = check asMap(vectorField["method"]);
     test:assertEquals(method["engine"], "lucene");
 }
@@ -73,7 +74,7 @@ isolated function testManagedDomainEngineIsSelectable() returns error? {
 // it. Relying on the server's default engine instead is what silently breaks k-NN pre-filtering.
 @test:Config
 isolated function testServerlessClassicEmitsMethodBlockPinnedToFaiss() returns error? {
-    json mapping = buildIndexMapping(baseConfig(), classicDeployment());
+    json mapping = buildIndexMapping(baseMode(), {}, classicDeployment());
     map<json> vectorField = check vectorFieldOf(mapping);
     map<json> method = check asMap(vectorField["method"]);
     test:assertEquals(method["engine"], "faiss");
@@ -87,7 +88,7 @@ isolated function testServerlessClassicEmitsMethodBlockPinnedToFaiss() returns e
 // reason AWS imposes.
 @test:Config
 isolated function testServerlessNextGenEmitsMethodBlockWithoutEngine() returns error? {
-    json mapping = buildIndexMapping(baseConfig(), nextGenDeployment());
+    json mapping = buildIndexMapping(baseMode(), {}, nextGenDeployment());
     map<json> vectorField = check vectorFieldOf(mapping);
     test:assertEquals(vectorField["type"], "knn_vector");
     test:assertEquals(vectorField["dimension"], 1536);
@@ -103,9 +104,9 @@ isolated function testServerlessNextGenEmitsMethodBlockWithoutEngine() returns e
 
 @test:Config
 isolated function testHnswParametersHonoredOnEveryDeploymentType() returns error? {
-    Configuration config = {indexConfig: {dimension: 8, efConstruction: 256, m: 32}};
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 8, efConstruction: 256, m: 32}};
     foreach Deployment deployment in allDeployments() {
-        map<json> vectorField = check vectorFieldOf(buildIndexMapping(config, deployment));
+        map<json> vectorField = check vectorFieldOf(buildIndexMapping(configMode, {}, deployment));
         map<json> method = check asMap(vectorField["method"]);
         map<json> parameters = check asMap(method["parameters"]);
         test:assertEquals(parameters["ef_construction"], 256,
@@ -118,7 +119,7 @@ isolated function testHnswParametersHonoredOnEveryDeploymentType() returns error
 @test:Config
 isolated function testSpaceTypePropagatesPerDeploymentType() returns error? {
     foreach Deployment deployment in allDeployments() {
-        map<json> vectorField = check vectorFieldOf(buildIndexMapping(baseConfig(ai:EUCLIDEAN), deployment));
+        map<json> vectorField = check vectorFieldOf(buildIndexMapping(baseMode(ai:EUCLIDEAN), {}, deployment));
         json spaceType;
         if deployment is ServerlessNextGenDeployment {
             spaceType = vectorField["space_type"];
@@ -139,7 +140,7 @@ isolated function testSpaceTypePropagatesPerDeploymentType() returns error? {
 @test:Config
 isolated function testQuantizationOmittedWhenUnset() returns error? {
     map<json> vectorField = check vectorFieldOf(
-            buildIndexMapping(baseConfig(), nextGenDeployment()));
+            buildIndexMapping(baseMode(), {}, nextGenDeployment()));
     test:assertFalse(vectorField.hasKey("compression_level"),
             "an unset 'compressionLevel' must leave the server's own default in place");
     test:assertFalse(vectorField.hasKey("mode"),
@@ -152,7 +153,7 @@ isolated function testQuantizationOmittedWhenUnset() returns error? {
 @test:Config
 isolated function testQuantizationEmittedAtFieldTopLevelBesideTheMethodBlock() returns error? {
     map<json> vectorField = check vectorFieldOf(
-            buildIndexMapping(baseConfig(), nextGenDeployment(COMPRESSION_1X, IN_MEMORY)));
+            buildIndexMapping(baseMode(), {}, nextGenDeployment(COMPRESSION_1X, IN_MEMORY)));
     test:assertEquals(vectorField["compression_level"], "1x");
     test:assertEquals(vectorField["mode"], "in_memory");
 
@@ -165,7 +166,7 @@ isolated function testQuantizationEmittedAtFieldTopLevelBesideTheMethodBlock() r
 @test:Config
 isolated function testCompressionLevelAloneIsEmitted() returns error? {
     map<json> vectorField = check vectorFieldOf(
-            buildIndexMapping(baseConfig(), nextGenDeployment(COMPRESSION_4X)));
+            buildIndexMapping(baseMode(), {}, nextGenDeployment(COMPRESSION_4X)));
     test:assertEquals(vectorField["compression_level"], "4x");
     test:assertFalse(vectorField.hasKey("mode"),
             "'compression_level' is accepted on its own; 'mode' should not be invented alongside it");
@@ -181,7 +182,7 @@ isolated function testQuantizationNeverAppearsOffNextGen() returns error? {
         classicDeployment()
     ];
     foreach Deployment deployment in methodBlockDeployments {
-        map<json> vectorField = check vectorFieldOf(buildIndexMapping(baseConfig(), deployment));
+        map<json> vectorField = check vectorFieldOf(buildIndexMapping(baseMode(), {}, deployment));
         test:assertFalse(vectorField.hasKey("compression_level"),
                 string `${deployment.deploymentType} must not carry 'compression_level'`);
         test:assertFalse(vectorField.hasKey("mode"),
@@ -193,7 +194,7 @@ isolated function testQuantizationNeverAppearsOffNextGen() returns error? {
 
 @test:Config
 isolated function testDynamicTemplatesAlwaysPresentForNestedMetadata() returns error? {
-    map<json> mapping = check asMap(buildIndexMapping(baseConfig(), managedDeployment()));
+    map<json> mapping = check asMap(buildIndexMapping(baseMode(), {}, managedDeployment()));
     map<json> mappings = check asMap(mapping["mappings"]);
     json[] templates = check mappings["dynamic_templates"].ensureType();
     test:assertEquals(templates.length(), 1);
@@ -207,8 +208,9 @@ isolated function testDynamicTemplatesAlwaysPresentForNestedMetadata() returns e
 
 @test:Config
 isolated function testDynamicTemplatesPathMatchForFlatMetadata() returns error? {
-    Configuration config = {indexConfig: {dimension: 8}, metadataFieldName: ""};
-    map<json> mapping = check asMap(buildIndexMapping(config, managedDeployment()));
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 8}};
+    Configuration config = {metadataFieldName: ""};
+    map<json> mapping = check asMap(buildIndexMapping(configMode, config, managedDeployment()));
     map<json> mappings = check asMap(mapping["mappings"]);
     json[] templates = check mappings["dynamic_templates"].ensureType();
     map<json> template = check asMap(templates[0]);
@@ -218,8 +220,9 @@ isolated function testDynamicTemplatesPathMatchForFlatMetadata() returns error? 
 
 @test:Config
 isolated function testFlatMetadataOmitsMetadataObjectMapping() returns error? {
-    Configuration config = {indexConfig: {dimension: 8}, metadataFieldName: ""};
-    map<json> mapping = check asMap(buildIndexMapping(config, managedDeployment()));
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 8}};
+    Configuration config = {metadataFieldName: ""};
+    map<json> mapping = check asMap(buildIndexMapping(configMode, config, managedDeployment()));
     map<json> mappings = check asMap(mapping["mappings"]);
     map<json> properties = check asMap(mappings["properties"]);
     test:assertFalse(properties.hasKey("metadata"),
@@ -228,7 +231,7 @@ isolated function testFlatMetadataOmitsMetadataObjectMapping() returns error? {
 
 @test:Config
 isolated function testFixedSchemaFieldsAlwaysPresent() returns error? {
-    map<json> mapping = check asMap(buildIndexMapping(baseConfig(), managedDeployment()));
+    map<json> mapping = check asMap(buildIndexMapping(baseMode(), {}, managedDeployment()));
     map<json> mappings = check asMap(mapping["mappings"]);
     map<json> properties = check asMap(mappings["properties"]);
 
@@ -247,13 +250,9 @@ isolated function testFixedSchemaFieldsAlwaysPresent() returns error? {
 
 @test:Config
 isolated function testConfigurableFieldNamesHonored() returns error? {
-    Configuration config = {
-        indexConfig: {dimension: 8},
-        vectorFieldName: "vec",
-        contentFieldName: "text",
-        idFieldName: "myId"
-    };
-    map<json> mapping = check asMap(buildIndexMapping(config, managedDeployment()));
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 8}, vectorFieldName: "vec"};
+    Configuration config = {contentFieldName: "text", idFieldName: "myId"};
+    map<json> mapping = check asMap(buildIndexMapping(configMode, config, managedDeployment()));
     map<json> mappings = check asMap(mapping["mappings"]);
     map<json> properties = check asMap(mappings["properties"]);
     test:assertTrue(properties.hasKey("vec"));

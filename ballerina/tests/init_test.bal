@@ -19,7 +19,7 @@ import ballerina/test;
 
 const string VALID_URL = "https://my-domain.us-east-1.es.amazonaws.com";
 
-isolated function validConfig() returns Configuration => {indexConfig: {dimension: 1536}};
+isolated function validMode() returns DenseSearch => {queryMode: ai:DENSE, indexConfig: {dimension: 1536}};
 
 // The rules this file once exercised at runtime -- `BasicAuth` outside a managed domain, a
 // non-Faiss engine on Serverless Classic, `refreshOnWrite` off a managed domain, and quantization
@@ -35,21 +35,20 @@ isolated function validConfig() returns Configuration => {indexConfig: {dimensio
 isolated function testManagedDomainWithBasicAuthPasses() {
     BasicAuth basicAuth = {username: "u", password: "p"};
     ManagedDomainDeployment deployment = {deploymentType: MANAGED_DOMAIN, auth: basicAuth};
-    ai:Error? result = validateConfiguration(VALID_URL, deployment, ai:DENSE, validConfig());
+    ai:Error? result = validateConfiguration(VALID_URL, deployment, validMode(), {});
     test:assertTrue(result is ());
 }
 
 @test:Config
 isolated function testManagedDomainWithNonFaissEnginePasses() {
-    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(LUCENE), ai:DENSE,
-            validConfig());
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(LUCENE), validMode(), {});
     test:assertTrue(result is ());
 }
 
 @test:Config
 isolated function testManagedDomainWithRefreshOnWritePasses() {
     ManagedDomainDeployment deployment = managedDeployment(refreshOnWrite = true);
-    ai:Error? result = validateConfiguration(VALID_URL, deployment, ai:DENSE, validConfig());
+    ai:Error? result = validateConfiguration(VALID_URL, deployment, validMode(), {});
     test:assertTrue(result is ());
 }
 
@@ -61,7 +60,7 @@ isolated function testEveryDeploymentTypePassesWithDefaults() {
         nextGenDeployment()
     ];
     foreach Deployment deployment in deployments {
-        ai:Error? result = validateConfiguration(VALID_URL, deployment, ai:DENSE, validConfig());
+        ai:Error? result = validateConfiguration(VALID_URL, deployment, validMode(), {});
         test:assertTrue(result is (),
                 string `a default ${deployment.deploymentType} deployment should validate`);
     }
@@ -84,15 +83,13 @@ isolated function testDiscriminatorSelectsTheVariant() {
 
 @test:Config
 isolated function testSparseQueryModeRejected() {
-    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:SPARSE,
-            validConfig());
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), {queryMode: ai:SPARSE}, {});
     test:assertTrue(result is ai:Error);
 }
 
 @test:Config
 isolated function testHybridQueryModeRejected() {
-    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:HYBRID,
-            validConfig());
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), {queryMode: ai:HYBRID, indexConfig: {dimension: 8}}, {});
     test:assertTrue(result is ai:Error);
 }
 
@@ -100,15 +97,15 @@ isolated function testHybridQueryModeRejected() {
 
 @test:Config
 isolated function testZeroDimensionRejected() {
-    Configuration config = {indexConfig: {dimension: 0}};
-    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:DENSE, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 0}};
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), configMode, {});
     test:assertTrue(result is ai:Error);
 }
 
 @test:Config
 isolated function testNegativeDimensionRejected() {
-    Configuration config = {indexConfig: {dimension: -1}};
-    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:DENSE, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: -1}};
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), configMode, {});
     test:assertTrue(result is ai:Error);
 }
 
@@ -117,7 +114,7 @@ isolated function testNegativeDimensionRejected() {
 @test:Config
 isolated function testServiceUrlWithoutSchemeRejected() {
     ai:Error? result = validateConfiguration("my-domain.us-east-1.es.amazonaws.com",
-            managedDeployment(), ai:DENSE, validConfig());
+            managedDeployment(), validMode(), {});
     test:assertTrue(result is ai:Error);
 }
 
@@ -173,15 +170,17 @@ isolated function testBuildQueryStringSingleParam() returns error? {
 
 @test:Config
 isolated function testZeroMaxBulkSizeRejected() {
-    Configuration config = {indexConfig: {dimension: 8}, maxBulkSize: 0};
-    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:DENSE, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 8}};
+    Configuration config = {maxBulkSize: 0};
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), configMode, config);
     test:assertTrue(result is ai:Error);
 }
 
 @test:Config
 isolated function testZeroMaxResultWindowRejected() {
-    Configuration config = {indexConfig: {dimension: 8}, maxResultWindow: 0};
-    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:DENSE, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 8}};
+    Configuration config = {maxResultWindow: 0};
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), configMode, config);
     test:assertTrue(result is ai:Error);
 }
 
@@ -189,8 +188,7 @@ isolated function testZeroMaxResultWindowRejected() {
 
 @test:Config
 isolated function testFullyValidConfigurationPasses() {
-    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), ai:DENSE,
-            validConfig());
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), validMode(), {});
     test:assertTrue(result is ());
 }
 
@@ -205,7 +203,8 @@ isolated function testOfflineConstructionWithCreateIndexDisabled() returns error
         "us-east-1",
         "test-index",
         managedDeployment(),
-        {indexConfig: {dimension: 8, createIndexIfNotExists: false}}
+        {queryMode: ai:DENSE, indexConfig: {dimension: 8}},
+        {createIndexIfNotExists: false}
     );
     ai:Error? closeResult = store.close();
     test:assertTrue(closeResult is (), "closing a fully offline store should not fail");
@@ -216,7 +215,7 @@ isolated function testOfflineConstructionWithCreateIndexDisabled() returns error
 @test:Config
 isolated function testQuantizationAllowedOnServerlessNextGen() {
     ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_1X, IN_MEMORY),
-            ai:DENSE, validConfig());
+            validMode(), {});
     test:assertTrue(result is (), "in_memory/1x is the documented way to opt out of quantization");
 }
 
@@ -226,7 +225,7 @@ isolated function testQuantizationAllowedOnServerlessNextGen() {
 @test:Config
 isolated function testOnDiskWithNoCompressionRejected() {
     ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_1X, ON_DISK),
-            ai:DENSE, validConfig());
+            validMode(), {});
     if result !is ai:Error {
         test:assertFail("'ON_DISK' with 'COMPRESSION_1X' is rejected by the server and should be caught here");
     }
@@ -236,15 +235,13 @@ isolated function testOnDiskWithNoCompressionRejected() {
 
 @test:Config
 isolated function testUnsetQuantizationIsAllowedOnNextGen() {
-    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(), ai:DENSE,
-            validConfig());
+    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(), validMode(), {});
     test:assertTrue(result is (), "leaving both unset reproduces the server's own default");
 }
 
 @test:Config
 isolated function testCompressionLevelWithoutVectorModeIsAllowed() {
-    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_1X), ai:DENSE,
-            validConfig());
+    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_1X), validMode(), {});
     test:assertTrue(result is (),
             "'COMPRESSION_1X' is only rejected alongside 'ON_DISK', which is not set here");
 }
@@ -259,7 +256,7 @@ isolated function testBothCollectionIdentifiersRejected() {
         collectionName: "vectors",
         collectionId: "abc123"
     };
-    ai:Error? result = validateConfiguration(VALID_URL, deployment, ai:DENSE, validConfig());
+    ai:Error? result = validateConfiguration(VALID_URL, deployment, validMode(), {});
     if result !is ai:Error {
         test:assertFail("naming a collection twice should be rejected, not silently resolved");
     }
@@ -279,8 +276,8 @@ isolated function testEitherCollectionIdentifierAloneIsAccepted() {
         auth: TEST_CREDENTIALS,
         collectionId: "abc123"
     };
-    test:assertTrue(validateConfiguration(VALID_URL, byName, ai:DENSE, validConfig()) is ());
-    test:assertTrue(validateConfiguration(VALID_URL, byId, ai:DENSE, validConfig()) is ());
+    test:assertTrue(validateConfiguration(VALID_URL, byName, validMode(), {}) is ());
+    test:assertTrue(validateConfiguration(VALID_URL, byId, validMode(), {}) is ());
 }
 
 // --- the signed collection headers -------------------------------------------------------------

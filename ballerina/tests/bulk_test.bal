@@ -24,21 +24,21 @@ isolated function textEntry(string? id, ai:Vector embedding, string content = "h
 
 @test:Config
 isolated function testPrepareEntriesGeneratesIdWhenAbsent() returns error? {
-    PreparedEntry[] prepared = check prepareEntries([textEntry((), [0.1, 0.2])], ai:COSINE);
+    PreparedEntry[] prepared = check prepareEntries([textEntry((), [0.1, 0.2])], denseMode(3, ai:COSINE));
     test:assertEquals(prepared.length(), 1);
     test:assertTrue(prepared[0].id.length() > 0, "a UUID should have been generated");
 }
 
 @test:Config
 isolated function testPrepareEntriesKeepsCallerSuppliedId() returns error? {
-    PreparedEntry[] prepared = check prepareEntries([textEntry("my-id", [0.1, 0.2])], ai:COSINE);
+    PreparedEntry[] prepared = check prepareEntries([textEntry("my-id", [0.1, 0.2])], denseMode(3, ai:COSINE));
     test:assertEquals(prepared[0].id, "my-id");
 }
 
 @test:Config
 isolated function testPrepareEntriesRejectsSparseEmbedding() {
     ai:VectorEntry entry = {id: "1", embedding: {indices: [0, 1], values: [0.1, 0.2]}, chunk: {'type: "text-chunk", content: "x"}};
-    PreparedEntry[]|ai:Error result = prepareEntries([entry], ai:COSINE);
+    PreparedEntry[]|ai:Error result = prepareEntries([entry], denseMode(3, ai:COSINE));
     test:assertTrue(result is ai:Error, "expected an ai:Error for a sparse embedding");
 }
 
@@ -49,19 +49,19 @@ isolated function testPrepareEntriesRejectsHybridEmbedding() {
         embedding: {dense: [0.1, 0.2], sparse: {indices: [0], values: [0.5]}},
         chunk: {'type: "text-chunk", content: "x"}
     };
-    PreparedEntry[]|ai:Error result = prepareEntries([entry], ai:COSINE);
+    PreparedEntry[]|ai:Error result = prepareEntries([entry], denseMode(3, ai:COSINE));
     test:assertTrue(result is ai:Error, "expected an ai:Error for a hybrid embedding");
 }
 
 @test:Config
 isolated function testPrepareEntriesRejectsZeroVectorUnderCosine() {
-    PreparedEntry[]|ai:Error result = prepareEntries([textEntry("z", [0.0, 0.0, 0.0])], ai:COSINE);
+    PreparedEntry[]|ai:Error result = prepareEntries([textEntry("z", [0.0, 0.0, 0.0])], denseMode(3, ai:COSINE));
     test:assertTrue(result is ai:Error, "expected an ai:Error for a zero vector under COSINE");
 }
 
 @test:Config
 isolated function testPrepareEntriesAllowsZeroVectorUnderEuclidean() returns error? {
-    PreparedEntry[] prepared = check prepareEntries([textEntry("z", [0.0, 0.0, 0.0])], ai:EUCLIDEAN);
+    PreparedEntry[] prepared = check prepareEntries([textEntry("z", [0.0, 0.0, 0.0])], denseMode(3, ai:EUCLIDEAN));
     test:assertEquals(prepared.length(), 1);
 }
 
@@ -69,13 +69,13 @@ isolated function testPrepareEntriesAllowsZeroVectorUnderEuclidean() returns err
 
 @test:Config
 isolated function testBuildEntrySourceNestedMetadata() returns error? {
-    Configuration config = {indexConfig: {dimension: 2}};
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 2}};
     PreparedEntry entry = {
         id: "1",
         embedding: [0.1, 0.2],
         chunk: {'type: "text-chunk", content: "hello", metadata: {"language": "en"}}
     };
-    map<json> src = check buildEntrySource(entry, config);
+    map<json> src = check buildEntrySource(entry, configMode, {});
     test:assertEquals(src["embedding"], <json[]>[0.1, 0.2]);
     test:assertEquals(src["content"], "hello");
     test:assertEquals(src["doc_id"], "1");
@@ -85,26 +85,28 @@ isolated function testBuildEntrySourceNestedMetadata() returns error? {
 
 @test:Config
 isolated function testBuildEntrySourceFlatMetadata() returns error? {
-    Configuration config = {indexConfig: {dimension: 2}, metadataFieldName: ""};
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 2}};
+    Configuration config = {metadataFieldName: ""};
     PreparedEntry entry = {
         id: "1",
         embedding: [0.1, 0.2],
         chunk: {'type: "text-chunk", content: "hello", metadata: {"language": "en"}}
     };
-    map<json> src = check buildEntrySource(entry, config);
+    map<json> src = check buildEntrySource(entry, configMode, config);
     test:assertEquals(src["language"], "en");
     test:assertFalse(src.hasKey("metadata"), "flat metadata must not be nested under a 'metadata' field");
 }
 
 @test:Config
 isolated function testBuildEntrySourceFlatMetadataCollisionIsError() {
-    Configuration config = {indexConfig: {dimension: 2}, metadataFieldName: ""};
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 2}};
+    Configuration config = {metadataFieldName: ""};
     PreparedEntry entry = {
         id: "1",
         embedding: [0.1, 0.2],
         chunk: {'type: "text-chunk", content: "hello", metadata: {"content": "clobbered!"}}
     };
-    map<json>|ai:Error result = buildEntrySource(entry, config);
+    map<json>|ai:Error result = buildEntrySource(entry, configMode, config);
     test:assertTrue(result is ai:Error,
             "a flat-schema metadata key colliding with a reserved field name must be rejected");
 }
@@ -113,16 +115,15 @@ isolated function testBuildEntrySourceFlatMetadataCollisionIsError() {
 
 @test:Config
 isolated function testAddBulkBodyEmptyEntriesProducesEmptyBytes() returns error? {
-    byte[] body = check buildAddBulkBody([], "my-index", managedDeployment(),
-            {indexConfig: {dimension: 2}});
+    byte[] body = check buildAddBulkBody([], "my-index", managedDeployment(), denseMode(2), {});
     test:assertEquals(body.length(), 0);
 }
 
 @test:Config
 isolated function testAddBulkBodyManagedDomainWritesId() returns error? {
-    Configuration config = {indexConfig: {dimension: 2}};
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 2}};
     PreparedEntry entry = {id: "abc", embedding: [0.1, 0.2], chunk: {'type: "text-chunk", content: "hi"}};
-    byte[] body = check buildAddBulkBody([entry], "my-index", managedDeployment(), config);
+    byte[] body = check buildAddBulkBody([entry], "my-index", managedDeployment(), configMode, {});
     string ndjson = check string:fromBytes(body);
     test:assertTrue(ndjson.endsWith("\n"), "the NDJSON body must end with a trailing newline");
     string[] lines = re `\n`.split(ndjson);
@@ -132,9 +133,9 @@ isolated function testAddBulkBodyManagedDomainWritesId() returns error? {
 
 @test:Config
 isolated function testAddBulkBodyServerlessClassicOmitsId() returns error? {
-    Configuration config = {indexConfig: {dimension: 2}};
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 2}};
     PreparedEntry entry = {id: "abc", embedding: [0.1, 0.2], chunk: {'type: "text-chunk", content: "hi"}};
-    byte[] body = check buildAddBulkBody([entry], "my-index", classicDeployment(), config);
+    byte[] body = check buildAddBulkBody([entry], "my-index", classicDeployment(), configMode, {});
     string ndjson = check string:fromBytes(body);
     json actionLine = check re `\n`.split(ndjson)[0].fromJsonString();
     test:assertEquals(actionLine, {"index": {"_index": "my-index"}});
@@ -142,9 +143,9 @@ isolated function testAddBulkBodyServerlessClassicOmitsId() returns error? {
 
 @test:Config
 isolated function testAddBulkBodyServerlessNextGenWritesId() returns error? {
-    Configuration config = {indexConfig: {dimension: 2}};
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 2}};
     PreparedEntry entry = {id: "abc", embedding: [0.1, 0.2], chunk: {'type: "text-chunk", content: "hi"}};
-    byte[] body = check buildAddBulkBody([entry], "my-index", nextGenDeployment(), config);
+    byte[] body = check buildAddBulkBody([entry], "my-index", nextGenDeployment(), configMode, {});
     string ndjson = check string:fromBytes(body);
     json actionLine = check re `\n`.split(ndjson)[0].fromJsonString();
     test:assertEquals(actionLine, {"index": {"_index": "my-index", "_id": "abc"}});
@@ -152,12 +153,12 @@ isolated function testAddBulkBodyServerlessNextGenWritesId() returns error? {
 
 @test:Config
 isolated function testAddBulkBodyHasTwoLinesPerEntry() returns error? {
-    Configuration config = {indexConfig: {dimension: 2}};
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 2}};
     PreparedEntry[] entries = [
         {id: "1", embedding: [0.1, 0.2], chunk: {'type: "text-chunk", content: "a"}},
         {id: "2", embedding: [0.3, 0.4], chunk: {'type: "text-chunk", content: "b"}}
     ];
-    byte[] body = check buildAddBulkBody(entries, "my-index", managedDeployment(), config);
+    byte[] body = check buildAddBulkBody(entries, "my-index", managedDeployment(), configMode, {});
     string ndjson = check string:fromBytes(body);
     // trailing newline means the final split element is empty; drop it before counting
     string[] lines = re `\n`.split(ndjson);

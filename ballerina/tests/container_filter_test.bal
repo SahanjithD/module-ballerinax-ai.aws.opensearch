@@ -209,11 +209,9 @@ isolated function testContainerFilterPreFiltersKnnQuery() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerFilterUnderFlatSchema() returns error? {
     string indexName = containerIndexName("f-flat");
-    Configuration config = {
-        indexConfig: {dimension: CONTAINER_DIMENSION},
-        metadataFieldName: ""
-    };
-    VectorStore store = check newContainerStore(indexName, config);
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
+    Configuration config = {metadataFieldName: ""};
+    VectorStore store = check newContainerStore(indexName, configMode, config);
     check store.add([
         entry("flat-en", vec(1.0), "english", {"language": "en"}),
         entry("flat-fr", vec(0.0, 1.0), "french", {"language": "fr"})

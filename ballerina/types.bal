@@ -199,7 +199,7 @@ public type ServerlessNextGenDeployment record {|
 # Configuration for the `knn_vector` field and the index-creation mapping this module generates.
 #
 # # These apply at index creation only
-# Every field here except `createIndexIfNotExists` is sent in exactly one request — the
+# Every field here is sent in exactly one request — the
 # `PUT /<index>` that `init` issues when the index does not yet exist. Once the index exists,
 # `init` sees it and returns without building a mapping at all, so **editing any of these has no
 # effect on an existing index, and produces no error**. The same is true of
@@ -234,21 +234,194 @@ public type IndexConfig record {|
     # The HNSW `m` parameter (max bi-directional links per node). Honored on all three deployment
     # types, for the same reason as `efConstruction`.
     int m = 16;
-    # Whether `init` should create the index if it does not already exist. When `false`, `init`
-    # performs no network I/O at all — useful for least-privilege deployments where the calling
-    # principal has no `CreateIndex` permission, and for fully offline construction in tests.
+|};
+
+# The score-normalization technique the `normalization-processor` applies to each sub-query's
+# scores before they are combined. `HYBRID` only.
+#
+# `z_score` is deliberately absent. It is OpenSearch 3.0+, and AWS documents only `min_max` and
+# `l2` for Serverless, so offering it would hand callers a value that fails outright on every 2.x
+# domain and is unattested on Serverless.
+public enum NormalizationTechnique {
+    # Rescales each sub-query's scores to `[0, 1]` against that sub-query's own minimum and
+    # maximum. The highest-scoring document in a sub-query always lands on exactly `1.0`, and an
+    # exact `0.0` is replaced with `0.001` (a literal `0.0` means `match_none` to OpenSearch), so
+    # a combined score is `(0.0, 1.0]` rather than `[0, 1]`.
     #
-    # # Hazard when `false`
-    # `init` does not verify that the index exists, and a missing index does not make `add` fail:
-    # OpenSearch ships with `action.auto_create_index: true`, so the first `_bulk` write creates
-    # an index from the document's inferred shape instead. That index has no `index.knn` setting
-    # and maps the vector as a plain `float` array rather than a `knn_vector`, so writes keep
-    # succeeding while every `query` fails with a `400`. Recovering means deleting the index and
-    # reindexing from source.
+    # Because only an exact `0.0` is substituted, a sub-query whose raw scores are wildly spread —
+    # which an unbounded sparse dot product easily is — can have its two lowest documents reorder.
+    MIN_MAX = "min_max",
+    # Divides each score by the L2 norm of that sub-query's score vector, which preserves score
+    # ratios where `MIN_MAX` does not. Named for the normalization, and unrelated to the `l2`
+    # *space type* that `IndexConfig.similarityMetric` selects.
+    L2 = "l2"
+}
+
+# How the normalized dense and sparse scores are folded into a single `_score`. `HYBRID` only.
+public enum CombinationTechnique {
+    # The weighted arithmetic mean. A document matching only one sub-query still counts in the
+    # denominator, so it is penalised relative to one matching both.
+    ARITHMETIC_MEAN = "arithmetic_mean",
+    GEOMETRIC_MEAN = "geometric_mean",
+    HARMONIC_MEAN = "harmonic_mean"
+}
+
+# The dense/sparse score fusion `HYBRID` asks OpenSearch to perform, sent as an inline
+# `search_pipeline` object in the search body.
+#
+# Nothing is provisioned server-side. A `hybrid` query needs a normalization pipeline to produce
+# usable scores, but a *named* one would make these knobs durable cluster state this module owns
+# the lifecycle of — created once, then silently stale the moment a caller changed a weight, which
+# is exactly the trap `IndexConfig` already documents for index-creation settings. Fusion weights
+# are query-time semantics, so they travel with the query. Sending them inline also keeps this
+# module's IAM surface at index scope (an AOSS search pipeline is a *collection*-scoped resource,
+# needing `aoss:CreateCollectionItems`) and avoids AWS's documented up-to-15-second Serverless
+# pipeline propagation delay, during which a freshly created pipeline is not yet resolvable.
+#
+# Verified against OpenSearch 2.19.1: an inline `search_pipeline` carrying `phase_results_processors`
+# is accepted on `POST /<index>/_search` and the processor runs.
+public type HybridSearchConfig record {|
+    # How each sub-query's scores are rescaled before combination.
+    NormalizationTechnique normalization = MIN_MAX;
+    # How the two normalized scores are folded into one.
+    CombinationTechnique combination = ARITHMETIC_MEAN;
+    # The weight given the dense (`knn`) sub-query. Must be in `[0.0, 1.0]`, and must sum with
+    # `sparseWeight` to `1.0` — the `normalization-processor` rejects any other weight list. Both
+    # rules are checked at construction.
+    float denseWeight = 0.5;
+    # The weight given the sparse (`neural_sparse`) sub-query. See `denseWeight`.
+    float sparseWeight = 0.5;
+|};
+
+# Defers fusion to a search pipeline already provisioned on the cluster, sent as
+# `?search_pipeline=<name>` instead of an inline object.
+#
+# This module provisions nothing and validates nothing about the named pipeline: the pipeline
+# itself defines the normalization technique, the combination technique and the weights. That is
+# why naming one and setting `HybridSearchConfig`'s knobs is not expressible — they are
+# alternatives, not layers. Sending both forms on one request is rejected by OpenSearch outright
+# ("Both named and inline search pipeline were specified"), and the union is what makes that
+# unreachable rather than merely unlikely.
+#
+# Use this for a least-privilege deployment whose calling principal cannot create pipelines, or to
+# share one tuned pipeline across several stores.
+public type NamedSearchPipeline record {|
+    # The pipeline name, as registered with `PUT /_search/pipeline/<name>`.
+    string name;
+|};
+
+# Where a `HYBRID` store's fusion configuration comes from: inline on every request, or a pipeline
+# already on the cluster.
+public type HybridFusion HybridSearchConfig|NamedSearchPipeline;
+
+# The kind of search this store performs, together with the settings only that kind honors.
+# Chosen once at construction — the `ai:VectorStore` contract carries no mode, so `add` and
+# `query` cannot be told which one to use per call.
+#
+# What varies is more than the query clause: the index-creation mapping differs (a `knn_vector`
+# field, a `rank_features` field, or both), and `add` accepts a different `ai:Embedding` member in
+# each. Selecting a variant is what makes a setting unreachable everywhere else — `IndexConfig`
+# and `normalizeCosineScore` cannot be named on a `SparseSearch`, which has no dense vector and no
+# cosine to recover; `sparseVectorFieldName` cannot be named on a `DenseSearch`; and the fusion
+# knobs exist only where fusion happens. These were never `init`-time validation rules; they are
+# type errors from the start, for the same reason the `Deployment` variants are.
+#
+# Like `IndexConfig`, the field names and index shape here are honored at index creation only.
+# Changing `vectorFieldName` or `sparseVectorFieldName` against an index that already exists does
+# not re-map anything — it simply reads and writes fields that are not there.
+public type SearchMode DenseSearch|SparseSearch|HybridSearch;
+
+# Dense vector search over a `knn_vector` field, using a `knn` query clause. The original and
+# default mode, and the only one that works on every OpenSearch version this module targets
+# without a plugin requirement.
+public type DenseSearch record {|
+    # Discriminates this variant. Required, so a record literal resolves to exactly one member of
+    # `SearchMode`.
+    ai:DENSE queryMode;
+    # Shape of the `knn_vector` field and the index-creation mapping.
+    IndexConfig indexConfig;
+    # The document field that stores the dense vector.
+    string vectorFieldName = "embedding";
+    # Whether to convert a `cosinesimil` `_score` back to a `[-1, 1]` cosine similarity
+    # (`cos = 2 * score - 1`) before returning it as `VectorMatch.similarityScore`. Applies only
+    # when `indexConfig.similarityMetric` is `COSINE`; ignored otherwise.
     #
-    # Only set this to `false` against an index you know was provisioned out of band with a
-    # compatible mapping.
-    boolean createIndexIfNotExists = true;
+    # Defaults to `true` so `VectorMatch.similarityScore` means the same thing here as it does in
+    # `ai:InMemoryVectorStore`, which returns a true cosine in `[-1, 1]`. OpenSearch's raw
+    # `cosinesimil` `_score` is `[0, 1]`, so leaving this off would make a threshold tuned against
+    # any other `ai:VectorStore` implementation silently mean something else against this one.
+    # Set `false` to get OpenSearch's `_score` through untouched.
+    #
+    # Reachable here only. A `SPARSE` score is an unbounded dot product with no cosine in it, and
+    # a `HYBRID` score has already been normalized to `(0.0, 1.0]` by the fusion pipeline — in
+    # both cases the transform would corrupt the score rather than correct it, so the field does
+    # not exist there rather than being quietly ignored.
+    boolean normalizeCosineScore = true;
+|};
+
+# Sparse vector search over a `rank_features` field, using a `neural_sparse` query clause carrying
+# precomputed `query_tokens`.
+#
+# An `ai:SparseVector`'s `indices` become the feature names and its `values` the feature weights,
+# so a stored document holds `{"<index>": <weight>}`. No ML model, no ingest pipeline and no
+# `index.knn` setting are involved: the weights are computed by the caller's own encoder and sent
+# as they are.
+#
+# # Requirements and hazards
+# The `neural_sparse` query clause comes from the `neural-search` plugin, which is bundled in the
+# standard OpenSearch distribution and present on AWS managed domains from 2.9. Raw `query_tokens`
+# specifically need OpenSearch 2.14 or later; on an older cluster the clause parses but the field
+# is rejected.
+#
+# `rank_features` weights are stored with roughly nine significant bits, so a round-tripped weight
+# carries about 0.4% relative error and must never be compared to a locally-held one with exact
+# float equality. The field also supports no `exists` query, no aggregation and no sorting; this
+# module performs none of those against it.
+public type SparseSearch record {|
+    # Discriminates this variant.
+    ai:SPARSE queryMode;
+    # The document field that stores the sparse vector, mapped as `rank_features`.
+    string sparseVectorFieldName = "sparse_embedding";
+    # The maximum number of non-zero terms a *query* sparse vector may carry, checked before the
+    # request is sent.
+    #
+    # A `neural_sparse` query compiles to one Lucene clause per term and is bounded by the
+    # cluster's `indices.query.bool.max_clause_count`, whose default is 1024; exceeding it fails
+    # as a shard exception well after the request has left. Raise this only if that cluster
+    # setting has also been raised.
+    int maxQueryTokens = 1024;
+|};
+
+# Hybrid search: a `knn` clause and a `neural_sparse` clause issued as one `hybrid` query, with
+# their scores normalized and combined server-side.
+#
+# The index carries both a `knn_vector` and a `rank_features` field, and `add` requires an
+# `ai:HybridVector` so both are always populated — a document missing one half would score zero on
+# that sub-query and be penalised by the combination rather than ignored by it.
+#
+# # Requirements and hazards
+# Needs the `neural-search` plugin (see `SparseSearch`) and OpenSearch 2.11 or later for the
+# `hybrid` query itself. A `hybrid` query without a normalization pipeline does not fail cleanly:
+# it leaks large negative sentinel scores into the results, so this module always arranges one.
+#
+# Metadata filters are duplicated into each sub-query rather than sent as a single top-level
+# `hybrid.filter`, which is OpenSearch 3.0+ only. The two forms are documented as equivalent, and
+# duplicating works on every version that has the `hybrid` query at all.
+public type HybridSearch record {|
+    # Discriminates this variant.
+    ai:HYBRID queryMode;
+    # Shape of the `knn_vector` field and the index-creation mapping.
+    IndexConfig indexConfig;
+    # The document field that stores the dense vector.
+    string vectorFieldName = "embedding";
+    # The document field that stores the sparse vector, mapped as `rank_features`.
+    string sparseVectorFieldName = "sparse_embedding";
+    # The maximum number of non-zero terms a query sparse vector may carry. See
+    # `SparseSearch.maxQueryTokens`.
+    int maxQueryTokens = 1024;
+    # How the dense and sparse sub-query scores are fused: inline on every request, or by a
+    # pipeline already provisioned on the cluster.
+    HybridFusion fusion = {};
 |};
 
 # Exponential-backoff retry configuration applied to retryable HTTP responses
@@ -264,12 +437,15 @@ public type RetryConfig record {|
     decimal backoffFactor = 2;
 |};
 
-# Configuration for the AWS OpenSearch vector store.
+# Behavioral configuration honored identically under every `SearchMode` and on every deployment
+# type: the non-vector field names, bulk sizing, the result-window ceiling, and retries.
+#
+# Anything whose meaning depends on the kind of search being performed lives on `SearchMode`
+# instead — the `knn_vector` shape and the cosine-score transform on `DenseSearch`/`HybridSearch`,
+# the `rank_features` field name on `SparseSearch`/`HybridSearch`, the fusion knobs on
+# `HybridSearch` alone. That split is what keeps a setting from being reachable where it would do
+# nothing.
 public type Configuration record {|
-    # Shape of the `knn_vector` field and the index-creation mapping.
-    IndexConfig indexConfig;
-    # The document field that stores the dense vector.
-    string vectorFieldName = "embedding";
     # The document field that stores the chunk content.
     string contentFieldName = "content";
     # The document field that carries the logical entry id. Duplicates `_id` on deployments where
@@ -280,22 +456,13 @@ public type Configuration record {|
     # `<metadataFieldName>.<key>` paths. Set to `""` to address bare `<key>` paths instead, for
     # pointing this module at a pre-existing index with a flat schema.
     string metadataFieldName = "metadata";
-    # Whether `query` results include the stored vector. When `false`, the vector field is
-    # excluded from `_source` and `VectorMatch.embedding` is returned as `[]` — a meaningful
-    # bandwidth saving at high dimensions and large `topK`. When `true`, what comes back is the
-    # vector as storage holds it, which is not necessarily the one that was written — see
+    # Whether `query` results include the stored vector(s). When `false`, every vector field this
+    # store's `SearchMode` declares is excluded from `_source` and `VectorMatch.embedding` comes
+    # back empty — a meaningful bandwidth saving at high dimensions and large `topK`, and a larger
+    # one under `SPARSE`/`HYBRID`, where a token map can be big. When `true`, what comes back is
+    # the vector as storage holds it, which is not necessarily what was written — see
     # "Returned embeddings" on `VectorStore`.
     boolean includeEmbeddingsInResults = true;
-    # Whether to convert a `cosinesimil` `_score` back to a `[-1, 1]` cosine similarity
-    # (`cos = 2 * score - 1`) before returning it as `VectorMatch.similarityScore`. Applies only
-    # when `indexConfig.similarityMetric` is `COSINE`; ignored otherwise.
-    #
-    # Defaults to `true` so `VectorMatch.similarityScore` means the same thing here as it does in
-    # `ai:InMemoryVectorStore`, which returns a true cosine in `[-1, 1]`. OpenSearch's raw
-    # `cosinesimil` `_score` is `[0, 1]`, so leaving this off would make a threshold tuned against
-    # any other `ai:VectorStore` implementation silently mean something else against this one.
-    # Set `false` to get OpenSearch's `_score` through untouched.
-    boolean normalizeCosineScore = true;
     # The maximum number of entries per `_bulk` request issued by `add`. Large `add` calls are
     # chunked into requests of at most this size, to stay under the endpoint's HTTP payload cap.
     int maxBulkSize = 500;
@@ -303,6 +470,26 @@ public type Configuration record {|
     # upper bound enforced on an explicit `topK`. OpenSearch's own `k`/`size` ceiling is 10,000;
     # raise this only if the index's `index.max_result_window` setting has also been raised.
     int maxResultWindow = 10000;
+    # Whether `init` should create the index if it does not already exist. When `false`, `init`
+    # performs no network I/O at all — useful for least-privilege deployments where the calling
+    # principal has no `CreateIndex` permission, and for fully offline construction in tests.
+    #
+    # Lives here rather than on a `SearchMode` variant because it governs what `init` *does*, not
+    # what the index looks like, and every mode needs the same opt-out.
+    #
+    # # Hazard when `false`
+    # `init` does not verify that the index exists, and a missing index does not make `add` fail:
+    # OpenSearch ships with `action.auto_create_index: true`, so the first `_bulk` write creates
+    # an index from the document's inferred shape instead. That index carries none of the mapping
+    # this module would have built — under `DENSE`/`HYBRID` it has no `index.knn` setting and maps
+    # the vector as a plain `float` array rather than a `knn_vector`; under `SPARSE`/`HYBRID` it
+    # maps the token map as a nested object rather than `rank_features`. Writes keep succeeding
+    # while every `query` fails with a `400`. Recovering means deleting the index and reindexing
+    # from source.
+    #
+    # Only set this to `false` against an index you know was provisioned out of band with a
+    # compatible mapping.
+    boolean createIndexIfNotExists = true;
     # Retry behavior for transient failures.
     RetryConfig retryConfig = {};
 |};
