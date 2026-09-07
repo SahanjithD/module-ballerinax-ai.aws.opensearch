@@ -314,9 +314,13 @@ public isolated class VectorStore {
 # + return - An `ai:Error` naming the first failing rule, otherwise `()`
 isolated function validateConfiguration(string serviceUrl, Deployment deployment,
         SearchMode searchMode, Configuration config) returns ai:Error? {
-    if searchMode !is DenseSearch {
-        return error(string `This module supports 'ai:DENSE' query mode only; ` +
+    if searchMode is HybridSearch {
+        return error(string `This module supports 'ai:DENSE' and 'ai:SPARSE' query modes only; ` +
                 string `got '${searchMode.queryMode}'`);
+    }
+    if searchMode is SparseSearch && searchMode.maxQueryTokens < 1 {
+        return error(string `'SparseSearch.maxQueryTokens' must be a positive integer, got: ` +
+                string `${searchMode.maxQueryTokens}`);
     }
     IndexConfig? indexConfig = indexConfigOf(searchMode);
     if indexConfig is IndexConfig && indexConfig.dimension < 1 {
@@ -332,6 +336,16 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
                 string `${config.maxResultWindow}`);
     }
     if deployment is ServerlessNextGenDeployment {
+        // Both default to `()`, so "set" is distinguishable from "unset" -- which makes this worth
+        // rejecting rather than ignoring. They shape the `knn_vector` field, and a caller who set
+        // them for an index that has no such field has misunderstood something. Staying silent
+        // would repeat the very failure mode `IndexConfig` already warns about.
+        if searchMode is SparseSearch &&
+                (deployment.compressionLevel is CompressionLevel || deployment.vectorMode is VectorMode) {
+            return error("'ServerlessNextGenDeployment.compressionLevel' and '.vectorMode' shape the " +
+                    "'knn_vector' field, which a 'SPARSE' index does not have; leave both unset, or " +
+                    "use 'HYBRID' if the index should also hold dense vectors");
+        }
         if deployment?.collectionName is string && deployment?.collectionId is string {
             return error("'ServerlessNextGenDeployment.collectionName' and '.collectionId' are " +
                     "alternatives; set at most one. Sending both collection headers leaves it to " +

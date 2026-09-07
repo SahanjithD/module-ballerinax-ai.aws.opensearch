@@ -260,3 +260,65 @@ isolated function testConfigurableFieldNamesHonored() returns error? {
     test:assertTrue(properties.hasKey("myId"));
     test:assertFalse(properties.hasKey("embedding"));
 }
+
+// --- sparse and hybrid mappings ---------------------------------------------------------------
+
+@test:Config
+isolated function testSparseMappingUsesRankFeatures() returns error? {
+    map<json> mapping = check asMap(buildIndexMapping(sparseMode(), {}, managedDeployment()));
+    map<json> mappings = check asMap(mapping["mappings"]);
+    map<json> properties = check asMap(mappings["properties"]);
+    map<json> sparseField = check asMap(properties["sparse_embedding"]);
+    test:assertEquals(sparseField["type"], "rank_features");
+    test:assertFalse(properties.hasKey("embedding"),
+            "a SPARSE index stores no dense vector, so it must map no knn_vector field");
+}
+
+// `index.knn` is not an inert flag: it switches the index onto the k-NN codec and wires up
+// per-shard native-memory circuit-breaker accounting. Buying that for a field that does not exist
+// would also misdescribe the index to anyone reading `_settings`. Verified against OpenSearch
+// 2.19.1 that a rank_features-only index is created and queried with no settings block at all.
+@test:Config
+isolated function testSparseMappingOmitsSettingsEntirely() returns error? {
+    map<json> mapping = check asMap(buildIndexMapping(sparseMode(), {}, managedDeployment()));
+    test:assertFalse(mapping.hasKey("settings"),
+            "a SPARSE index has no knn_vector field and must not request the k-NN codec");
+}
+
+// A `rank_features` field takes no `method` block, and none of the knn_vector tuning belongs
+// anywhere in a SPARSE mapping -- on any deployment, including the two that shape that block
+// differently.
+@test:Config
+isolated function testSparseMappingLeaksNoDenseVectorParameters() returns error? {
+    foreach Deployment deployment in allDeployments() {
+        json mapping = buildIndexMapping(sparseMode(), {}, deployment);
+        string serialized = mapping.toJsonString();
+        foreach string leaked in ["method", "engine", "space_type", "compression_level", "hnsw", "dimension"] {
+            test:assertFalse(serialized.includes(leaked),
+                    string `a SPARSE mapping must not carry '${leaked}', got: ${serialized}`);
+        }
+    }
+}
+
+@test:Config
+isolated function testSparseMappingHonoursCustomFieldName() returns error? {
+    map<json> mapping = check asMap(buildIndexMapping(sparseMode("tokens"), {}, managedDeployment()));
+    map<json> mappings = check asMap(mapping["mappings"]);
+    map<json> properties = check asMap(mappings["properties"]);
+    test:assertTrue(properties.hasKey("tokens"));
+    test:assertFalse(properties.hasKey("sparse_embedding"));
+}
+
+@test:Config
+isolated function testHybridMappingCarriesBothVectorFields() returns error? {
+    map<json> mapping = check asMap(buildIndexMapping(hybridMode(), {}, managedDeployment()));
+    map<json> mappings = check asMap(mapping["mappings"]);
+    map<json> properties = check asMap(mappings["properties"]);
+    map<json> denseField = check asMap(properties["embedding"]);
+    map<json> sparseField = check asMap(properties["sparse_embedding"]);
+    test:assertEquals(denseField["type"], "knn_vector");
+    test:assertEquals(sparseField["type"], "rank_features");
+    map<json> settings = check asMap(mapping["settings"]);
+    map<json> index = check asMap(settings["index"]);
+    test:assertEquals(index["knn"], true, "a HYBRID index does hold a knn_vector and needs the codec");
+}

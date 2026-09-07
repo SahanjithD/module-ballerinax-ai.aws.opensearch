@@ -401,3 +401,133 @@ isolated function testSummarizeBulkFailuresRespectsLimit() {
     string summary = summarizeBulkFailures(failures, 2);
     test:assertEquals(summary, "'1': a; '2': b (and 1 more)");
 }
+
+// --- mode/embedding strictness ----------------------------------------------------------------
+
+// The check is symmetric in `add` and `query`: a store configured for one mode and handed
+// another's embedding is a configuration mistake either way. Letting a sparse embedding through
+// to a dense index would index a field no query ever reads.
+isolated function sparseEntry(string id, int[] indices, float[] values) returns ai:VectorEntry =>
+    {id, embedding: {indices, values}, chunk: {'type: "text-chunk", content: "hello"}};
+
+isolated function hybridEntry(string id, ai:Vector dense, int[] indices, float[] values) returns ai:VectorEntry =>
+    {id, embedding: {dense, sparse: {indices, values}}, chunk: {'type: "text-chunk", content: "hello"}};
+
+@test:Config
+isolated function testPrepareEntriesSparseModeAcceptsSparseEmbedding() returns error? {
+    PreparedEntry[] prepared = check prepareEntries([sparseEntry("s", [1055, 2048], [5.5, 1.25])], sparseMode());
+    test:assertEquals(prepared[0].rankFeatures, {"1055": 5.5, "2048": 1.25});
+    test:assertTrue(prepared[0].embedding is (), "a SPARSE entry carries no dense vector");
+}
+
+@test:Config
+isolated function testPrepareEntriesHybridModeSplitsBothHalves() returns error? {
+    PreparedEntry[] prepared = check prepareEntries([hybridEntry("h", [0.1, 0.2], [7], [0.5])], hybridMode());
+    test:assertEquals(prepared[0].embedding, <ai:Vector>[0.1, 0.2]);
+    test:assertEquals(prepared[0].rankFeatures, {"7": 0.5});
+}
+
+@test:Config
+isolated function testPrepareEntriesSparseModeRejectsDenseEmbedding() {
+    PreparedEntry[]|ai:Error result = prepareEntries([textEntry("d", [0.1, 0.2])], sparseMode());
+    if result !is ai:Error {
+        test:assertFail("a dense embedding must be rejected by a SPARSE store");
+    }
+    test:assertTrue(result.message().includes("ai:SparseVector"),
+            string `the message should name the required type, got: ${result.message()}`);
+}
+
+@test:Config
+isolated function testPrepareEntriesSparseModeRejectsHybridEmbedding() {
+    PreparedEntry[]|ai:Error result = prepareEntries([hybridEntry("h", [0.1], [7], [0.5])], sparseMode());
+    test:assertTrue(result is ai:Error, "a hybrid embedding must be rejected by a SPARSE store");
+}
+
+@test:Config
+isolated function testPrepareEntriesDenseModeRejectsSparseEmbedding() {
+    PreparedEntry[]|ai:Error result = prepareEntries([sparseEntry("s", [1], [0.5])], denseMode());
+    if result !is ai:Error {
+        test:assertFail("a sparse embedding must be rejected by a DENSE store");
+    }
+    test:assertTrue(result.message().includes("ai:Vector"),
+            string `the message should name the required type, got: ${result.message()}`);
+}
+
+@test:Config
+isolated function testPrepareEntriesHybridModeRejectsDenseEmbedding() {
+    PreparedEntry[]|ai:Error result = prepareEntries([textEntry("d", [0.1, 0.2])], hybridMode());
+    if result !is ai:Error {
+        test:assertFail("a dense-only embedding must be rejected by a HYBRID store");
+    }
+    test:assertTrue(result.message().includes("ai:HybridVector"),
+            string `the message should name the required type, got: ${result.message()}`);
+}
+
+@test:Config
+isolated function testPrepareEntriesHybridModeRejectsSparseEmbedding() {
+    PreparedEntry[]|ai:Error result = prepareEntries([sparseEntry("s", [1], [0.5])], hybridMode());
+    test:assertTrue(result is ai:Error, "a sparse-only embedding must be rejected by a HYBRID store");
+}
+
+// The Lucene bounds are enforced by `toSparseTokenMap`; this pins that `prepareEntries` actually
+// routes through it, so a bad weight fails naming the entry rather than failing a whole _bulk.
+@test:Config
+isolated function testPrepareEntriesSparseModeRejectsZeroWeightNamingTheEntry() {
+    PreparedEntry[]|ai:Error result = prepareEntries([sparseEntry("bad-one", [7], [0.0])], sparseMode());
+    if result !is ai:Error {
+        test:assertFail("a zero sparse weight must be rejected before the wire");
+    }
+    test:assertTrue(result.message().includes("bad-one"),
+            string `the message should name the offending entry, got: ${result.message()}`);
+}
+
+// --- sparse and hybrid documents --------------------------------------------------------------
+
+@test:Config
+isolated function testBuildEntrySourceSparseWritesOnlyTheSparseField() returns error? {
+    PreparedEntry entry = {id: "1", rankFeatures: {"7": 0.5}, chunk: {'type: "text-chunk", content: "hello"}};
+    map<json> src = check buildEntrySource(entry, sparseMode(), {});
+    test:assertEquals(src["sparse_embedding"], <json>{"7": 0.5});
+    test:assertFalse(src.hasKey("embedding"), "a SPARSE document carries no dense vector field");
+    test:assertEquals(src["content"], "hello");
+    test:assertEquals(src["doc_id"], "1");
+}
+
+@test:Config
+isolated function testBuildEntrySourceHybridWritesBothFields() returns error? {
+    PreparedEntry entry = {
+        id: "1",
+        embedding: [0.1, 0.2],
+        rankFeatures: {"7": 0.5},
+        chunk: {'type: "text-chunk", content: "hello"}
+    };
+    map<json> src = check buildEntrySource(entry, hybridMode(), {});
+    test:assertEquals(src["embedding"], <json[]>[0.1, 0.2]);
+    test:assertEquals(src["sparse_embedding"], <json>{"7": 0.5});
+}
+
+// The vector fields are written before the flat-schema metadata loop, so the existing
+// reserved-name collision guard covers the sparse field too, with no second check needed.
+@test:Config
+isolated function testBuildEntrySourceFlatSchemaRejectsSparseFieldCollision() {
+    PreparedEntry entry = {
+        id: "1",
+        rankFeatures: {"7": 0.5},
+        chunk: {'type: "text-chunk", content: "hello", metadata: {"sparse_embedding": "collides"}}
+    };
+    map<json>|ai:Error result = buildEntrySource(entry, sparseMode(), {metadataFieldName: ""});
+    test:assertTrue(result is ai:Error,
+            "a flat-schema metadata key colliding with the sparse vector field must be rejected");
+}
+
+@test:Config
+isolated function testExtractStoredMetadataExcludesSparseFieldUnderFlatSchema() {
+    map<json> src = {"sparse_embedding": {"7": 0.5}, "content": "hello", "doc_id": "1", "language": "en"};
+    map<json>? metadata = extractStoredMetadata(src, sparseMode(), {metadataFieldName: ""});
+    if metadata is () {
+        test:assertFail("the non-reserved field should have been collected as metadata");
+    }
+    test:assertFalse(metadata.hasKey("sparse_embedding"),
+            "the sparse vector field must not be returned as metadata");
+    test:assertEquals(metadata["language"], "en");
+}

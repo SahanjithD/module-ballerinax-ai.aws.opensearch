@@ -79,18 +79,52 @@ isolated function testDiscriminatorSelectsTheVariant() {
     test:assertTrue(nextGen is ServerlessNextGenDeployment);
 }
 
-// --- rule 1: only DENSE query mode is supported ------------------------------------------------
+// --- rule 1: the supported query modes ---------------------------------------------------------
+
+// The assertion here is that this compiles at all. `SparseSearch` declares no `IndexConfig`, so a
+// sparse store cannot be made to name a vector dimension, a similarity metric or an HNSW
+// parameter -- none of which a `rank_features` index has any use for.
+@test:Config
+isolated function testSparseModeNeedsNoDimension() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), {queryMode: ai:SPARSE}, {});
+    test:assertTrue(result is (), "a SPARSE store should construct without an IndexConfig");
+}
 
 @test:Config
-isolated function testSparseQueryModeRejected() {
-    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), {queryMode: ai:SPARSE}, {});
+isolated function testHybridQueryModeNotYetSupported() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:HYBRID, indexConfig: {dimension: 8}}, {});
     test:assertTrue(result is ai:Error);
 }
 
 @test:Config
-isolated function testHybridQueryModeRejected() {
-    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), {queryMode: ai:HYBRID, indexConfig: {dimension: 8}}, {});
-    test:assertTrue(result is ai:Error);
+isolated function testZeroMaxQueryTokensRejected() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:SPARSE, maxQueryTokens: 0}, {});
+    if result !is ai:Error {
+        test:assertFail("'maxQueryTokens' must be positive");
+    }
+    test:assertTrue(result.message().includes("maxQueryTokens"));
+}
+
+// Both quantization knobs default to `()`, so "explicitly set" is distinguishable from "unset".
+// They shape a `knn_vector` field that a SPARSE index does not have, and staying silent would
+// repeat the failure mode `IndexConfig` already warns about at length.
+@test:Config
+isolated function testSparseModeRejectsNextGenQuantization() {
+    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_8X),
+            {queryMode: ai:SPARSE}, {});
+    if result !is ai:Error {
+        test:assertFail("quantization has no meaning on an index with no knn_vector field");
+    }
+    test:assertTrue(result.message().includes("HYBRID"),
+            string `the message should name the way out, got: ${result.message()}`);
+}
+
+@test:Config
+isolated function testSparseModeAllowsNextGenWithoutQuantization() {
+    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(), {queryMode: ai:SPARSE}, {});
+    test:assertTrue(result is (), "NextGen without quantization is a legitimate SPARSE target");
 }
 
 // --- rule 2: dimension must be positive --------------------------------------------------------

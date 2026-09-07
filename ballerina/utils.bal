@@ -89,15 +89,54 @@ isolated function vectorFieldNamesOf(SearchMode searchMode) returns string[] {
 }
 
 # A prepared vector entry ready to be serialized into a `_bulk` action/source pair: the embedding
-# is confirmed dense and non-zero, and the id is resolved (generated if the caller omitted one).
+# is confirmed to match the store's `SearchMode`, the sparse half is already converted to its
+# `rank_features` wire form, and the id is resolved (generated if the caller omitted one).
+#
+# Which of the two vector fields is populated is decided by the mode, and the invariant is
+# established at the single construction site in `prepareEntries`: `DENSE` sets `embedding` alone,
+# `SPARSE` sets `rankFeatures` alone, and `HYBRID` sets both.
 type PreparedEntry record {|
     # The resolved logical id.
     string id;
-    # The confirmed-dense embedding.
-    ai:Vector embedding;
+    # The confirmed-dense embedding. `()` under `SPARSE`, which stores no dense vector.
+    ai:Vector? embedding = ();
+    # The sparse embedding in its `rank_features` document form, `{"<index>": <weight>}`. `()`
+    # under `DENSE`, which stores no sparse vector.
+    map<float>? rankFeatures = ();
     # The source chunk.
     ai:Chunk chunk;
 |};
+
+# Names the `ai:Embedding` member a value is, for an error message.
+#
+# + embedding - The embedding to describe
+# + return - `dense`, `sparse`, or `hybrid`
+isolated function describeEmbeddingKind(ai:Embedding embedding) returns string {
+    if embedding is ai:Vector {
+        return "dense";
+    }
+    return embedding is ai:SparseVector ? "sparse" : "hybrid";
+}
+
+# Builds the error raised when an entry's embedding is not the `ai:Embedding` member this store's
+# `SearchMode` requires.
+#
+# The check is deliberately symmetric between `add` and `query`: a store configured for one mode
+# and handed another mode's embedding is a configuration mistake either way, and letting a sparse
+# embedding through to a dense index would simply index a field that no query ever reads.
+#
+# + subject - What to name, e.g. `Entry 'abc'` or `The query`
+# + embedding - The offending embedding
+# + searchMode - The store's search mode
+# + return - The error
+isolated function embeddingMismatchError(string subject, ai:Embedding embedding, SearchMode searchMode)
+        returns ai:Error {
+    string required = searchMode is DenseSearch ? "'ai:Vector'"
+        : searchMode is SparseSearch ? "'ai:SparseVector'" : "'ai:HybridVector'";
+    return error(string `${subject} has a ${describeEmbeddingKind(embedding)} embedding, but this ` +
+            string `store was constructed with '${searchMode.queryMode}' query mode, which requires ` +
+            string `${required}`);
+}
 
 # Validates and normalizes a batch of vector entries prior to indexing.
 #
@@ -111,11 +150,37 @@ isolated function prepareEntries(ai:VectorEntry[] entries, SearchMode searchMode
     PreparedEntry[] prepared = [];
     foreach ai:VectorEntry entry in entries {
         ai:Embedding embedding = entry.embedding;
-        if embedding !is ai:Vector {
-            return error(
-                    "OpenSearch vector store currently supports dense vectors only; got a sparse/hybrid embedding");
-        }
         string id = entry.id ?: uuid:createRandomUuid();
+        string subject = string `Entry '${id}'`;
+        if searchMode is SparseSearch {
+            if embedding !is ai:SparseVector {
+                return embeddingMismatchError(subject, embedding, searchMode);
+            }
+            // `float:Infinity` as the ceiling: the `(0, 64]` bound is a query-time rule only, and
+            // a stored `rank_features` weight has no documented maximum.
+            prepared.push({
+                id,
+                rankFeatures: check toSparseTokenMap(embedding, subject, float:Infinity),
+                chunk: entry.chunk
+            });
+            continue;
+        }
+        if searchMode is HybridSearch {
+            if embedding !is ai:HybridVector {
+                return embeddingMismatchError(subject, embedding, searchMode);
+            }
+            check validateEmbedding(embedding.dense, metric, id);
+            prepared.push({
+                id,
+                embedding: embedding.dense,
+                rankFeatures: check toSparseTokenMap(embedding.sparse, subject, float:Infinity),
+                chunk: entry.chunk
+            });
+            continue;
+        }
+        if embedding !is ai:Vector {
+            return embeddingMismatchError(subject, embedding, searchMode);
+        }
         check validateEmbedding(embedding, metric, id);
         prepared.push({id, embedding, chunk: entry.chunk});
     }
@@ -202,8 +267,14 @@ isolated function buildEntrySource(PreparedEntry entry, SearchMode searchMode, C
     // Written before the flat-schema metadata loop below, so the reserved-name collision guard
     // there covers the vector fields too.
     string? denseFieldName = denseFieldNameOf(searchMode);
-    if denseFieldName is string {
-        sourceDoc[denseFieldName] = entry.embedding.cloneReadOnly();
+    ai:Vector? embedding = entry.embedding;
+    if denseFieldName is string && embedding is ai:Vector {
+        sourceDoc[denseFieldName] = embedding.cloneReadOnly();
+    }
+    string? sparseFieldName = sparseFieldNameOf(searchMode);
+    map<float>? rankFeatures = entry.rankFeatures;
+    if sparseFieldName is string && rankFeatures is map<float> {
+        sourceDoc[sparseFieldName] = rankFeatures.cloneReadOnly();
     }
     map<json> metadata = transformMetadata(entry.chunk?.metadata);
     if config.metadataFieldName == "" {
@@ -328,9 +399,12 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
     if embedding is () {
         queryClause = filterClause is () ? {"match_all": {}} : {"bool": {"filter": [filterClause]}};
     } else {
+        if searchMode !is DenseSearch {
+            return error(string `Querying with an embedding is not yet implemented for ` +
+                    string `'${searchMode.queryMode}' query mode`);
+        }
         if embedding !is ai:Vector {
-            return error(
-                    "OpenSearch vector store currently supports dense vectors only; got a sparse/hybrid embedding");
+            return embeddingMismatchError("The query", embedding, searchMode);
         }
         map<json> knnBody = {"vector": embedding.cloneReadOnly(), "k": size};
         if filterClause !is () {
