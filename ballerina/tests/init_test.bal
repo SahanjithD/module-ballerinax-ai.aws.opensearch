@@ -395,3 +395,83 @@ isolated function testCollectionNameAndIdMapToTheirHeaders() {
     test:assertEquals(buildCollectionHeaders(byName), {"x-amz-aoss-collection-name": "vectors"});
     test:assertEquals(buildCollectionHeaders(byId), {"x-amz-aoss-collection-id": "abc123"});
 }
+
+// --- rule 6: document field names must be distinct ---------------------------------------------
+
+// The hole this closes: every name addresses a field in the same document, so a duplicate
+// produces a broken index rather than an error. `vectorFieldName: "content"` maps the chunk text
+// as a knn_vector and then overwrites it with the vector on every write, leaving `query`
+// returning empty content.
+@test:Config
+isolated function testVectorFieldNameCollidingWithContentRejected() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:DENSE, indexConfig: {dimension: 8}, vectorFieldName: "content"}, {});
+    if result !is ai:Error {
+        test:assertFail("a vector field named 'content' silently clobbers the chunk text");
+    }
+    test:assertTrue(result.message().includes("more than once"));
+}
+
+// HYBRID makes this materially easier to hit: it names two vector fields, which must differ from
+// each other as well as from everything else.
+@test:Config
+isolated function testHybridVectorFieldNamesMustDifferFromEachOther() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), {
+        queryMode: ai:HYBRID,
+        indexConfig: {dimension: 8},
+        vectorFieldName: "vec",
+        sparseVectorFieldName: "vec"
+    }, {});
+    if result !is ai:Error {
+        test:assertFail("the dense and sparse vector fields must be distinct");
+    }
+    test:assertTrue(result.message().includes("'vec'"));
+}
+
+@test:Config
+isolated function testSparseFieldNameCollidingWithIdRejected() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:SPARSE, sparseVectorFieldName: "doc_id"}, {});
+    test:assertTrue(result is ai:Error, "the sparse field must not collide with the id field");
+}
+
+@test:Config
+isolated function testFieldNameCollidingWithChunkTypeRejected() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:SPARSE, sparseVectorFieldName: "chunk_type"}, {});
+    test:assertTrue(result is ai:Error, "the fixed chunk-type field is reserved too");
+}
+
+@test:Config
+isolated function testMetadataFieldNameCollidingWithContentRejected() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), validMode(),
+            {metadataFieldName: "content"});
+    test:assertTrue(result is ai:Error);
+}
+
+// A blank metadataFieldName is the documented way to select a flat schema, where metadata has no
+// field of its own to collide with.
+@test:Config
+isolated function testBlankMetadataFieldNameIsStillAllowed() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), validMode(),
+            {metadataFieldName: ""});
+    test:assertTrue(result is (), "a flat schema is a supported configuration");
+}
+
+@test:Config
+isolated function testBlankVectorFieldNameRejected() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:DENSE, indexConfig: {dimension: 8}, vectorFieldName: "  "}, {});
+    test:assertTrue(result is ai:Error, "only metadataFieldName may be blank");
+}
+
+@test:Config
+isolated function testDistinctFieldNamesPass() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), {
+        queryMode: ai:HYBRID,
+        indexConfig: {dimension: 8},
+        vectorFieldName: "vec",
+        sparseVectorFieldName: "tokens"
+    }, {contentFieldName: "body", idFieldName: "entry_id", metadataFieldName: "props"});
+    test:assertTrue(result is ());
+}

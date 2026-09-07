@@ -368,6 +368,7 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
         return error(string `'IndexConfig.dimension' must be a positive integer, got: ` +
                 string `${indexConfig.dimension}`);
     }
+    check validateFieldNames(searchMode, config);
     string _ = check extractHost(serviceUrl);
     if config.maxBulkSize < 1 {
         return error(string `'Configuration.maxBulkSize' must be a positive integer, got: ${config.maxBulkSize}`);
@@ -393,6 +394,44 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
                     "the AOSS proxy to decide which one identifies the target collection");
         }
         check validateQuantization(deployment);
+    }
+}
+
+# Rejects a document schema whose field names collide.
+#
+# Every name here addresses a distinct field in the same document, so a duplicate silently
+# produces a broken index rather than an error: `vectorFieldName: "content"` would map the chunk
+# text as a `knn_vector` and then overwrite it with the vector on every write, leaving `query`
+# returning empty content. `HYBRID` makes this materially easier to hit, since it names two vector
+# fields that must also differ from each other.
+#
+# The chunk-type field is fixed rather than configurable, so it is included as a literal.
+#
+# + searchMode - The search mode, supplying whichever vector field names it declares
+# + config - The vector store configuration
+# + return - An `ai:Error` naming the colliding field, otherwise `()`
+isolated function validateFieldNames(SearchMode searchMode, Configuration config) returns ai:Error? {
+    string[] names = [config.contentFieldName, config.idFieldName, CHUNK_TYPE_FIELD];
+    names.push(...vectorFieldNamesOf(searchMode));
+    // A blank `metadataFieldName` is the documented way to ask for a flat schema, where metadata
+    // has no field of its own to collide with. `buildEntrySource` guards individual metadata keys
+    // against the reserved names separately.
+    if config.metadataFieldName != "" {
+        names.push(config.metadataFieldName);
+    }
+
+    string[] seen = [];
+    foreach string name in names {
+        if name.trim() == "" {
+            return error("Document field names must not be blank; only " +
+                    "'Configuration.metadataFieldName' may be \"\", which selects a flat schema");
+        }
+        if seen.indexOf(name) !is () {
+            return error(string `The document field name '${name}' is used more than once. The ` +
+                    "vector, content, id, chunk-type and metadata fields must all be distinct, or " +
+                    "one silently overwrites another in every stored document");
+        }
+        seen.push(name);
     }
 }
 
