@@ -176,10 +176,20 @@ isolated class OpenSearchTransport {
     #
     # + indexName - The index to search
     # + body - The search request body
+    # + searchPipeline - The name of a search pipeline already provisioned on the cluster, sent as
+    # `?search_pipeline=<name>`. Only a `HYBRID` store using `NamedSearchPipeline` supplies one;
+    # every other caller leaves it unset, and a store that sends its fusion configuration inline
+    # in `body` must never also send this — OpenSearch rejects a request carrying both with
+    # "Both named and inline search pipeline were specified"
     # + return - The parsed search response, or an `ai:Error` on failure
-    isolated function search(string indexName, json body) returns SearchResponse|ai:Error {
+    isolated function search(string indexName, json body, string? searchPipeline = ())
+            returns SearchResponse|ai:Error {
         byte[] payload = body.toJsonString().toBytes();
-        http:Response resp = check self.sendSigned("POST", "/" + indexName + "/_search", {},
+        map<string> queryParams = {};
+        if searchPipeline is string {
+            queryParams["search_pipeline"] = searchPipeline;
+        }
+        http:Response resp = check self.sendSigned("POST", "/" + indexName + "/_search", queryParams,
                 {"content-type": "application/json"}, payload);
         if resp.statusCode != 200 {
             return mapErrorResponse(resp);
@@ -417,9 +427,9 @@ isolated function buildQueryString(map<string> queryParams) returns string|ai:Er
 # unescaped. Deliberately not `ballerina/url:encode`, whose `application/x-www-form-urlencoded`
 # behavior differs (e.g. a space becomes `+`, not `%20`): the query string sent over the wire must
 # byte-for-byte match what the signer canonicalized, or AWS rejects the request with an opaque
-# 403. There is only ever one query parameter
-# in this module today (`refresh=wait_for`, which needs no encoding either way), but a correct
-# encoder here removes the landmine for `Configuration.additionalHeaders`-style extensions.
+# 403. The two query parameters this module sends today need no encoding either way
+# (`refresh=wait_for`, and `search_pipeline` with a caller-supplied pipeline name), but a correct
+# encoder here removes the landmine for a name carrying anything unusual, and for later additions.
 #
 # + value - The raw (unencoded) value
 # + return - The percent-encoded value, or an `ai:Error` if `value` contains an invalid code point
