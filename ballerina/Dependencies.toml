@@ -5,7 +5,7 @@
 
 [ballerina]
 dependencies-toml-version = "2"
-distribution-version = "2201.13.5"
+distribution-version = "2201.13.4"
 
 [[package]]
 org = "ballerina"
@@ -104,7 +104,7 @@ dependencies = [
 [[package]]
 org = "ballerina"
 name = "file"
-version = "1.13.0"
+version = "1.13.1"
 dependencies = [
 	{org = "ballerina", name = "io"},
 	{org = "ballerina", name = "jballerina.java"},
@@ -423,7 +423,7 @@ modules = [
 [[package]]
 org = "dasunorg"
 name = "ai.aws.opensearch"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
 	{org = "ballerina", name = "ai"},
 	{org = "ballerina", name = "http"},
