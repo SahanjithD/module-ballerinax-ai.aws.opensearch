@@ -120,6 +120,59 @@ isolated class OpenSearchTransport {
         return mapErrorResponse(resp);
     }
 
+    # Reads the cluster's root document via `GET /`, whose `version.number` names the OpenSearch
+    # version the endpoint is running.
+    #
+    # Both Serverless generations reject this call — the AOSS proxy does not expose the root
+    # endpoint — so a caller must only reach this on a managed domain. A managed domain that
+    # answers with anything other than a parseable body yields `()` rather than an error, since
+    # the version is used to sharpen a diagnostic and never to gate a data-plane operation.
+    #
+    # + return - The reported version string (e.g. `2.19.1`), `()` if the response carried none,
+    # or an `ai:Error` if the request itself failed
+    isolated function clusterVersion() returns string?|ai:Error {
+        http:Response resp = check self.sendSigned("GET", "/", {}, {}, []);
+        if resp.statusCode != 200 {
+            return mapErrorResponse(resp);
+        }
+        json|error payload = resp.getJsonPayload();
+        if payload is error {
+            return ();
+        }
+        json|error number = payload.version.number;
+        return number is string ? number : ();
+    }
+
+    # Reads the target index's field mappings via `GET /<index>/_mapping`.
+    #
+    # The response is keyed by the concrete index name, which is not necessarily the name that was
+    # requested — an alias resolves to whatever index backs it, and a date-math name resolves to
+    # its expansion. The single entry is therefore taken by position rather than looked up by
+    # name.
+    #
+    # + indexName - The index to read
+    # + return - The `properties` object of the resolved index's mapping, `()` if the index exists
+    # but declares no properties at all, or an `ai:Error` on failure (including a `404`, which
+    # `mapErrorResponse` renders as `index_not_found_exception`)
+    isolated function indexMappingProperties(string indexName) returns map<json>?|ai:Error {
+        http:Response resp = check self.sendSigned("GET", "/" + indexName + "/_mapping", {}, {}, []);
+        if resp.statusCode != 200 {
+            return mapErrorResponse(resp);
+        }
+        json|error payload = resp.getJsonPayload();
+        if payload !is map<json> {
+            return error("Failed to parse the '_mapping' response body",
+                    payload is error ? payload : error("the body was not a JSON object"));
+        }
+        foreach json indexEntry in payload {
+            json|error properties = indexEntry.mappings.properties;
+            if properties is map<json> {
+                return properties;
+            }
+        }
+        return ();
+    }
+
     # Creates an index with the given mapping via `PUT /<index>`.
     #
     # + indexName - The index to create

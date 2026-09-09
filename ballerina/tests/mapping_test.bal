@@ -143,38 +143,62 @@ isolated function testQuantizationOmittedWhenUnset() returns error? {
             buildIndexMapping(baseMode(), {}, nextGenDeployment()));
     test:assertFalse(vectorField.hasKey("compression_level"),
             "an unset 'compressionLevel' must leave the server's own default in place");
-    test:assertFalse(vectorField.hasKey("mode"),
-            "an unset 'vectorMode' must leave the server's own default in place");
 }
 
-// `compression_level`/`mode` sit at the field's top level and coexist with the `method` block --
-// verified on a live NextGen collection, which stored the HNSW parameters and both quantization
-// parameters together.
+// `compression_level` sits at the field's top level and coexists with the `method` block --
+// verified on a live NextGen collection, which stored the HNSW parameters and the compression
+// ratio together.
 @test:Config
 isolated function testQuantizationEmittedAtFieldTopLevelBesideTheMethodBlock() returns error? {
     map<json> vectorField = check vectorFieldOf(
-            buildIndexMapping(baseMode(), {}, nextGenDeployment(COMPRESSION_1X, IN_MEMORY)));
+            buildIndexMapping(baseMode(), {}, nextGenDeployment(COMPRESSION_1X)));
     test:assertEquals(vectorField["compression_level"], "1x");
-    test:assertEquals(vectorField["mode"], "in_memory");
 
     map<json> method = check asMap(vectorField["method"]);
     map<json> parameters = check asMap(method["parameters"]);
     test:assertEquals(parameters["m"], 16,
-            "the HNSW parameters must survive alongside the quantization parameters");
+            "the HNSW parameters must survive alongside the quantization parameter");
 }
 
+// Every member of the enum has to be one the AOSS proxy actually stores. `4x` was removed after it
+// came back as `Unknown value [4x] for field [compression_level] -- accepted values are
+// [, 1x, 2x, 8x, 16x, 32x]`; this pins the enum against that set so restoring the member cannot
+// pass unnoticed.
 @test:Config
-isolated function testCompressionLevelAloneIsEmitted() returns error? {
-    map<json> vectorField = check vectorFieldOf(
-            buildIndexMapping(baseMode(), {}, nextGenDeployment(COMPRESSION_4X)));
-    test:assertEquals(vectorField["compression_level"], "4x");
-    test:assertFalse(vectorField.hasKey("mode"),
-            "'compression_level' is accepted on its own; 'mode' should not be invented alongside it");
+isolated function testEveryCompressionLevelIsOneNextGenAccepts() returns error? {
+    string[] acceptedByNextGen = ["1x", "2x", "8x", "16x", "32x"];
+    CompressionLevel[] levels =
+        [COMPRESSION_1X, COMPRESSION_2X, COMPRESSION_8X, COMPRESSION_16X, COMPRESSION_32X];
+    foreach CompressionLevel level in levels {
+        map<json> vectorField = check vectorFieldOf(
+                buildIndexMapping(baseMode(), {}, nextGenDeployment(level)));
+        test:assertEquals(vectorField["compression_level"], level);
+        test:assertTrue(acceptedByNextGen.indexOf(level) is int,
+                string `'${level}' is not in the set the AOSS proxy names as acceptable`);
+    }
+    test:assertEquals(levels.length(), acceptedByNextGen.length(),
+            "'CompressionLevel' must offer exactly the ratios NextGen stores, no more and no fewer");
 }
 
-// `compressionLevel`/`vectorMode` are declared only on `ServerlessNextGenDeployment`, so a managed
-// or Classic mapping cannot carry them however the caller is configured. This pins that the mapping
-// builder invents neither.
+// `mode` is a real `knn_vector` parameter that a managed 2.19 domain stores, and the AOSS proxy
+// implements no value for it -- `Field parameter 'mode' is not supported`, for both `in_memory`
+// and `on_disk`. Since NextGen is the only flavour that could ever have carried it, nothing may
+// emit it at all.
+@test:Config
+isolated function testVectorModeIsNeverEmitted() returns error? {
+    Deployment[] deployments = [nextGenDeployment(), nextGenDeployment(COMPRESSION_1X),
+        nextGenDeployment(COMPRESSION_32X), managedDeployment(), classicDeployment()];
+    foreach Deployment deployment in deployments {
+        map<json> vectorField = check vectorFieldOf(buildIndexMapping(baseMode(), {}, deployment));
+        test:assertFalse(vectorField.hasKey("mode"),
+                string `${deployment.deploymentType} must not carry 'mode'; the AOSS proxy rejects ` +
+                "every value of it and no other deployment ever declared the field");
+    }
+}
+
+// `compressionLevel` is declared only on `ServerlessNextGenDeployment`, so a managed or Classic
+// mapping cannot carry it however the caller is configured. This pins that the mapping builder
+// invents it nowhere.
 @test:Config
 isolated function testQuantizationNeverAppearsOffNextGen() returns error? {
     Deployment[] methodBlockDeployments = [

@@ -49,11 +49,10 @@ isolated function classicDeployment() returns ServerlessClassicDeployment =>
 # A Serverless NextGen deployment with test credentials.
 #
 # + compressionLevel - The vector quantization ratio, unset by default
-# + vectorMode - Where the vector index is held, unset by default
 # + return - The deployment
-isolated function nextGenDeployment(CompressionLevel? compressionLevel = (), VectorMode? vectorMode = ())
+isolated function nextGenDeployment(CompressionLevel? compressionLevel = ())
         returns ServerlessNextGenDeployment =>
-    {deploymentType: SERVERLESS_NEXTGEN, auth: TEST_CREDENTIALS, compressionLevel, vectorMode};
+    {deploymentType: SERVERLESS_NEXTGEN, auth: TEST_CREDENTIALS, compressionLevel};
 
 # All three deployment types with their defaults, for tests that assert behavior shared by every
 # flavour.

@@ -242,3 +242,65 @@ isolated function testContainerHybridRoundTripsBothHalves() returns error? {
     test:assertEquals(embedding.sparse.indices, [1055]);
     check store.close();
 }
+
+// --- reciprocal rank fusion ----------------------------------------------------------------------
+
+// The RRF counterpart to `testContainerHybridInlinePipelineIsAcceptedAndScoresAreSane`, and it
+// proves the same two things for a different processor: that OpenSearch 2.19.1 accepts an inline
+// `score-ranker-processor` and that it actually ran. The score range is the evidence -- RRF sums
+// `1 / (rankConstant + rank)` across two sub-queries, so with the default constant of 60 no score
+// can exceed `2 / 61`, and any sentinel leaking through would be hugely negative.
+@test:Config {groups: ["docker"]}
+isolated function testContainerRrfFusionIsAcceptedAndScoresAreSane() returns error? {
+    string indexName = containerIndexName("hybrid-rrf");
+    VectorStore store = check newContainerStore(indexName, containerHybridMode({technique: RRF}));
+    check store.add(hybridSeedEntries());
+
+    ai:VectorMatch[] matches = check store.query(hybridContainerQuery());
+    test:assertEquals(matches.length(), 2);
+    foreach ai:VectorMatch rrfMatch in matches {
+        test:assertTrue(rrfMatch.similarityScore > 0.0,
+                string `an RRF score is a sum of positive reciprocals; a sentinel means no ` +
+                string `processor ran, got: ${rrfMatch.similarityScore}`);
+        test:assertTrue(rrfMatch.similarityScore <= 2.0 / 61.0,
+                string `two sub-queries at rank 1 cap the RRF score at 2/(60+1), got: ` +
+                string `${rrfMatch.similarityScore}`);
+    }
+    check store.close();
+}
+
+// The counterpart to the weights test above, and the reason `RrfFusion` carries no settings. The
+// processor must be sent as the technique alone: neural-search reads `rank_constant` from
+// `combination.parameters` through 3.0 and from `combination` itself from 3.1, where the old
+// location became a hard error. Naming it in either place breaks on one side of that line.
+@test:Config {groups: ["docker"]}
+isolated function testContainerRrfSendsTechniqueAlone() returns error? {
+    json body = check buildSearchBody(hybridContainerQuery(), containerHybridMode({technique: RRF}), {});
+    map<json> bodyMap = check body.ensureType();
+    string pipeline = bodyMap["search_pipeline"].toJsonString();
+    test:assertFalse(pipeline.includes("rank_constant"),
+            string `a rank_constant has no portable wire shape and must not be sent, got: ${pipeline}`);
+    test:assertFalse(pipeline.includes("parameters"),
+            string `a 'parameters' map is rejected outright by neural-search 3.1+, got: ${pipeline}`);
+    test:assertTrue(pipeline.includes("rrf"));
+}
+
+// --- ef_search on the wire -------------------------------------------------------------------------
+
+// `method_parameters` is 2.16+, and a rejected one fails the whole search. This proves the
+// container accepts the object this module builds rather than merely that the JSON looks right.
+@test:Config {groups: ["docker"]}
+isolated function testContainerEfSearchIsAcceptedByTheDenseSubQuery() returns error? {
+    string indexName = containerIndexName("hybrid-efsearch");
+    HybridSearch mode = {
+        queryMode: ai:HYBRID,
+        indexConfig: {dimension: CONTAINER_DIMENSION},
+        efSearch: 512
+    };
+    VectorStore store = check newContainerStore(indexName, mode);
+    check store.add(hybridSeedEntries());
+
+    ai:VectorMatch[] matches = check store.query(hybridContainerQuery());
+    test:assertEquals(matches.length(), 2, "raising ef_search must not change which documents match");
+    check store.close();
+}

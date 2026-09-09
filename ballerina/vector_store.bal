@@ -82,7 +82,20 @@ final DenseSearch & readonly DEFAULT_SEARCH_MODE = {queryMode: ai:DENSE, indexCo
 # need OpenSearch 2.14 or later, and the `hybrid` query needs 2.11. AWS documents `neural_sparse`
 # and `hybrid` for Serverless without distinguishing collection generation, so both are permitted
 # on every `Deployment` here — but neither has been verified against a real Serverless collection,
-# and a Classic vector search collection may yet reject a `rank_features` mapping.
+# and a Classic vector search collection may yet reject a `rank_features` mapping. On Serverless,
+# neural search is also restricted to a subset of AWS regions; see `SparseSearch`/`HybridSearch`.
+#
+# On a managed domain, `Configuration.verifyOnInit` checks these floors against the cluster's own
+# reported version at construction, so a domain that cannot serve the configured mode says so
+# there rather than as a parse failure inside a `400` on the first query.
+#
+# # Construction-time verification
+# By default, `init` also confirms that the index it is pointed at actually declares the vector
+# field(s) this store reads and writes — the right names, the right types, and the right
+# `dimension`. Nothing else in the module connects a store's configuration to its index, and the
+# ways of being wrong are silent: writes succeed against a mismatched index and queries fail with a
+# bare `400` or return nothing. See `Configuration.verifyOnInit` for what is checked, what a
+# failure means, and how to switch it off.
 #
 # # Similarity score range
 # What `VectorMatch.similarityScore` means depends on the mode, and the ranges do not line up:
@@ -99,7 +112,14 @@ final DenseSearch & readonly DEFAULT_SEARCH_MODE = {queryMode: ai:DENSE, indexCo
 # a field `SparseSearch` declares.
 #
 # Under `HYBRID`, it is the fused score, which `min_max` + `arithmetic_mean` puts in `(0.0, 1.0]`.
-# It has already been normalized by the pipeline, so no further transform applies.
+# It has already been normalized by the pipeline, so no further transform applies. Under
+# `RrfFusion` it is a sum of reciprocal ranks instead — roughly `(0, 0.033]` for two sub-queries,
+# not a normalized similarity, and comparable only against other scores from the same query.
+#
+# A `HYBRID` score is never negative. OpenSearch delimits each sub-query's results with large
+# negative sentinel scores that the fusion processor is responsible for stripping, and a `hybrid`
+# query that runs without one returns them as results rather than failing. `query` rejects such a
+# score with an error naming the fusion source instead of presenting it as a ranking.
 #
 # In every mode, a query with no embedding (a metadata-only filter, or neither embedding nor
 # filters) gets OpenSearch's constant score, which is not a similarity, so `similarityScore` is
@@ -142,7 +162,7 @@ public isolated class VectorStore {
     # + indexName - The OpenSearch index this store reads and writes
     # + deploymentConfig - The target deployment and its flavour-specific settings — credentials,
     # which are required rather than defaulted, and whichever of
-    # `engine`/`refreshOnWrite`/`collectionName`/`collectionId`/`compressionLevel`/`vectorMode`
+    # `engine`/`refreshOnWrite`/`collectionName`/`collectionId`/`compressionLevel`
     # that flavour actually honors. Settings shared by all three live on `storeConfig` instead
     # + searchMode - The kind of search this store performs — `DenseSearch`, `SparseSearch` or
     # `HybridSearch` — together with the index shape, field names and fusion settings that only
@@ -170,16 +190,16 @@ public isolated class VectorStore {
         OpenSearchTransport transport = check new (serviceUrl, region, deploymentConfig,
             storeConfig.retryConfig, httpConfig
         );
-        ai:Error? ensureResult = ensureIndex(transport, indexName, searchMode, storeConfig, deploymentConfig);
-        if ensureResult is ai:Error {
+        ai:Error? preparation = prepareIndex(transport, indexName, searchMode, storeConfig, deploymentConfig);
+        if preparation is ai:Error {
             // Best-effort cleanup; the closing outcome is intentionally not surfaced so it
-            // cannot mask the more relevant `ensureResult` failure below.
+            // cannot mask the more relevant preparation failure below.
             ai:Error? closeResult = transport.close();
             if closeResult is ai:Error {
-                log:printWarn("Failed to close the AWS credential provider after a failed index-ensure step",
+                log:printWarn("Failed to close the AWS credential provider after a failed index-preparation step",
                         'error = closeResult);
             }
-            return ensureResult;
+            return preparation;
         }
 
         self.transport = transport;
@@ -232,11 +252,11 @@ public isolated class VectorStore {
     # + return - The matching entries, or an `ai:Error` on failure
     public isolated function query(ai:VectorStoreQuery query) returns ai:VectorMatch[]|ai:Error {
         json body = check buildSearchBody(query, self.searchMode, self.config);
-        SearchResponse response = check self.transport.search(self.indexName, body,
-                searchPipelineName(self.searchMode));
         // buildSearchBody already rejected an embedding that does not match this store's
         // `SearchMode`, so any embedding still present here produced a scoring clause.
         boolean scoreIsMeaningful = query.embedding !is ();
+        SearchResponse response = check self.transport.search(self.indexName, body,
+                searchPipelineName(self.searchMode, scoreIsMeaningful));
         ai:VectorMatch[] matches = [];
         foreach SearchHit hit in response.hits.hits {
             matches.push(check hitToVectorMatch(hit, self.searchMode, self.config, scoreIsMeaningful));
@@ -337,6 +357,34 @@ public isolated class VectorStore {
     }
 }
 
+# Runs every construction-time step that talks to the cluster, in the order that makes the first
+# failure the most informative one.
+#
+# The cluster's version is checked before the index is created rather than after: a domain too old
+# to serve this store's `SearchMode` should be reported as a version problem, not left to produce
+# an index that nothing can then query. The index mapping is checked last, and only when this call
+# did not create the index — a mapping this module just wrote matches the store that wrote it.
+#
+# With `createIndexIfNotExists` and `verifyOnInit` both `false`, every branch here is skipped and
+# construction performs no network I/O at all.
+#
+# + transport - The transport to issue requests through
+# + indexName - The index this store is pointed at
+# + searchMode - The store's search mode
+# + config - The vector store configuration
+# + deployment - The target deployment
+# + return - An `ai:Error` if the cluster or index cannot serve this store, otherwise `()`
+isolated function prepareIndex(OpenSearchTransport transport, string indexName, SearchMode searchMode,
+        Configuration config, Deployment deployment) returns ai:Error? {
+    if config.verifyOnInit {
+        check verifyClusterVersion(transport, searchMode, deployment);
+    }
+    boolean created = check ensureIndex(transport, indexName, searchMode, config, deployment);
+    if config.verifyOnInit && !created {
+        check verifyIndexMapping(transport, indexName, searchMode);
+    }
+}
+
 # Runs the fail-fast construction validations before any network I/O is attempted.
 #
 # Most of what this function once checked is now unrepresentable rather than rejected: `BasicAuth`
@@ -352,9 +400,12 @@ public isolated class VectorStore {
 # + return - An `ai:Error` naming the first failing rule, otherwise `()`
 isolated function validateConfiguration(string serviceUrl, Deployment deployment,
         SearchMode searchMode, Configuration config) returns ai:Error? {
-    if searchMode is SparseSearch && searchMode.maxQueryTokens < 1 {
-        return error(string `'SparseSearch.maxQueryTokens' must be a positive integer, got: ` +
-                string `${searchMode.maxQueryTokens}`);
+    if searchMode is SparseSearch {
+        if searchMode.maxQueryTokens < 1 {
+            return error(string `'SparseSearch.maxQueryTokens' must be a positive integer, got: ` +
+                    string `${searchMode.maxQueryTokens}`);
+        }
+        check validateTwoPhaseAcceleration(searchMode.twoPhaseAcceleration);
     }
     if searchMode is HybridSearch {
         if searchMode.maxQueryTokens < 1 {
@@ -362,6 +413,10 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
                     string `${searchMode.maxQueryTokens}`);
         }
         check validateHybridFusion(searchMode.fusion);
+        check validateEfSearch(searchMode.efSearch, "HybridSearch");
+    }
+    if searchMode is DenseSearch {
+        check validateEfSearch(searchMode.efSearch, "DenseSearch");
     }
     IndexConfig? indexConfig = indexConfigOf(searchMode);
     if indexConfig is IndexConfig && indexConfig.dimension < 1 {
@@ -382,18 +437,16 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
         // rejecting rather than ignoring. They shape the `knn_vector` field, and a caller who set
         // them for an index that has no such field has misunderstood something. Staying silent
         // would repeat the very failure mode `IndexConfig` already warns about.
-        if searchMode is SparseSearch &&
-                (deployment.compressionLevel is CompressionLevel || deployment.vectorMode is VectorMode) {
-            return error("'ServerlessNextGenDeployment.compressionLevel' and '.vectorMode' shape the " +
-                    "'knn_vector' field, which a 'SPARSE' index does not have; leave both unset, or " +
-                    "use 'HYBRID' if the index should also hold dense vectors");
+        if searchMode is SparseSearch && deployment.compressionLevel is CompressionLevel {
+            return error("'ServerlessNextGenDeployment.compressionLevel' shapes the 'knn_vector' " +
+                    "field, which a 'SPARSE' index does not have; leave it unset, or use 'HYBRID' " +
+                    "if the index should also hold dense vectors");
         }
         if deployment?.collectionName is string && deployment?.collectionId is string {
             return error("'ServerlessNextGenDeployment.collectionName' and '.collectionId' are " +
                     "alternatives; set at most one. Sending both collection headers leaves it to " +
                     "the AOSS proxy to decide which one identifies the target collection");
         }
-        check validateQuantization(deployment);
     }
 }
 
@@ -453,6 +506,11 @@ isolated function validateHybridFusion(HybridFusion fusion) returns ai:Error? {
         }
         return;
     }
+    if fusion is RrfFusion {
+        // Nothing to check: the variant carries only its discriminator, for the reasons set out on
+        // `RrfFusion`.
+        return;
+    }
     float denseWeight = fusion.denseWeight;
     float sparseWeight = fusion.sparseWeight;
     if denseWeight < 0.0 || denseWeight > 1.0 || sparseWeight < 0.0 || sparseWeight > 1.0 {
@@ -469,17 +527,35 @@ isolated function validateHybridFusion(HybridFusion fusion) returns ai:Error? {
     }
 }
 
-# Validates the two quantization knobs against each other. Both are `SERVERLESS_NEXTGEN`-only by
-# construction — no other `Deployment` variant declares them — so all that is left to check here is
-# the one combination NextGen itself rejects.
+# Validates the search-time HNSW dial. Unset is the default and always valid — it simply omits
+# `method_parameters` and leaves the index's own `ef_search` setting in force.
 #
-# + deployment - The NextGen deployment to check
+# + efSearch - The configured value, or `()`
+# + owner - The `SearchMode` variant the field is on, for the error message
+# + return - An `ai:Error` if the value is not positive, otherwise `()`
+isolated function validateEfSearch(int? efSearch, string owner) returns ai:Error? {
+    if efSearch is int && efSearch < 1 {
+        return error(string `'${owner}.efSearch' must be a positive integer, got: ${efSearch}. ` +
+                "Leave it unset to let the index's own 'index.knn.algo_param.ef_search' apply");
+    }
+}
+
+# Validates the two-phase acceleration settings against the bounds the
+# `neural_sparse_two_phase_processor` enforces server-side.
+#
+# Checked at construction because the pipeline is sent inline with every sparse query, so a value
+# the processor rejects would fail every call rather than one.
+#
+# + acceleration - The configured acceleration, or `()` when the processor is not used
 # + return - An `ai:Error` naming the failing rule, otherwise `()`
-isolated function validateQuantization(ServerlessNextGenDeployment deployment) returns ai:Error? {
-    if deployment.vectorMode == ON_DISK && deployment.compressionLevel == COMPRESSION_1X {
-        return error("'ServerlessNextGenDeployment.compressionLevel' cannot be 'COMPRESSION_1X' when " +
-                "'vectorMode' is 'ON_DISK'; the server rejects that mapping with " +
-                "'Cannot specify \"x1\" compression level when using \"on_disk\" mode'. Use " +
-                "'IN_MEMORY' to store vectors uncompressed");
+isolated function validateTwoPhaseAcceleration(TwoPhaseAcceleration? acceleration) returns ai:Error? {
+    if acceleration is () {
+        return;
+    }
+    float pruneRatio = acceleration.pruneRatio;
+    if pruneRatio < 0.0 || pruneRatio > 1.0 {
+        return error(string `'TwoPhaseAcceleration.pruneRatio' must be between 0.0 and 1.0, got: ` +
+                string `${pruneRatio}. It is a fraction of the query's largest token weight, and ` +
+                "is what separates the tokens that select candidates from the ones that rescore them");
     }
 }

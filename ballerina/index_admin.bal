@@ -27,21 +27,25 @@ import ballerina/ai;
 # `engine` inside the block fails there with a flat 400 reading "Field parameter 'engine' is not
 # supported", raised by the AOSS proxy rather than by OpenSearch, so it carries no error type to
 # map. Its `space_type` goes at the field's top level instead, and it is the only deployment that
-# may also carry `compression_level`/`mode` there.
+# may also carry `compression_level` there.
 #
 # A block of `{"name": "hnsw", "parameters": {...}}` without `engine` was verified accepted on
 # NextGen with its parameters stored intact; the stored mapping comes back with `engine: faiss`
-# supplied by NextGen itself, alongside the `mode` and `compression_level` it was sent.
+# supplied by NextGen itself, alongside the `compression_level` it was sent.
 #
 # # Quantization on NextGen
-# A NextGen field created without them comes back mapped as `on_disk`/`32x`, so every vector is
+# A NextGen field created without one comes back mapped as `on_disk`/`32x`, so every vector is
 # quantized unless something says otherwise, with nothing in the request or the response to
-# announce it. `ServerlessNextGenDeployment.compressionLevel` and `.vectorMode` are emitted here so
-# that choice can be made explicit. Both are unset by default, which reproduces the server's
-# behavior exactly.
+# announce it. `ServerlessNextGenDeployment.compressionLevel` is emitted here so that choice can be
+# made explicit. It is unset by default, which reproduces the server's behavior exactly.
+#
+# The sibling `mode` parameter is not emitted, on any deployment. The AOSS proxy rejects every
+# value of it outright — `Field parameter 'mode' is not supported`, for both `in_memory` and
+# `on_disk` — so a field carrying it could not be created at all, and NextGen is the only flavour
+# whose record ever declared it.
 #
 # + indexConfig - The `knn_vector` shape
-# + deployment - The deployment, which gates `engine` and the quantization parameters
+# + deployment - The deployment, which gates `engine` and the quantization parameter
 # + return - The field definition
 isolated function buildDenseVectorField(IndexConfig indexConfig, Deployment deployment) returns json {
     string spaceType = toSpaceType(indexConfig.similarityMetric);
@@ -56,10 +60,6 @@ isolated function buildDenseVectorField(IndexConfig indexConfig, Deployment depl
         CompressionLevel? compressionLevel = deployment.compressionLevel;
         if compressionLevel is CompressionLevel {
             vectorField["compression_level"] = compressionLevel;
-        }
-        VectorMode? vectorMode = deployment.vectorMode;
-        if vectorMode is VectorMode {
-            vectorField["mode"] = vectorMode;
         }
     } else {
         method["engine"] = deployment is ManagedDomainDeployment ? deployment.engine : FAISS;
@@ -91,7 +91,7 @@ isolated function buildDenseVectorField(IndexConfig indexConfig, Deployment depl
 #
 # + searchMode - The kind of search, which decides which vector field(s) the mapping declares
 # + config - The vector store configuration
-# + deployment - The deployment, which gates `engine` and the quantization parameters
+# + deployment - The deployment, which gates `engine` and the quantization parameter
 # + return - The index-creation request body
 isolated function buildIndexMapping(SearchMode searchMode, Configuration config, Deployment deployment)
         returns json {
@@ -196,21 +196,30 @@ isolated function toSpaceType(ai:SimilarityMetric metric) returns string {
 # + searchMode - The kind of search, passed through to the mapping builder
 # + config - The vector store configuration
 # + deployment - The deployment, passed through to the mapping builder
-# + return - An `ai:Error` on failure, otherwise `()`
+# + return - `true` if this call created the index, `false` if it already existed or creation was
+# switched off, or an `ai:Error` on failure. The distinction is what lets `init` skip
+# `verifyIndexMapping` against a mapping this module just wrote, which is correct by construction
 isolated function ensureIndex(OpenSearchTransport transport, string indexName, SearchMode searchMode,
-        Configuration config, Deployment deployment) returns ai:Error? {
+        Configuration config, Deployment deployment) returns boolean|ai:Error {
     if !config.createIndexIfNotExists {
-        return;
+        return false;
     }
     boolean exists = check transport.indexExists(indexName);
     if exists {
-        return;
+        return false;
     }
     json mapping = buildIndexMapping(searchMode, config, deployment);
     ai:Error? result = transport.createIndex(indexName, mapping);
-    if result is ai:Error && !isAlreadyExistsError(result) {
-        return result;
+    if result is ai:Error {
+        if !isAlreadyExistsError(result) {
+            return result;
+        }
+        // Another instance won the race and created it. Its mapping was built from its own
+        // configuration, which is not necessarily this store's -- so this is reported as "already
+        // existed", leaving `verifyIndexMapping` to confirm the winner's mapping suits this store.
+        return false;
     }
+    return true;
 }
 
 # Checks whether an `ai:Error` returned by `createIndex` wraps OpenSearch's

@@ -19,6 +19,11 @@ import ballerina/test;
 
 const string VALID_URL = "https://my-domain.us-east-1.es.amazonaws.com";
 
+# A well-formed URL that nothing answers on, for the construction tests that need a request to fail
+# rather than a hostname to be rejected. Deliberately loopback: an offline unit test must not reach
+# for the network, and the discard port is the one place guaranteed to refuse rather than hang.
+const string UNREACHABLE_URL = "http://127.0.0.1:9";
+
 isolated function validMode() returns DenseSearch => {queryMode: ai:DENSE, indexConfig: {dimension: 1536}};
 
 // The rules this file once exercised at runtime -- `BasicAuth` outside a managed domain, a
@@ -161,9 +166,9 @@ isolated function testZeroMaxQueryTokensRejected() {
     test:assertTrue(result.message().includes("maxQueryTokens"));
 }
 
-// Both quantization knobs default to `()`, so "explicitly set" is distinguishable from "unset".
-// They shape a `knn_vector` field that a SPARSE index does not have, and staying silent would
-// repeat the failure mode `IndexConfig` already warns about at length.
+// `compressionLevel` defaults to `()`, so "explicitly set" is distinguishable from "unset". It
+// shapes a `knn_vector` field that a SPARSE index does not have, and staying silent would repeat
+// the failure mode `IndexConfig` already warns about at length.
 @test:Config
 isolated function testSparseModeRejectsNextGenQuantization() {
     ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_8X),
@@ -283,55 +288,66 @@ isolated function testFullyValidConfigurationPasses() {
 // --- fully offline construction ----------------------------------------------------------------
 
 @test:Config
-isolated function testOfflineConstructionWithCreateIndexDisabled() returns error? {
-    // With createIndexIfNotExists = false, init() must perform no network I/O at all, so
-    // construction succeeds even with a service URL that resolves to nothing.
+isolated function testOfflineConstructionWithCreateIndexAndVerifyDisabled() returns error? {
+    // Fully offline construction takes both switches. `createIndexIfNotExists: false` stops init()
+    // creating anything; `verifyOnInit: false` stops it reading the cluster version and the index
+    // mapping. With both off, init() issues no request at all, so construction succeeds against a
+    // service URL that resolves to nothing.
     VectorStore store = check new (
         VALID_URL,
         "us-east-1",
         "test-index",
         managedDeployment(),
         {queryMode: ai:DENSE, indexConfig: {dimension: 8}},
-        {createIndexIfNotExists: false}
+        {createIndexIfNotExists: false, verifyOnInit: false}
     );
     ai:Error? closeResult = store.close();
     test:assertTrue(closeResult is (), "closing a fully offline store should not fail");
 }
 
-// --- rule 5: the two quantization knobs are mutually constrained -------------------------------
-
+// The companion to the test above, and the reason `verifyOnInit`'s failure policy is worth pinning
+// down. Verification that cannot run must not fail construction: an unreachable endpoint here
+// stands in for the least-privilege principal that cannot read `/` or `/<index>/_mapping`, and in
+// both cases refusing to build a store that would otherwise have worked is the worse outcome. The
+// warning is logged; the store is returned.
 @test:Config
-isolated function testQuantizationAllowedOnServerlessNextGen() {
-    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_1X, IN_MEMORY),
-            validMode(), {});
-    test:assertTrue(result is (), "in_memory/1x is the documented way to opt out of quantization");
+isolated function testVerifyOnInitDoesNotFailConstructionWhenItCannotRun() returns error? {
+    VectorStore store = check new (
+        UNREACHABLE_URL,
+        "us-east-1",
+        "test-index",
+        managedDeployment(),
+        {queryMode: ai:DENSE, indexConfig: {dimension: 8}},
+        // One retry attempt rather than the default four: this test asserts that an unanswerable
+        // verification is survivable, and waiting out the backoff schedule to learn that is waste.
+        {createIndexIfNotExists: false, verifyOnInit: true, retryConfig: {maxRetries: 0}}
+    );
+    ai:Error? closeResult = store.close();
+    test:assertTrue(closeResult is ());
 }
 
-// Mirrors the server's own validation, which fails index creation with
-// `Cannot specify "x1" compression level when using "on_disk" mode`. Caught at construction so it
-// surfaces as a configuration error rather than a mapper_parsing_exception from a PUT.
+// --- rule 5: every quantization ratio is one the deployment can store --------------------------
+
+// There is no longer a cross-field rule here to enforce. The `ON_DISK`/`COMPRESSION_1X` pairing
+// this section once rejected was unreachable: `mode` is refused by the AOSS proxy for every value,
+// so `vectorMode` could never be set in the first place, and it is gone. What is left is that
+// every member of `CompressionLevel` must construct, since the enum now offers only ratios NextGen
+// actually stores.
 @test:Config
-isolated function testOnDiskWithNoCompressionRejected() {
-    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_1X, ON_DISK),
-            validMode(), {});
-    if result !is ai:Error {
-        test:assertFail("'ON_DISK' with 'COMPRESSION_1X' is rejected by the server and should be caught here");
+isolated function testEveryCompressionLevelConstructsOnNextGen() {
+    CompressionLevel[] levels =
+        [COMPRESSION_1X, COMPRESSION_2X, COMPRESSION_8X, COMPRESSION_16X, COMPRESSION_32X];
+    foreach CompressionLevel level in levels {
+        ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(level), validMode(), {});
+        test:assertTrue(result is (),
+                string `'${level}' is offered by the enum and so must construct without error`);
     }
-    test:assertTrue(result.message().includes("IN_MEMORY"),
-            string `the message should name the way out, got: ${result.message()}`);
 }
 
 @test:Config
 isolated function testUnsetQuantizationIsAllowedOnNextGen() {
     ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(), validMode(), {});
-    test:assertTrue(result is (), "leaving both unset reproduces the server's own default");
-}
-
-@test:Config
-isolated function testCompressionLevelWithoutVectorModeIsAllowed() {
-    ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_1X), validMode(), {});
-    test:assertTrue(result is (),
-            "'COMPRESSION_1X' is only rejected alongside 'ON_DISK', which is not set here");
+    test:assertTrue(result is (), "leaving it unset reproduces the server's own default");
 }
 
 // --- rule 6: the two NextGen collection headers are alternatives -------------------------------

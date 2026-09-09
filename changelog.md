@@ -5,6 +5,63 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
 ## [Unreleased]
 
 ### Added
+- `Configuration.verifyOnInit` (default `true`), which checks at construction that the cluster and
+  the target index can actually serve this store. It reads `GET /` for the cluster's OpenSearch
+  version and compares it against the floors the configuration implies (2.11 `hybrid`, 2.14 raw
+  `query_tokens`, 2.15 two-phase, 2.16 `ef_search`, 2.19 RRF), and reads `GET /<index>/_mapping` to
+  confirm the vector field(s) the mode declares exist, are the right type, and carry the configured
+  `dimension`. Nothing previously connected a store's configuration to the index it was pointed at:
+  a `SPARSE` store aimed at a dense index wrote successfully forever and failed every query with a
+  bare `400`. A check that runs and disagrees is fatal; one that cannot run, because the principal
+  may not read those paths, logs a warning and construction continues. A missing index is the
+  exception and is an error, which turns the documented `createIndexIfNotExists: false` hazard into
+  a construction failure instead of a corrupted index discovered later. The version check is
+  skipped on both Serverless generations, which do not answer `GET /`.
+- `RrfFusion`, a third `HybridFusion` variant that fuses the sub-queries by rank rather than by
+  score, sent as an inline `score-ranker-processor` (OpenSearch 2.19+). This is the technique
+  OpenSearch recommends when sub-query scores are distributed differently, which is exactly what
+  `HYBRID` presents — a bounded cosine score fused against an unbounded sparse dot product — and it
+  was previously reachable only by abandoning the inline path for a named pipeline. It carries no
+  settings: the processor's `rank_constant` moved from `combination.parameters` to `combination`
+  itself in neural-search 3.1 and the old location became a hard error there, and `weights` is
+  accepted by every version but honored by none before 3.1, so neither has a wire shape that
+  behaves consistently across the versions the 2.19 floor admits.
+- `SparseSearch.twoPhaseAcceleration`, which opts into OpenSearch's
+  `neural_sparse_two_phase_processor` (2.15+) as an inline `request_processors` pipeline, so
+  high-weight query tokens select a candidate set and low-weight ones rescore only those. A
+  `SPARSE` store previously scored every matching document against all of its query tokens with no
+  way to opt out. Unset by default, since it raises the version floor. Reachable from `SPARSE`
+  alone: the processor rewrites `neural_sparse` clauses at the top level or inside a `bool` and
+  does not descend into a `hybrid` query, where it would be accepted and quietly do nothing.
+- `SparseSearch.twoPhaseAcceleration` exposes `pruneRatio` alone. The processor's `expansion_rate`
+  and `max_window_size` are deliberately not surfaced — neither can be set meaningfully without
+  knowing the algorithm's internals — and are omitted from the request so the server supplies its
+  own defaults.
+- `DenseSearch.efSearch` and `HybridSearch.efSearch`, the search-time HNSW recall/latency dial,
+  sent per query as `method_parameters.ef_search` in the `knn` clause (OpenSearch 2.16+). The
+  module previously exposed only `efConstruction` and `m`, which are fixed when the index is
+  created; this one takes effect immediately on an existing index. Unset by default, which omits
+  `method_parameters` and leaves the index's own `index.knn.algo_param.ef_search` in force.
+
+### Fixed
+- A `HYBRID` query whose fusion processor did not run no longer returns corrupted scores as though
+  they were a ranking. OpenSearch delimits each sub-query's results with large negative sentinel
+  scores that the fusion processor is responsible for stripping, and a `hybrid` query that runs
+  without one does not fail — it returns them as `_score` values. With a `NamedSearchPipeline`
+  nothing validated the pipeline, so one that existed but declared no fusion processor handed the
+  caller `similarityScore: -9500000000.0` and no error. `query` now rejects a negative `HYBRID`
+  score with an error naming the fusion source.
+- A `NamedSearchPipeline` is no longer attached to a query that carries no embedding. The inline
+  fusion variants have always omitted their pipeline in that case — a query with no embedding
+  produces no `hybrid` clause and so has nothing to fuse — but the named variant sent
+  `?search_pipeline=` unconditionally, so the same query shape behaved differently depending on
+  which member of the union the caller had picked.
+
+### Changed
+- `createIndexIfNotExists: false` alone no longer means "no network I/O at all", because
+  `verifyOnInit` now performs its own reads independently. Set both to `false` for fully offline
+  construction.
+
 - `ServerlessNextGenDeployment.collectionName` and `.collectionId`, which become the signed
   `x-amz-aoss-collection-name`/`x-amz-aoss-collection-id` headers a per-account NextGen endpoint
   needs to know which collection a request is for. They replace the free-form
@@ -35,17 +92,30 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   `engine` on Classic, `refreshOnWrite` off a managed domain, quantization off NextGen — are now
   compile errors rather than runtime ones. This also gives form-driven tooling a variant to select
   instead of a flat parameter list where most fields do not apply. `IndexConfig.engine` moved to
-  `ManagedDomainDeployment.engine`; `IndexConfig.compressionLevel`/`vectorMode` moved to
+  `ManagedDomainDeployment.engine`; `IndexConfig.compressionLevel` moved to
   `ServerlessNextGenDeployment`; `Configuration.refreshOnWrite` moved to
   `ManagedDomainDeployment`. `init`'s `deployment` parameter is required, as is `auth` on every
   variant — neither defaults, so a store cannot be constructed that quietly resolves credentials
   from the ambient AWS chain when the caller named none. Pass `auth:DEFAULT_CREDENTIALS` to opt
   into that chain explicitly.
-- `ServerlessNextGenDeployment.compressionLevel` and `.vectorMode`, which surface the `knn_vector`
-  field's `compression_level` and `mode`. A NextGen collection provisions every vector field as
-  `on_disk`/`32x` when nothing is configured, so vectors are quantized by default with no
-  diagnostic; `IN_MEMORY` with `COMPRESSION_1X` opts out. Both are unset by default, which leaves
-  the server's behavior exactly as it was.
+- `ServerlessNextGenDeployment.compressionLevel`, which surfaces the `knn_vector` field's
+  `compression_level`. A NextGen collection provisions every vector field as `on_disk`/`32x` when
+  nothing is configured, so vectors are quantized by default with no diagnostic;
+  `COMPRESSION_1X` opts out, and NextGen moves the field off `on_disk` itself to honor it. It is
+  unset by default, which leaves the server's behavior exactly as it was.
+- The `knn_vector` `mode` parameter is deliberately not surfaced, and `CompressionLevel` offers no
+  `4x`. Both were briefly present on `ServerlessNextGenDeployment` during this cycle and neither
+  was usable there. Probed directly against AWS, the AOSS NextGen proxy answers `PUT /<index>`
+  carrying `mode` with a flat 400 — `Field parameter 'mode' is not supported` — for `in_memory`
+  and `on_disk` alike, making the field unreachable on the only variant that declared it; the same
+  mapping is accepted and stored by a managed 2.19 domain, so this is a proxy gap rather than an
+  OpenSearch one. `compression_level: 4x` is refused by the same proxy, which names its accepted
+  set in the rejection (`[, 1x, 2x, 8x, 16x, 32x]`), and it is in any case a Lucene-only ratio that
+  Faiss rejects with `"faiss" does not support "4x" compression` — this module always names an
+  engine explicitly, so no mapping it builds could store it on a managed domain either. Moving the
+  pair to `ManagedDomainDeployment` was considered and rejected for the same reason. The
+  `ON_DISK`/`COMPRESSION_1X` construction-time check went with them: it guarded a combination that
+  was already unreachable.
 - `SPARSE` search, backed by a `rank_features` field and a `neural_sparse` query carrying
   precomputed `query_tokens`. An `ai:SparseVector`'s `indices` become the token names and its
   `values` the weights, sent as they are — no ML model, ingest pipeline or `index.knn` setting is
@@ -147,8 +217,8 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
 
 ### Documentation
 - `IndexConfig` and the README now state that index-shape settings apply only at index creation.
-  `dimension`, `similarityMetric`, `efConstruction`, `m`, `engine`, `compressionLevel` and
-  `vectorMode` are sent in the single `PUT /<index>` that `init` issues when the index does not
+  `dimension`, `similarityMetric`, `efConstruction`, `m`, `engine` and `compressionLevel` are
+  sent in the single `PUT /<index>` that `init` issues when the index does not
   exist; afterwards `init` returns early and editing them has no effect and raises no error,
   because no later request restates them. `dimension` is not an exception — it is never compared
   against the embeddings this module sends, so a mismatched value beside unchanged embeddings stays

@@ -86,7 +86,10 @@ service / on wireListener {
 
 isolated function wireStore() returns VectorStore|ai:Error =>
     new (string `http://localhost:${WIRE_PORT}`, CONTAINER_REGION, "wire-index", containerDeployment(),
-    {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}}, {createIndexIfNotExists: false}
+    {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}},
+    // The mock below implements `_bulk` alone, so the construction-time reads have nothing to
+    // answer them. These tests are about signing and framing; verification is covered elsewhere.
+    {createIndexIfNotExists: false, verifyOnInit: false}
 );
 
 isolated function wireEmbedding() returns ai:Vector {
@@ -119,7 +122,7 @@ isolated function testLargeBodyIsSentAsUnchunkedHttp11() returns error? {
 isolated function testCallerSuppliedHttpConfigCannotUnpinTheFraming() returns error? {
     VectorStore store = check new (string `http://localhost:${WIRE_PORT}`, CONTAINER_REGION, "wire-index",
         containerDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}},
-        {createIndexIfNotExists: false},
+        {createIndexIfNotExists: false, verifyOnInit: false},
         {httpVersion: http:HTTP_2_0, http1Settings: {chunking: http:CHUNKING_ALWAYS}}
     );
     check store.add([{id: "wire-2", embedding: wireEmbedding(), chunk: <ai:TextChunk>{content: "framing"}}]);

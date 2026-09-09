@@ -171,3 +171,80 @@ isolated function testContainerSparseRoundTripIsLossy() returns error? {
     }
     check store.close();
 }
+
+// --- two-phase acceleration ------------------------------------------------------------------------
+
+// The query the two-phase tests issue. The weights are chosen so the split actually happens: with
+// the default `pruneRatio` of 0.4 the threshold is `0.4 * 10.0 = 4.0`, so token 1055 (weight 10.0)
+// scores in the first phase and token 2001 (weight 1.0) is left to the rescoring pass. A query
+// whose tokens all clear the threshold would exercise the pipeline without exercising the split.
+isolated function twoPhaseContainerQuery() returns ai:VectorStoreQuery =>
+    {embedding: {indices: [1055, 2001], values: [10.0, 1.0]}, topK: 10};
+
+// The two entries the two-phase tests seed. `high-then-low` wins on the first-phase token and
+// `low-then-high` wins on the rescoring token, so a rescoring pass that never ran, or that dropped
+// its contribution, changes the scores.
+isolated function twoPhaseSeedEntries() returns ai:VectorEntry[] => [
+    sparseVectorEntry("high-then-low", [1055, 2001], [9.0, 1.0]),
+    sparseVectorEntry("low-then-high", [1055, 2001], [1.0, 9.0])
+];
+
+// The gating test for `TwoPhaseAcceleration`: it proves the container accepts an inline
+// `request_processors` pipeline carrying `neural_sparse_two_phase_processor` (2.15+), and that the
+// accelerated result is the same as the unaccelerated one. A rejected pipeline fails the search
+// outright rather than degrading.
+//
+// Comparing against the same query without the processor is what makes this meaningful. The
+// acceleration is an optimisation, so on a corpus this small -- well inside `expansionRate * size`
+// -- it must reproduce the exact scores rather than merely something plausible. Asserting the
+// scores rather than only the order is what would catch a rescoring pass that silently dropped its
+// tokens' contribution: the ranking here survives that, but the scores do not.
+@test:Config {groups: ["docker"]}
+isolated function testContainerTwoPhaseAccelerationMatchesTheUnacceleratedResult() returns error? {
+    string indexName = containerIndexName("sparse-twophase");
+    VectorStore seed = check newSparseContainerStore(indexName);
+    check seed.add(twoPhaseSeedEntries());
+    ai:VectorMatch[] baseline = check seed.query(twoPhaseContainerQuery());
+    check seed.close();
+
+    SparseSearch accelerated = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}};
+    VectorStore store = check newContainerStore(indexName, accelerated, {createIndexIfNotExists: false});
+    ai:VectorMatch[] matches = check store.query(twoPhaseContainerQuery());
+    check store.close();
+
+    test:assertEquals(matches.length(), baseline.length(),
+            "the two-phase pass must return the same matches as the single-phase one");
+    foreach int i in 0 ..< baseline.length() {
+        test:assertEquals(matches[i].id, baseline[i].id,
+                string `the acceleration must not reorder results, differing at position ${i}`);
+        test:assertEquals(matches[i].similarityScore, baseline[i].similarityScore,
+                string `entry '${baseline[i].id.toString()}' scored ${matches[i].similarityScore} under the ` +
+                string `two-phase pass and ${baseline[i].similarityScore} without it; the low-weight ` +
+                "tokens' contribution must survive the rescoring pass");
+    }
+}
+
+// The processor rewrites the query, so it has to survive the `bool` wrapper a filtered sparse
+// query is nested in -- the only other clause shape this mode produces.
+@test:Config {groups: ["docker"]}
+isolated function testContainerTwoPhaseAccelerationWorksWithAFilter() returns error? {
+    string indexName = containerIndexName("sparse-twophase-filter");
+    VectorStore seed = check newSparseContainerStore(indexName);
+    check seed.add([
+        sparseVectorEntry("english", [1055], [9.0], "en"),
+        sparseVectorEntry("french", [1055], [9.5], "fr")
+    ]);
+    check seed.close();
+
+    SparseSearch accelerated = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}};
+    VectorStore store = check newContainerStore(indexName, accelerated, {createIndexIfNotExists: false});
+    ai:VectorMatch[] matches = check store.query({
+        embedding: {indices: [1055], values: [2.0]},
+        filters: {filters: [{key: "language", value: "en"}]},
+        topK: 10
+    });
+    check store.close();
+
+    test:assertEquals(matches.length(), 1, "the filter must still apply under the two-phase rewrite");
+    test:assertEquals(matches[0].id, "english");
+}

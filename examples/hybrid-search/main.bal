@@ -53,6 +53,11 @@ public function main() returns error? {
             // Leaning on the sparse side. The weights must sum to 1.0; the pipeline that applies
             // them is sent inline with every query, so nothing is provisioned on the cluster and
             // retuning these takes effect immediately.
+            //
+            // Normalizing two differently-scaled scores onto a shared range is one way to fuse
+            // them. The other is to ignore the scores and combine the two rankings instead, which
+            // needs no comparable scales at all: `fusion: {technique: opensearch:RRF}` on
+            // OpenSearch 2.19+. It takes no weights, so this example uses the weighted form.
             fusion: {denseWeight: 0.4, sparseWeight: 0.6}
         }
     );

@@ -396,9 +396,11 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
         : {"excludes": vectorFieldNamesOf(searchMode)};
 
     json queryClause;
-    // Set only when a `HYBRID` query actually produced a `hybrid` clause. A query with no
-    // embedding scores nothing, so there is nothing to normalize and no pipeline to attach.
-    HybridSearchConfig? hybridFusion = ();
+    // Set only when the query actually produced a clause the pipeline has something to do to. A
+    // query with no embedding scores nothing, so there is nothing to fuse under `HYBRID` and no
+    // `neural_sparse` clause to accelerate under `SPARSE`; `searchPipelineName` keeps the named
+    // variant in step with that same rule.
+    json? inlinePipeline = ();
     if embedding is () {
         queryClause = filterClause is () ? {"match_all": {}} : {"bool": {"filter": [filterClause]}};
     } else if searchMode is SparseSearch {
@@ -407,23 +409,28 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
         }
         queryClause = check buildSparseQueryClause(embedding, searchMode.sparseVectorFieldName,
                 searchMode.maxQueryTokens, filterClause);
+        TwoPhaseAcceleration? acceleration = searchMode.twoPhaseAcceleration;
+        if acceleration is TwoPhaseAcceleration {
+            inlinePipeline = buildInlineTwoPhasePipeline(acceleration);
+        }
     } else if searchMode is HybridSearch {
         if embedding !is ai:HybridVector {
             return embeddingMismatchError("The query", embedding, searchMode);
         }
-        // Only the inline variant contributes a body-level `search_pipeline`; a
+        // Only the inline variants contribute a body-level `search_pipeline`; a
         // `NamedSearchPipeline` travels as a query parameter instead, and sending both is an
         // error OpenSearch raises outright.
         HybridFusion fusion = searchMode.fusion;
-        if fusion is HybridSearchConfig {
-            hybridFusion = fusion;
+        if fusion is InlineFusion {
+            inlinePipeline = buildInlineFusionPipeline(fusion);
         }
         queryClause = check buildHybridQueryClause(embedding, searchMode, size, filterClause);
     } else {
         if embedding !is ai:Vector {
             return embeddingMismatchError("The query", embedding, searchMode);
         }
-        queryClause = buildDenseQueryClause(embedding, searchMode.vectorFieldName, size, filterClause);
+        queryClause = buildDenseQueryClause(embedding, searchMode.vectorFieldName, size, filterClause,
+                searchMode.efSearch);
     }
 
     map<json> body = {
@@ -432,8 +439,8 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
         "track_total_hits": false,
         "query": queryClause
     };
-    if hybridFusion is HybridSearchConfig {
-        body["search_pipeline"] = buildInlineFusionPipeline(hybridFusion);
+    if inlinePipeline !is () {
+        body["search_pipeline"] = inlinePipeline;
     }
     return body;
 }
@@ -461,7 +468,8 @@ isolated function buildHybridQueryClause(ai:HybridVector embedding, HybridSearch
     // Order is load-bearing: `buildInlineFusionPipeline` emits its weights positionally against
     // this array, dense first and sparse second.
     json[] subQueries = [
-        buildDenseQueryClause(embedding.dense, searchMode.vectorFieldName, size, filterClause),
+        buildDenseQueryClause(embedding.dense, searchMode.vectorFieldName, size, filterClause,
+                searchMode.efSearch),
         check buildSparseQueryClause(embedding.sparse, searchMode.sparseVectorFieldName,
                 searchMode.maxQueryTokens, filterClause)
     ];
@@ -478,12 +486,29 @@ isolated function buildHybridQueryClause(ai:HybridVector embedding, HybridSearch
 # propagation delay during which a freshly created pipeline is not yet resolvable.
 #
 # A `hybrid` query without this does not fail cleanly: OpenSearch delimits each sub-query's results
-# with sentinel scores of about `-9.5e9` and `-4.4e9`, and it is the `normalization-processor` that
-# strips them. Without one they reach the caller as results.
+# with sentinel scores of about `-9.5e9` and `-4.4e9`, and it is the fusion processor that strips
+# them. Without one they reach the caller as results, which `checkFusedScore` is the last line of
+# defence against.
 #
-# + fusion - The normalization and combination settings
+# Both variants are `phase_results_processors` entries and differ only in which processor they name
+# and what it is given. `RrfFusion` is sent as the bare technique, because neither knob the
+# `score-ranker-processor` documents has a wire shape that behaves the same across the versions its
+# 2.19 floor admits — see "Why this variant has no settings" on `RrfFusion`.
+#
+# + fusion - The fusion settings, score-based or rank-based
 # + return - The inline pipeline object
-isolated function buildInlineFusionPipeline(HybridSearchConfig fusion) returns json {
+isolated function buildInlineFusionPipeline(InlineFusion fusion) returns json {
+    if fusion is RrfFusion {
+        // Nothing beyond the technique. `rank_constant` and `weights` both have wire shapes that
+        // are honored on one side of neural-search 3.1 and ignored or rejected on the other; see
+        // "Why this variant has no settings" on `RrfFusion`. What is left is portable everywhere
+        // the processor exists.
+        return {
+            "phase_results_processors": [
+                {"score-ranker-processor": {"combination": {"technique": fusion.technique}}}
+            ]
+        };
+    }
     // Positional against the sub-query array built in `buildHybridQueryClause`.
     float[] weights = [fusion.denseWeight, fusion.sparseWeight];
     return {
@@ -501,6 +526,34 @@ isolated function buildInlineFusionPipeline(HybridSearchConfig fusion) returns j
     };
 }
 
+# Builds the inline `search_pipeline` object that accelerates a `neural_sparse` query by splitting
+# its query tokens into a high-weight filtering pass and a low-weight rescoring pass.
+#
+# A `request_processors` entry rather than a `phase_results_processors` one: it rewrites the query
+# before it runs, where the fusion processors rearrange results after. That is also why the two
+# never need to be combined here — the processor does not descend into a `hybrid` query, so it is
+# reachable from `SPARSE` alone.
+#
+# + acceleration - The two-phase settings
+# + return - The inline pipeline object
+isolated function buildInlineTwoPhasePipeline(TwoPhaseAcceleration acceleration) returns json => {
+    "request_processors": [
+        {
+            "neural_sparse_two_phase_processor": {
+                "enabled": true,
+                // Singular, and deliberately so -- OpenSearch names this field
+                // `two_phase_parameter`, not `two_phase_parameters`, and an unrecognised key here
+                // fails the whole search rather than being ignored.
+                // `expansion_rate` and `max_window_size` are deliberately absent rather than
+                // sent at their defaults: omitting them lets the server own those values, so a
+                // future OpenSearch that tunes them differently is not overridden by this module
+                // restating today's numbers. See `TwoPhaseAcceleration`.
+                "two_phase_parameter": {"prune_ratio": acceleration.pruneRatio}
+            }
+        }
+    ]
+};
+
 # The named search pipeline to send as `?search_pipeline=`, or `()` when this store sends its
 # fusion configuration inline in the request body instead.
 #
@@ -508,10 +561,16 @@ isolated function buildInlineFusionPipeline(HybridSearchConfig fusion) returns j
 # parameter with "Both named and inline search pipeline were specified". The `HybridFusion` union
 # is what makes sending both unrepresentable rather than merely unlikely.
 #
+# A query carrying no embedding produces no `hybrid` clause — it scores nothing, so there is
+# nothing to normalize and no pipeline to run. The inline variant already omits its pipeline in
+# that case; `hasEmbedding` is what keeps the named variant from disagreeing with it, rather than
+# attaching a fusion pipeline to a `match_all`.
+#
 # + searchMode - The store's search mode
+# + hasEmbedding - Whether the query carried an embedding, and so produced a `hybrid` clause
 # + return - The pipeline name, or `()`
-isolated function searchPipelineName(SearchMode searchMode) returns string? {
-    if searchMode !is HybridSearch {
+isolated function searchPipelineName(SearchMode searchMode, boolean hasEmbedding) returns string? {
+    if searchMode !is HybridSearch || !hasEmbedding {
         return ();
     }
     HybridFusion fusion = searchMode.fusion;
@@ -521,16 +580,28 @@ isolated function searchPipelineName(SearchMode searchMode) returns string? {
 # Builds the `knn` clause for a dense query, pre-filtering inside the clause rather than with
 # `post_filter`, which can silently return fewer than `k` results.
 #
+# `k` is the requested `size`, which makes `topK` double as the retrieval depth. That is the right
+# answer under `DENSE`, where the `k` nearest are exactly the results; under `HYBRID` it is a
+# ceiling on what fusion has to work with, and is documented as such on `HybridSearch`.
+#
+# `method_parameters` is emitted only when `efSearch` is set, so an unset dial leaves the request
+# byte-identical to what this module sent before the knob existed — which also keeps it off
+# clusters older than the 2.16 that first accepted the object.
+#
 # + embedding - The query vector
 # + vectorFieldName - The `knn_vector` field to search
 # + size - The `k` to request
 # + filterClause - The translated metadata filter, or `()`
+# + efSearch - The search-time HNSW candidate count, or `()` to leave the index setting in force
 # + return - The `knn` clause
 isolated function buildDenseQueryClause(ai:Vector embedding, string vectorFieldName, int size,
-        json? filterClause) returns json {
+        json? filterClause, int? efSearch = ()) returns json {
     map<json> knnBody = {"vector": embedding.cloneReadOnly(), "k": size};
     if filterClause !is () {
         knnBody["filter"] = filterClause;
+    }
+    if efSearch is int {
+        knnBody["method_parameters"] = {"ef_search": efSearch};
     }
     return {"knn": {[vectorFieldName]: knnBody}};
 }
@@ -739,6 +810,48 @@ isolated function normalizeScore(float score, ai:SimilarityMetric metric, boolea
     return 2.0 * score - 1.0;
 }
 
+# Rejects a `hybrid` `_score` that no fusion processor ever touched.
+#
+# OpenSearch delimits each sub-query's results inside a `hybrid` query with large negative sentinel
+# scores (around `-9.5e9` and `-4.4e9`), and it is the fusion phase-results processor that strips
+# them and replaces every score with a normalized one. A `hybrid` query that runs without such a
+# processor does **not** fail: the sentinels survive the fetch phase and reach the caller as
+# `_score` values, so a corrupted ranking is returned as though it were a real one. The container
+# suite characterises exactly this — see `testContainerHybridWithoutPipelineLeaksSentinelScores`.
+#
+# Every fusion technique this module can ask for produces a non-negative score: `min_max` and `l2`
+# both emit `[0.0, 1.0]` with an exact `0.0` replaced by `0.001`, and RRF sums reciprocals of
+# ranks. A negative score under `HYBRID` therefore means no processor ran, and is never a value a
+# caller should be handed.
+#
+# The inline variant cannot reach this — this module always sends a processor with the query — but
+# it is checked there too, since "the processor did not run" is a server-side outcome rather than
+# a request-shape one, and the check costs nothing.
+#
+# + score - The `_score` OpenSearch returned for a hit
+# + fusion - Where the store's fusion configuration comes from, which decides what to blame
+# + id - The entry id, for naming the offending hit
+# + return - An `ai:Error` if the score is a leaked sentinel, otherwise `()`
+isolated function checkFusedScore(float score, HybridFusion fusion, string id) returns ai:Error? {
+    if score >= 0.0 {
+        return;
+    }
+    if fusion is NamedSearchPipeline {
+        return error(string `The hybrid search pipeline '${fusion.name}' returned an unfused ` +
+                string `score (${score}) for entry '${id}'. A 'hybrid' query whose pipeline ` +
+                "carries no 'normalization-processor' or 'score-ranker-processor' does not fail — " +
+                "OpenSearch's negative sub-query delimiter scores survive into the results instead. " +
+                string `Check that '${fusion.name}' exists on the cluster and declares one of those ` +
+                "processors under 'phase_results_processors', or set a 'HybridSearchConfig' to have " +
+                "this module send the pipeline inline");
+    }
+    return error(string `The hybrid query returned an unfused score (${score}) for entry ` +
+            string `'${id}', meaning the inline fusion processor did not run. This module sends ` +
+            "one with every hybrid query, so the cluster rejected or ignored it: confirm the " +
+            "cluster runs OpenSearch 2.11 or later with the 'neural-search' plugin, and that it " +
+            "honors an inline 'search_pipeline' in the search body");
+}
+
 # Converts a single OpenSearch search hit to an `ai:VectorMatch`. The stored `chunk_type` is read
 # back so the returned chunk round-trips as the same `ai:Chunk` shape it was written as: a
 # `"text-chunk"` value reconstructs as `ai:TextChunk` (so `cloneWithType(ai:TextChunk)` on the
@@ -751,7 +864,8 @@ isolated function normalizeScore(float score, ai:SimilarityMetric metric, boolea
 # for the two query shapes with no embedding (`match_all` / a bare `bool` filter), where
 # OpenSearch returns a constant score that is not a similarity — the result is `0.0` regardless
 # of `hit._score`, matching `ai:InMemoryVectorStore` and this module's own documented behavior
-# + return - The converted match, or an `ai:Error` if the stored embedding or metadata is malformed
+# + return - The converted match, or an `ai:Error` if the stored embedding or metadata is malformed,
+# or if a `HYBRID` score shows that no fusion processor ran — see `checkFusedScore`
 isolated function hitToVectorMatch(SearchHit hit, SearchMode searchMode, Configuration config,
         boolean scoreIsMeaningful) returns ai:VectorMatch|ai:Error {
     map<json> src = hit?._source ?: {};
@@ -789,6 +903,9 @@ isolated function hitToVectorMatch(SearchHit hit, SearchMode searchMode, Configu
     // `(0.0, 1.0]` by the fusion pipeline; applying `2 * score - 1` to either would corrupt it.
     float similarityScore = 0.0;
     if scoreIsMeaningful {
+        if searchMode is HybridSearch {
+            check checkFusedScore(hit._score, searchMode.fusion, id);
+        }
         similarityScore = searchMode is DenseSearch
             ? normalizeScore(hit._score, searchMode.indexConfig.similarityMetric, searchMode.normalizeCosineScore)
             : hit._score;

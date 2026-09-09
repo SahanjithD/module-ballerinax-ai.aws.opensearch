@@ -23,12 +23,18 @@ import ballerina/ai;
 import ballerina/test;
 
 # A store pointed at an index that does not exist, with index creation switched off so `init`
-# performs no I/O and every subsequent call hits a missing index.
+# creates nothing and every subsequent call hits a missing index.
+#
+# `verifyOnInit` is switched off alongside it. With verification on, `init` reads the index mapping,
+# gets a 404 and refuses to construct the store at all -- which is the point of the setting, and is
+# covered by `testContainerVerificationRejectsAMissingIndex`. These tests need the store to exist
+# so the *operation's* 404 mapping can be asserted, so they opt out.
 #
 # + indexName - The index that will not exist
 # + return - The store, or an `ai:Error`
 isolated function storeOnMissingIndex(string indexName) returns VectorStore|ai:Error =>
-    newContainerStore(indexName, containerDenseMode(), {createIndexIfNotExists: false});
+    newContainerStore(indexName, containerDenseMode(),
+            {createIndexIfNotExists: false, verifyOnInit: false});
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryOnMissingIndexMapsTo404() returns error? {

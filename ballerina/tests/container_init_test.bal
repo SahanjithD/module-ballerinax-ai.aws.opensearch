@@ -53,10 +53,12 @@ isolated function testContainerInitOnExistingIndexIsANoOp() returns error? {
 isolated function testContainerCreateIndexIfNotExistsFalseSkipsCreation() returns error? {
     string indexName = containerIndexName("init-nocreate");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    Configuration config = {createIndexIfNotExists: false};
+    // Both switches: `createIndexIfNotExists` stops creation, `verifyOnInit` stops the mapping
+    // read that would otherwise 404 on the index this test is asserting does not exist.
+    Configuration config = {createIndexIfNotExists: false, verifyOnInit: false};
     VectorStore store = check newContainerStore(indexName, configMode, config);
     test:assertFalse(check rawIndexExists(indexName),
-            "'createIndexIfNotExists: false' must perform no network I/O and create nothing");
+            "'createIndexIfNotExists: false' must create nothing");
     check store.close();
 }
 
