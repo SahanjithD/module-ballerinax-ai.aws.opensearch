@@ -14,9 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Unit tests for the construction-time verification in `preflight.bal`. The version parsing, the
-// floor comparison, the requirement set a `SearchMode` implies, and the mapping comparison are all
-// pure, so the only part that needs a cluster is the two reads that feed them.
+// Unit tests for the pure parts of `preflight.bal`.
 
 import ballerina/ai;
 import ballerina/test;
@@ -33,8 +31,6 @@ isolated function testParseVersionReadsTwoComponents() {
     test:assertEquals(parseVersion("2.11"), [2, 11]);
 }
 
-// A build reporting a pre-release suffix must parse to the release it precedes rather than failing
-// and downgrading the whole check to a warning.
 @test:Config
 isolated function testParseVersionStopsAtPreReleaseSuffix() {
     test:assertEquals(parseVersion("3.0.0-SNAPSHOT"), [3, 0, 0]);
@@ -56,8 +52,6 @@ isolated function testIsAtLeastComparesMinorWithinSameMajor() {
     test:assertFalse(isAtLeast([2, 9, 0], [2, 11]));
 }
 
-// The comparison must not be lexicographic on the string: 2.9 is older than 2.11, which is exactly
-// the case a naive check gets backwards.
 @test:Config
 isolated function testIsAtLeastDoesNotCompareVersionsAsStrings() {
     test:assertFalse(isAtLeast([2, 9], [2, 11]),
@@ -108,8 +102,7 @@ isolated function testTwoPhaseAccelerationRaisesTheSparseFloor() {
             "the processor's 2.15 floor outranks raw query_tokens' 2.14 and must be reported first");
 }
 
-// The ordering is the whole point of sorting: a caller told to upgrade to 2.11 for the `hybrid`
-// query would upgrade and then immediately hit the 2.19 floor that RRF carries.
+// Naming 2.11 first would send the caller to an upgrade that still fails on RRF's 2.19.
 @test:Config
 isolated function testHybridReportsTheHighestFloorFirst() {
     HybridSearch mode = hybridMode({technique: RRF});
@@ -150,8 +143,6 @@ isolated function testMappingVerificationRejectsAMissingField() {
             string `the error should name the missing field, got: ${result.message()}`);
 }
 
-// The `SPARSE`-store-aimed-at-a-dense-index case. Writes would succeed forever and every query
-// would fail with a bare 400.
 @test:Config
 isolated function testMappingVerificationRejectsAWrongFieldType() {
     map<json> properties = {"sparse_embedding": {"type": "knn_vector", "dimension": 3}};
@@ -163,8 +154,7 @@ isolated function testMappingVerificationRejectsAWrongFieldType() {
             string `the error should name both types, got: ${result.message()}`);
 }
 
-// The auto-created-index case: `action.auto_create_index` maps a vector as a plain float array,
-// which comes back as a `float` type rather than `knn_vector`.
+// `action.auto_create_index` maps a vector as a plain `float` array.
 @test:Config
 isolated function testMappingVerificationRejectsAnAutoCreatedFloatField() {
     map<json> properties = {"embedding": {"type": "float"}};
@@ -186,8 +176,6 @@ isolated function testMappingVerificationRejectsADriftedDimension() {
             string `the error should name both dimensions, got: ${result.message()}`);
 }
 
-// `rank_features` carries no dimension, so there is nothing to compare and its absence is not a
-// disagreement.
 @test:Config
 isolated function testMappingVerificationIgnoresDimensionForSparseFields() {
     map<json> properties = {"sparse_embedding": {"type": "rank_features"}};
@@ -195,8 +183,6 @@ isolated function testMappingVerificationIgnoresDimensionForSparseFields() {
     test:assertTrue(result is ());
 }
 
-// Only the vector fields are checked. Pointing this module at a pre-existing index whose content,
-// id and metadata fields look nothing like the ones it would have written is supported.
 @test:Config
 isolated function testMappingVerificationIgnoresNonVectorFields() {
     map<json> properties = {"embedding": {"type": "knn_vector", "dimension": 3}};

@@ -14,10 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// `transformMetadata` and `createAiMetadata` as a matched pair, across a real store and fetch.
-// `metadata_test.bal` exercises each direction in isolation against a hand-written map; only a
-// round trip through OpenSearch shows whether the value that comes back out is the value that
-// went in, after the index mapping and JSON parsing have both had their say.
+// Metadata written and read back through OpenSearch.
 
 import ballerina/ai;
 import ballerina/test;
@@ -46,11 +43,8 @@ isolated function testContainerMetadataKnownFieldsRoundTrip() returns error? {
     }
     test:assertEquals(readBack.fileName, "notes.txt");
     test:assertEquals(readBack.mimeType, "text/plain");
-    // `fileSize` is declared `decimal`, but JSON only carries `int`/`float`, so `createAiMetadata`
-    // has to convert it back explicitly.
+    // `fileSize` is `decimal`, which JSON cannot carry, so it is converted back explicitly.
     test:assertEquals(readBack.fileSize, 2048.0d);
-    // `createdAt`/`modifiedAt` are written as RFC 3339 strings against the `date` mapping and
-    // parsed back to `time:Utc` on read.
     test:assertEquals(readBack.createdAt, created);
     test:assertEquals(readBack.modifiedAt, modified);
     check store.close();
@@ -94,10 +88,8 @@ isolated function testContainerMetadataFractionalNumberIsReadBackAsDecimal() ret
     if readBack is () {
         test:assertFail("metadata should have been returned");
     }
-    // A fractional custom metadata value is written as a `float` but comes back as a `decimal`,
-    // because Ballerina's JSON parser maps every non-integral number to `decimal` and
-    // `createAiMetadata` only special-cases `fileSize`. The value is preserved; the type is not.
-    // Asserted explicitly so a future change to that behaviour is a deliberate one.
+    // Ballerina parses a non-integral JSON number as `decimal`; the value survives, the type does
+    // not.
     test:assertEquals(readBack["rating"], 4.25d, "a fractional value is read back as 'decimal'");
     check store.close();
 }
@@ -110,8 +102,7 @@ isolated function testContainerEntryWithoutMetadataRoundTrips() returns error? {
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 1});
     ai:Metadata? readBack = matches[0].chunk?.metadata;
-    // An entry stored with no metadata writes an empty `metadata` object, which reads back as an
-    // empty `ai:Metadata` rather than `()`.
+    // No metadata is stored as an empty object, which reads back as `{}` rather than `()`.
     test:assertEquals(readBack, <ai:Metadata>{}, "absent metadata should read back empty, not null");
     test:assertEquals(matches[0].chunk.content, "no metadata");
     check store.close();
@@ -130,8 +121,7 @@ isolated function testContainerMetadataUnderFlatSchemaRoundTrips() returns error
     if readBack is () {
         test:assertFail("metadata should have been returned");
     }
-    // Under a flat schema the metadata is spread across the top level of the document, so reading
-    // it back means recognising which top-level fields are *not* the fixed schema fields.
+    // Under a flat schema, metadata is every top-level field that is not a fixed schema field.
     test:assertEquals(readBack["language"], "en");
     test:assertEquals(readBack["year"], 2024);
     test:assertFalse(readBack.hasKey("content"), "the fixed schema fields must not leak into metadata");
@@ -148,8 +138,7 @@ isolated function testContainerFlatSchemaKeyCollisionIsRejectedBeforeWriting() r
     Configuration config = {metadataFieldName: ""};
     VectorStore store = check newContainerStore(indexName, configMode, config);
 
-    // A metadata key literally named `content` would clobber the chunk content under a flat
-    // schema. The guard fires client-side, so the index is left untouched.
+    // A `content` metadata key would overwrite the chunk content under a flat schema.
     ai:Error? result = store.add([entry("collide", queryVector(), "real content", {"content": "hijacked"})]);
     test:assertTrue(result is ai:Error, "a colliding metadata key should be rejected");
     test:assertEquals(check documentCount(indexName), 0, "nothing should have been written");
@@ -170,8 +159,7 @@ isolated function testContainerMetadataSurvivesUpsert() returns error? {
     if readBack is () {
         test:assertFail("metadata should have been returned");
     }
-    // An upsert replaces the whole document, so the first write's `year` must be gone rather than
-    // merged into the second.
+    // An upsert replaces the whole document rather than merging.
     test:assertEquals(readBack["language"], "fr");
     test:assertFalse(readBack.hasKey("year"), "an upsert should replace metadata, not merge it");
     check store.close();

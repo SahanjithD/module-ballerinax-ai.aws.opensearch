@@ -192,9 +192,7 @@ isolated function testDeleteBulkBodyShapeAndTrailingNewline() returns error? {
 @test:Config
 isolated function testDocIdLookupBodyShape() {
     json body = buildDocIdLookupBody("doc_id", ["a", "b"], 10000);
-    // `_source` fetches the logical id field rather than being switched off: the bulk delete this
-    // feeds submits internal `_id`s, and the logical id has to travel back alongside each hit for
-    // a per-item delete failure to be reportable against an id the caller recognises.
+    // The logical id comes back with each hit so a failed delete can name it.
     json expected = {
         "size": 10000,
         "_source": ["doc_id"],
@@ -287,9 +285,8 @@ isolated function testExtractIndexFailuresMixedSuccessAndFailure() {
     test:assertEquals(failures[0].reason, "bad doc");
 }
 
-// The `SERVERLESS_CLASSIC` shape: the action line carried no `_id`, so every `_id` coming back is
-// one the server invented and none of them is anything the caller can act on. Only the item's
-// position ties a failure back to the entry that caused it.
+// On Serverless Classic the response `_id`s are server-generated, so only position identifies
+// the entry.
 @test:Config
 isolated function testExtractIndexFailuresAttributesByPositionNotServerId() {
     BulkResponse response = {
@@ -312,8 +309,7 @@ isolated function testExtractIndexFailuresAttributesByPositionNotServerId() {
             "the caller's own id, not the server-generated '_id', should name the failing entry");
 }
 
-// A response carrying more items than were submitted means the positional correspondence this
-// relies on has already broken; the server's `_id` is all that is left.
+// Beyond the submitted ids, only the server's `_id` is left.
 @test:Config
 isolated function testExtractIndexFailuresFallsBackToServerIdBeyondSubmitted() {
     BulkResponse response = {
@@ -356,8 +352,7 @@ isolated function testExtractDeleteFailuresReportsRealErrors() {
     test:assertEquals(failures[0].reason, "boom");
 }
 
-// The `SERVERLESS_CLASSIC` delete submits internal `_id`s discovered by a lookup, so without
-// positional attribution a failure would be reported against an id the caller never supplied.
+// The Classic delete submits internal `_id`s, so failures are reported by position.
 @test:Config
 isolated function testExtractDeleteFailuresReportsLogicalIdsNotInternalIds() {
     BulkResponse response = {
@@ -372,8 +367,7 @@ isolated function testExtractDeleteFailuresReportsLogicalIdsNotInternalIds() {
     test:assertEquals(failures[0].id, "doc-b");
 }
 
-// A non-error item that still failed carries no `error` object, only a status; it must be
-// attributed the same way.
+// A failed item with only a status, and no `error` object.
 @test:Config
 isolated function testExtractDeleteFailuresStatusOnlyUsesSubmittedId() {
     BulkResponse response = {
@@ -404,9 +398,6 @@ isolated function testSummarizeBulkFailuresRespectsLimit() {
 
 // --- mode/embedding strictness ----------------------------------------------------------------
 
-// The check is symmetric in `add` and `query`: a store configured for one mode and handed
-// another's embedding is a configuration mistake either way. Letting a sparse embedding through
-// to a dense index would index a field no query ever reads.
 isolated function sparseEntry(string id, int[] indices, float[] values) returns ai:VectorEntry =>
     {id, embedding: {indices, values}, chunk: {'type: "text-chunk", content: "hello"}};
 
@@ -469,8 +460,7 @@ isolated function testPrepareEntriesHybridModeRejectsSparseEmbedding() {
     test:assertTrue(result is ai:Error, "a sparse-only embedding must be rejected by a HYBRID store");
 }
 
-// The Lucene bounds are enforced by `toSparseTokenMap`; this pins that `prepareEntries` actually
-// routes through it, so a bad weight fails naming the entry rather than failing a whole _bulk.
+// A bad weight fails naming the entry, rather than failing the whole `_bulk`.
 @test:Config
 isolated function testPrepareEntriesSparseModeRejectsZeroWeightNamingTheEntry() {
     PreparedEntry[]|ai:Error result = prepareEntries([sparseEntry("bad-one", [7], [0.0])], sparseMode());
@@ -506,8 +496,6 @@ isolated function testBuildEntrySourceHybridWritesBothFields() returns error? {
     test:assertEquals(src["sparse_embedding"], <json>{"7": 0.5});
 }
 
-// The vector fields are written before the flat-schema metadata loop, so the existing
-// reserved-name collision guard covers the sparse field too, with no second check needed.
 @test:Config
 isolated function testBuildEntrySourceFlatSchemaRejectsSparseFieldCollision() {
     PreparedEntry entry = {

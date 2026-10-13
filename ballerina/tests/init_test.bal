@@ -19,20 +19,13 @@ import ballerina/test;
 
 const string VALID_URL = "https://my-domain.us-east-1.es.amazonaws.com";
 
-# A well-formed URL that nothing answers on, for the construction tests that need a request to fail
-# rather than a hostname to be rejected. Deliberately loopback: an offline unit test must not reach
-# for the network, and the discard port is the one place guaranteed to refuse rather than hang.
+// Loopback discard port: refuses at once rather than hanging, and stays off the network.
+# A well-formed URL that nothing answers on.
 const string UNREACHABLE_URL = "http://127.0.0.1:9";
 
 isolated function validMode() returns DenseSearch => {queryMode: ai:DENSE, indexConfig: {dimension: 1536}};
 
-// The rules this file once exercised at runtime -- `BasicAuth` outside a managed domain, a
-// non-Faiss engine on Serverless Classic, `refreshOnWrite` off a managed domain, and quantization
-// off NextGen -- are no longer reachable: each of those fields now lives on the one `Deployment`
-// variant that honors it, so the wrong combination does not compile. There is no way to write a
-// Ballerina test that asserts a compile error, and a runtime assertion would have to construct the
-// very value the type system forbids, so those cases are covered by the types themselves and are
-// deliberately absent here. What remains is the range and format checking no type can express.
+// Wrong deployment/setting combinations do not compile, so only range and format checks are here.
 
 // --- accepted deployments --------------------------------------------------------------------
 
@@ -71,9 +64,7 @@ isolated function testEveryDeploymentTypePassesWithDefaults() {
     }
 }
 
-// A record literal carrying only the discriminator has to resolve to exactly one member of the
-// union -- which is why `deploymentType` is a required field on all three variants rather than a
-// defaulted one. Were it defaulted everywhere, `{}` would be ambiguous and would not compile.
+// `deploymentType` is required on every variant so a literal resolves to exactly one of them.
 @test:Config
 isolated function testDiscriminatorSelectsTheVariant() {
     Deployment managed = managedDeployment();
@@ -86,9 +77,7 @@ isolated function testDiscriminatorSelectsTheVariant() {
 
 // --- rule 1: the supported query modes ---------------------------------------------------------
 
-// The assertion here is that this compiles at all. `SparseSearch` declares no `IndexConfig`, so a
-// sparse store cannot be made to name a vector dimension, a similarity metric or an HNSW
-// parameter -- none of which a `rank_features` index has any use for.
+// `SparseSearch` has no `IndexConfig`; a `rank_features` index has no dimension or HNSW settings.
 @test:Config
 isolated function testSparseModeNeedsNoDimension() {
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), {queryMode: ai:SPARSE}, {});
@@ -104,8 +93,7 @@ isolated function testHybridModeConstructsWithDefaultFusion() {
 
 // --- rule 1b: hybrid fusion settings -----------------------------------------------------------
 
-// The `normalization-processor` rejects a weight list that does not sum to 1.0. The pipeline is
-// sent inline on every query, so an unchecked mistake would fail every call rather than one.
+// The `normalization-processor` rejects weights that do not sum to 1.0.
 @test:Config
 isolated function testHybridWeightsMustSumToOne() {
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
@@ -116,8 +104,7 @@ isolated function testHybridWeightsMustSumToOne() {
     test:assertTrue(result.message().includes("sum to 1.0"));
 }
 
-// Binary floating point does not sum 0.7 and 0.3 to exactly 1.0; rejecting that split would be
-// absurd, so the check carries a tolerance.
+// 0.7 + 0.3 is not exactly 1.0 in binary floating point, so the check needs a tolerance.
 @test:Config
 isolated function testHybridWeightsAcceptAnUnevenButValidSplit() {
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
@@ -146,9 +133,6 @@ isolated function testHybridNamedPipelineMustNotBeBlank() {
             string `the message should name the alternative, got: ${result.message()}`);
 }
 
-// A named pipeline defines the normalization technique, combination technique and weights itself,
-// so naming one and setting the inline knobs are alternatives rather than layers. The union is
-// what makes the combination unrepresentable instead of a runtime rule.
 @test:Config
 isolated function testHybridNamedPipelineConstructs() {
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
@@ -166,9 +150,7 @@ isolated function testZeroMaxQueryTokensRejected() {
     test:assertTrue(result.message().includes("maxQueryTokens"));
 }
 
-// `compressionLevel` defaults to `()`, so "explicitly set" is distinguishable from "unset". It
-// shapes a `knn_vector` field that a SPARSE index does not have, and staying silent would repeat
-// the failure mode `IndexConfig` already warns about at length.
+// Quantization shapes a `knn_vector` field, which a SPARSE index does not have.
 @test:Config
 isolated function testSparseModeRejectsNextGenQuantization() {
     ai:Error? result = validateConfiguration(VALID_URL, nextGenDeployment(COMPRESSION_8X),
@@ -289,10 +271,7 @@ isolated function testFullyValidConfigurationPasses() {
 
 @test:Config
 isolated function testOfflineConstructionWithCreateIndexAndVerifyDisabled() returns error? {
-    // Fully offline construction takes both switches. `createIndexIfNotExists: false` stops init()
-    // creating anything; `verifyOnInit: false` stops it reading the cluster version and the index
-    // mapping. With both off, init() issues no request at all, so construction succeeds against a
-    // service URL that resolves to nothing.
+    // With both switches off, `init` sends no request, so an unreachable URL is fine.
     VectorStore store = check new (
         VALID_URL,
         "us-east-1",
@@ -305,11 +284,7 @@ isolated function testOfflineConstructionWithCreateIndexAndVerifyDisabled() retu
     test:assertTrue(closeResult is (), "closing a fully offline store should not fail");
 }
 
-// The companion to the test above, and the reason `verifyOnInit`'s failure policy is worth pinning
-// down. Verification that cannot run must not fail construction: an unreachable endpoint here
-// stands in for the least-privilege principal that cannot read `/` or `/<index>/_mapping`, and in
-// both cases refusing to build a store that would otherwise have worked is the worse outcome. The
-// warning is logged; the store is returned.
+// Verification that cannot run (here, an unreachable endpoint) must warn, not fail construction.
 @test:Config
 isolated function testVerifyOnInitDoesNotFailConstructionWhenItCannotRun() returns error? {
     VectorStore store = check new (
@@ -318,8 +293,7 @@ isolated function testVerifyOnInitDoesNotFailConstructionWhenItCannotRun() retur
         "test-index",
         managedDeployment(),
         {queryMode: ai:DENSE, indexConfig: {dimension: 8}},
-        // One retry attempt rather than the default four: this test asserts that an unanswerable
-        // verification is survivable, and waiting out the backoff schedule to learn that is waste.
+        // No retries, to skip the backoff.
         {createIndexIfNotExists: false, verifyOnInit: true, retryConfig: {maxRetries: 0}}
     );
     ai:Error? closeResult = store.close();
@@ -328,11 +302,6 @@ isolated function testVerifyOnInitDoesNotFailConstructionWhenItCannotRun() retur
 
 // --- rule 5: every quantization ratio is one the deployment can store --------------------------
 
-// There is no longer a cross-field rule here to enforce. The `ON_DISK`/`COMPRESSION_1X` pairing
-// this section once rejected was unreachable: `mode` is refused by the AOSS proxy for every value,
-// so `vectorMode` could never be set in the first place, and it is gone. What is left is that
-// every member of `CompressionLevel` must construct, since the enum now offers only ratios NextGen
-// actually stores.
 @test:Config
 isolated function testEveryCompressionLevelConstructsOnNextGen() {
     CompressionLevel[] levels =
@@ -414,10 +383,7 @@ isolated function testCollectionNameAndIdMapToTheirHeaders() {
 
 // --- rule 6: document field names must be distinct ---------------------------------------------
 
-// The hole this closes: every name addresses a field in the same document, so a duplicate
-// produces a broken index rather than an error. `vectorFieldName: "content"` maps the chunk text
-// as a knn_vector and then overwrites it with the vector on every write, leaving `query`
-// returning empty content.
+// A duplicate name breaks the index silently: here the vector would overwrite the chunk text.
 @test:Config
 isolated function testVectorFieldNameCollidingWithContentRejected() {
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
@@ -428,8 +394,7 @@ isolated function testVectorFieldNameCollidingWithContentRejected() {
     test:assertTrue(result.message().includes("more than once"));
 }
 
-// HYBRID makes this materially easier to hit: it names two vector fields, which must differ from
-// each other as well as from everything else.
+// HYBRID's two vector fields must also differ from each other.
 @test:Config
 isolated function testHybridVectorFieldNamesMustDifferFromEachOther() {
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), {
@@ -465,8 +430,7 @@ isolated function testMetadataFieldNameCollidingWithContentRejected() {
     test:assertTrue(result is ai:Error);
 }
 
-// A blank metadataFieldName is the documented way to select a flat schema, where metadata has no
-// field of its own to collide with.
+// A blank `metadataFieldName` selects a flat schema, which has no metadata field to collide.
 @test:Config
 isolated function testBlankMetadataFieldNameIsStillAllowed() {
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), validMode(),

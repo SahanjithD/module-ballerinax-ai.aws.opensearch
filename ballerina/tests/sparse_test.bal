@@ -14,9 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Unit tests for the `ai:SparseVector` <-> `rank_features` conversion. Every bound asserted here
-// is Lucene's; the point of checking them client-side is that a violation names the offending
-// term instead of failing a whole `_bulk` request or arriving as an opaque shard exception.
+// Unit tests for the `ai:SparseVector` <-> `rank_features` conversion and Lucene's bounds.
 
 import ballerina/ai;
 import ballerina/test;
@@ -58,8 +56,6 @@ isolated function testSparseTokenMapRejectsLengthMismatch() {
 
 @test:Config
 isolated function testSparseTokenMapRejectsNegativeIndex() {
-    // A negative index stringifies to "-1", a legal feature name, so it would otherwise be stored
-    // rather than rejected -- and would never match a query built from a non-negative index.
     map<float>|ai:Error result = toSparseTokenMap({indices: [-1], values: [0.5]},
             "Entry 'a'", NO_MAX_WEIGHT);
     if result !is ai:Error {
@@ -87,8 +83,7 @@ isolated function testSparseTokenMapRejectsNegativeWeight() {
 
 @test:Config
 isolated function testSparseTokenMapRejectsSubnormalWeight() {
-    // Below Float.MIN_NORMAL but above zero: Lucene rejects this too, and it could not survive
-    // `rank_features`' nine-significant-bit storage in any case.
+    // Below `Float.MIN_NORMAL`, which Lucene rejects.
     map<float>|ai:Error result = toSparseTokenMap({indices: [7], values: [1.0e-45]},
             "Entry 'a'", NO_MAX_WEIGHT);
     test:assertTrue(result is ai:Error, "a subnormal weight must be rejected");
@@ -96,8 +91,6 @@ isolated function testSparseTokenMapRejectsSubnormalWeight() {
 
 @test:Config
 isolated function testSparseTokenMapRejectsNaNWeight() {
-    // Every ordering comparison against NaN is false, so the finiteness check has to come before
-    // the range checks or this would slip through to the server.
     map<float>|ai:Error result = toSparseTokenMap({indices: [7], values: [float:NaN]},
             "Entry 'a'", NO_MAX_WEIGHT);
     if result !is ai:Error {
@@ -164,8 +157,7 @@ isolated function testSparseTokenMapAllowsLargeWeightAtIndexTime() returns error
 
 @test:Config
 isolated function testSparseFromRankFeaturesSortsByNumericIndex() returns error? {
-    // Pins both that an order is imposed at all -- map key order is not guaranteed -- and that it
-    // is numeric rather than lexicographic, where "10" would sort before "2".
+    // Numeric order, where text order would put "10" before "2".
     ai:SparseVector sparse = check sparseFromRankFeatures({"9": 0.1, "2": 0.2, "10": 0.3}, "a");
     test:assertEquals(sparse.indices, [2, 9, 10]);
     test:assertEquals(sparse.values, [0.2, 0.1, 0.3]);
@@ -187,8 +179,7 @@ isolated function testSparseFromRankFeaturesAcceptsIntegerWeight() returns error
 
 @test:Config
 isolated function testSparseFromRankFeaturesRejectsTextToken() {
-    // A real sparse encoder can emit text tokens. They cannot round-trip through an `int[]`, so
-    // they are reported rather than silently dropped.
+    // A text token cannot fit `int[]` indices, so it is reported rather than dropped.
     ai:SparseVector|ai:Error result = sparseFromRankFeatures({"##ing": 0.4}, "a");
     if result !is ai:Error {
         test:assertFail("a non-integer token cannot be represented and must be reported");

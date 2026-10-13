@@ -19,129 +19,20 @@ import ballerina/http;
 import ballerina/log;
 import ballerinax/aws;
 
-# The maximum number of `_id`s looked up in a single `terms` query, per OpenSearch's cap on the
-# number of terms in a `terms` clause.
+// OpenSearch "Terms query" docs: `index.max_terms_count` defaults to 65,536.
 const int DOC_ID_LOOKUP_CHUNK_SIZE = 65536;
 
-# How far the hybrid fusion weights may sum from 1.0 and still be accepted. Binary floating point
-# does not sum 0.7 and 0.3 to exactly 1.0, and rejecting that split would be absurd.
+// Binary floating point does not sum 0.7 and 0.3 to exactly 1.0.
 const float WEIGHT_SUM_TOLERANCE = 1.0e-6;
 
-# The `SearchMode` a caller who names none gets: dense search over a 1536-dimensional vector, the
-# width of the most common general-purpose embedding models.
-#
-# Named rather than written inline as `init`'s default, because a bare record literal is ambiguous
-# against a union whose variants share field names — `queryMode` discriminates the type but does
-# not, on its own, resolve the literal.
+// Named rather than inline in `init`, since a bare record literal is ambiguous against the union.
+# The default search mode: dense search over 1536-dimensional vectors.
 final DenseSearch & readonly DEFAULT_SEARCH_MODE = {queryMode: ai:DENSE, indexConfig: {dimension: 1536}};
 
-# An `ai:VectorStore` backed by Amazon OpenSearch — either a managed OpenSearch Service domain, or
-# an OpenSearch Serverless vector search collection (Classic or NextGen).
-#
-# There is no `ballerinax/opensearch` connector to wrap, so this class talks the OpenSearch REST
-# API directly over `ballerina/http`, signing every request with AWS Signature Version 4 via
-# `ballerinax/aws.auth` (or, on a managed domain with fine-grained access control, HTTP basic
-# auth against the internal user database).
-#
-# # Deployment-specific behavior
-# `add` is an upsert on `MANAGED_DOMAIN` and `SERVERLESS_NEXTGEN` (both support a caller-supplied
-# `_id`), but is **append-only** on `SERVERLESS_CLASSIC` — re-adding the same logical id creates a
-# duplicate document there, since Serverless Classic vector collections reject a custom `_id` on
-# write. `delete` is a single `_bulk` call on the first two, and a search-then-bulk-delete on
-# `SERVERLESS_CLASSIC`; on all types, deleting a non-existent id is treated as success (this
-# module ignores `not_found`, unlike `ai:InMemoryVectorStore`, which errors). None of this varies
-# by `SearchMode` — `delete` never touches a vector field.
-#
-# Write visibility is immediate on a managed domain when `ManagedDomainDeployment.refreshOnWrite`
-# is set, otherwise governed by the index's normal refresh interval; on Serverless it is a fixed,
-# unforceable ~10 seconds (NextGen) or ~60 seconds (Classic) — poll rather than assume immediacy.
-#
-# # Construction is not query readiness on Serverless Classic
-# When `init` creates the index on `SERVERLESS_CLASSIC`, a successful construction does not mean
-# the index can be searched yet: `query` can fail with `index_not_found_exception` for roughly ten
-# seconds afterwards, while `_mapping` and `_settings` already report the index as present. It is
-# a propagation delay that clears on its own with no write and no intervention, and `add` is
-# unaffected — a caller that writes before it queries never sees it. Code that queries straight
-# after constructing a Classic store should retry that error for a few seconds rather than treat
-# it as fatal. This is not waited out inside `init`, which would otherwise pay the delay on every
-# Classic construction; see `ensureIndex`.
-#
-# # Search modes
-# The `SearchMode` chosen at construction decides the index mapping, which `ai:Embedding` member
-# `add` and `query` accept, and how a query is scored. The match is strict in both directions: a
-# store built for one mode and handed another's embedding fails rather than indexing a field no
-# query reads.
-#
-# `DENSE` maps a `knn_vector` field and queries it with a `knn` clause. `SPARSE` maps a
-# `rank_features` field and queries it with `neural_sparse` carrying precomputed `query_tokens`.
-# `HYBRID` maps both and issues them as one `hybrid` query, with the two scores normalized and
-# combined server-side.
-#
-# `SPARSE` and `HYBRID` need the `neural-search` plugin, which ships in the standard OpenSearch
-# distribution and is present on AWS managed domains from 2.9; raw `query_tokens` additionally
-# need OpenSearch 2.14 or later, and the `hybrid` query needs 2.11. AWS documents `neural_sparse`
-# and `hybrid` for Serverless without distinguishing collection generation, so both are permitted
-# on every `Deployment` here — but neither has been verified against a real Serverless collection,
-# and a Classic vector search collection may yet reject a `rank_features` mapping. On Serverless,
-# neural search is also restricted to a subset of AWS regions; see `SparseSearch`/`HybridSearch`.
-#
-# On a managed domain, `Configuration.verifyOnInit` checks these floors against the cluster's own
-# reported version at construction, so a domain that cannot serve the configured mode says so
-# there rather than as a parse failure inside a `400` on the first query.
-#
-# # Construction-time verification
-# By default, `init` also confirms that the index it is pointed at actually declares the vector
-# field(s) this store reads and writes — the right names, the right types, and the right
-# `dimension`. Nothing else in the module connects a store's configuration to its index, and the
-# ways of being wrong are silent: writes succeed against a mismatched index and queries fail with a
-# bare `400` or return nothing. See `Configuration.verifyOnInit` for what is checked, what a
-# failure means, and how to switch it off.
-#
-# # Similarity score range
-# What `VectorMatch.similarityScore` means depends on the mode, and the ranges do not line up:
-#
-# Under `DENSE`, it is the raw OpenSearch `_score`, whose range is space-dependent — `l2` gives
-# `(0, 1]`, `innerproduct` is piecewise, and `cosinesimil` gives `[0, 1]` rather than the
-# `[-1, 1]` a caller may expect from "cosine similarity". `DenseSearch.normalizeCosineScore`
-# (default `true`, and honored only under `COSINE`) converts it back to `[-1, 1]` via
-# `cos = 2 * score - 1`.
-#
-# Under `SPARSE`, it is the dot product of the query weights against the stored ones. It is
-# **unbounded above** and is not a similarity in `[0, 1]` at all — a threshold tuned against a
-# dense store means nothing here. The cosine transform is never applied, and cannot be: it is not
-# a field `SparseSearch` declares.
-#
-# Under `HYBRID`, it is the fused score, which `min_max` + `arithmetic_mean` puts in `(0.0, 1.0]`.
-# It has already been normalized by the pipeline, so no further transform applies. Under
-# `RrfFusion` it is a sum of reciprocal ranks instead — roughly `(0, 0.033]` for two sub-queries,
-# not a normalized similarity, and comparable only against other scores from the same query.
-#
-# A `HYBRID` score is never negative. OpenSearch delimits each sub-query's results with large
-# negative sentinel scores that the fusion processor is responsible for stripping, and a `hybrid`
-# query that runs without one returns them as results rather than failing. `query` rejects such a
-# score with an error naming the fusion source instead of presenting it as a ranking.
-#
-# In every mode, a query with no embedding (a metadata-only filter, or neither embedding nor
-# filters) gets OpenSearch's constant score, which is not a similarity, so `similarityScore` is
-# always `0.0` for those matches.
-#
-# # Returned embeddings
-# `VectorMatch.embedding` is whatever storage holds, read straight back out of `_source`, in the
-# member this store's mode uses — an `ai:Vector`, an `ai:SparseVector`, or an `ai:HybridVector`.
-# It is not guaranteed to be what was passed to `add`, in any mode:
-#
-# A stored `rank_features` weight keeps roughly nine significant bits, so a round-tripped sparse
-# weight carries about 0.4% relative error. A sparse vector also comes back sorted by index
-# ascending, whatever order it was written in. On `SERVERLESS_NEXTGEN` under `COSINE`, storage
-# holds a unit-normalized copy of the dense vector, so its original magnitude is unrecoverable —
-# AWS discards it at write time. A `HYBRID` round trip is therefore inexact on both halves at
-# once. Never compare a returned embedding to a locally-held one with exact float equality.
-#
-# # Note
-# The `close` method releases the underlying AWS credential provider's background refresh
-# threads and STS/SSO HTTP connections. It is not part of the `ai:VectorStore` contract (which
-# has no lifecycle hook), so nothing calls it automatically — call it explicitly when the store
-# is no longer needed, or simply let it live for the application's lifetime.
+// Talks to the OpenSearch REST API directly, since there is no `ballerinax/opensearch` connector.
+// Per-deployment behavior, score ranges and hazards are documented in the README.
+# An `ai:VectorStore` backed by an Amazon OpenSearch Service domain or an OpenSearch Serverless
+# collection.
 public isolated class VectorStore {
     *ai:VectorStore;
 
@@ -151,31 +42,17 @@ public isolated class VectorStore {
     private final SearchMode & readonly searchMode;
     private final Configuration & readonly config;
 
-    # Initializes the AWS OpenSearch vector store.
+    # Initializes the store and, by default, creates and checks the index.
     #
-    # + serviceUrl - The OpenSearch endpoint URL, e.g.
-    # `https://my-domain.us-east-1.es.amazonaws.com` for a managed domain,
-    # `https://<collection-id>.<region>.aoss.amazonaws.com` for a Serverless Classic
-    # per-collection endpoint, or `https://<collection-id>.aoss.<region>.on.aws` /
-    # `https://<account-id>.aoss.<region>.on.aws` for a Serverless NextGen endpoint
-    # + region - The AWS region the endpoint is in
-    # + indexName - The OpenSearch index this store reads and writes
-    # + deploymentConfig - The target deployment and its flavour-specific settings — credentials,
-    # which are required rather than defaulted, and whichever of
-    # `engine`/`refreshOnWrite`/`collectionName`/`collectionId`/`compressionLevel`
-    # that flavour actually honors. Settings shared by all three live on `storeConfig` instead
-    # + searchMode - The kind of search this store performs — `DenseSearch`, `SparseSearch` or
-    # `HybridSearch` — together with the index shape, field names and fusion settings that only
-    # that kind honors
-    # + storeConfig - Behavioral configuration honored under every search mode and on every
-    # deployment type
-    # + httpConfig - Underlying HTTP client configuration. `httpVersion` and
-    # `http1Settings.chunking` are pinned by this module to `HTTP_1_1` and `CHUNKING_NEVER`
-    # respectively and cannot be overridden: Ballerina's HTTP/2 outbound path corrupts a signed
-    # JSON body, and a chunked body carries no `Content-Length` for SigV4 to be verified against.
-    # Every other field is passed through unchanged
-    # + return - An `ai:Error` if construction, validation, or (when
-    # `Configuration.createIndexIfNotExists` is `true`) index creation fails; otherwise `()`
+    # + serviceUrl - The endpoint, e.g. `https://my-domain.us-east-1.es.amazonaws.com`
+    # + region - The AWS region of the endpoint
+    # + indexName - The index this store reads and writes
+    # + deploymentConfig - The deployment type, its credentials and its deployment-specific settings
+    # + searchMode - Dense, sparse or hybrid search, with the index shape and fields it uses
+    # + storeConfig - Settings shared by every search mode and deployment
+    # + httpConfig - HTTP client settings. `httpVersion` and `http1Settings.chunking` are always set
+    # to `HTTP_1_1` and `CHUNKING_NEVER`, which SigV4 signing needs
+    # + return - An `ai:Error` if validation, index creation or verification fails
     public isolated function init(
             @display {label: "Service URL"} string serviceUrl,
             @display {label: "Region"} aws:Region|string region,
@@ -192,8 +69,7 @@ public isolated class VectorStore {
         );
         ai:Error? preparation = prepareIndex(transport, indexName, searchMode, storeConfig, deploymentConfig);
         if preparation is ai:Error {
-            // Best-effort cleanup; the closing outcome is intentionally not surfaced so it
-            // cannot mask the more relevant preparation failure below.
+            // Best effort: a close failure must not mask the preparation error.
             ai:Error? closeResult = transport.close();
             if closeResult is ai:Error {
                 log:printWarn("Failed to close the AWS credential provider after a failed index-preparation step",
@@ -209,15 +85,11 @@ public isolated class VectorStore {
         self.config = storeConfig.cloneReadOnly();
     }
 
-    # Adds vector entries to the store. Entries without an `id` receive a generated UUID.
-    # Chunked into `_bulk` requests of at most `Configuration.maxBulkSize` entries.
+    # Adds entries in `_bulk` batches of at most `maxBulkSize`. Entries without an `id` get a UUID.
     #
-    # + entries - The vector entries to add. Every embedding must be the `ai:Embedding` member
-    # this store's `SearchMode` requires — an `ai:Vector` under `DENSE`, an `ai:SparseVector`
-    # under `SPARSE`, an `ai:HybridVector` under `HYBRID` — or the call fails naming the entry.
-    # A sparse weight outside Lucene's accepted range fails the same way, before anything is sent
-    # + return - An `ai:Error` naming the failing entries if any `_bulk` item fails (OpenSearch
-    # returns HTTP 200 even on partial failure — this is always checked explicitly), otherwise `()`
+    # + entries - Entries whose embeddings match this store's search mode (`ai:Vector` for `DENSE`,
+    # `ai:SparseVector` for `SPARSE`, `ai:HybridVector` for `HYBRID`)
+    # + return - An `ai:Error` naming the failing entries, if any
     public isolated function add(ai:VectorEntry[] entries) returns ai:Error? {
         if entries.length() == 0 {
             return;
@@ -228,8 +100,8 @@ public isolated class VectorStore {
             byte[] body = check buildAddBulkBody(batch, self.indexName, self.deployment, self.searchMode,
                     self.config);
             BulkResponse response = check self.transport.bulk(body, isIndexingBatch = true);
-            // Attributed by position against this batch's ids, so a failure names the caller's
-            // entry even on `SERVERLESS_CLASSIC`, where the response `_id` is server-generated.
+            // Matched by position, because on `SERVERLESS_CLASSIC` the response `_id` is
+            // server-generated.
             string[] submittedIds = from PreparedEntry entry in batch
                 select entry.id;
             BulkFailure[] failures = extractIndexFailures(response, submittedIds);
@@ -240,20 +112,14 @@ public isolated class VectorStore {
         }
     }
 
-    # Searches the store for vectors similar to a query embedding, filtered by metadata, or both.
-    # All four combinations of `(embedding, filters)` are supported; when neither is given, every
-    # entry is returned (subject to `topK`) with `similarityScore: 0.0`.
+    # Searches by embedding, by metadata filter, or both. Without an embedding every match scores
+    # 0.0.
     #
-    # + query - The vector store query. Any `topK < 1` means "return all", capped at
-    # `Configuration.maxResultWindow`; an explicit `topK` above that ceiling is rejected. The
-    # embedding, when given, must be the member this store's `SearchMode` requires, matching
-    # `add`; under `SPARSE`/`HYBRID` it must also carry no more than `maxQueryTokens` terms, and
-    # every sparse weight must be in `(0, 64]`
-    # + return - The matching entries, or an `ai:Error` on failure
+    # + query - The query. Any `topK < 1` returns all entries, up to `maxResultWindow`
+    # + return - The matches, or an `ai:Error`
     public isolated function query(ai:VectorStoreQuery query) returns ai:VectorMatch[]|ai:Error {
         json body = check buildSearchBody(query, self.searchMode, self.config);
-        // buildSearchBody already rejected an embedding that does not match this store's
-        // `SearchMode`, so any embedding still present here produced a scoring clause.
+        // `buildSearchBody` rejects a mismatched embedding, so one present here is being scored.
         boolean scoreIsMeaningful = query.embedding !is ();
         SearchResponse response = check self.transport.search(self.indexName, body,
                 searchPipelineName(self.searchMode, scoreIsMeaningful));
@@ -264,19 +130,12 @@ public isolated class VectorStore {
         return matches;
     }
 
-    # Deletes vector entries by their logical id. Deleting an id that does not exist is treated as
-    # success, matching the Pinecone/pgvector/weaviate precedent (`ai:InMemoryVectorStore` errors
-    # on a missing id; this module does not).
+    // A missing id is not an error, as in the Pinecone, pgvector and Weaviate stores (unlike
+    // `ai:InMemoryVectorStore`).
+    # Deletes entries by logical id. Ids that do not exist are ignored.
     #
-    # On `SERVERLESS_CLASSIC`, this is a two-phase operation — a `terms` search on
-    # `Configuration.idFieldName` to discover the internal `_id`s, then a bulk delete of those —
-    # because a custom `_id` cannot be written there and `_delete_by_query` is not on the AOSS
-    # whitelist. A document added less than the collection's refresh interval ago will not be
-    # found by the search phase and will survive the delete; this is unavoidable and not a bug.
-    #
-    # + ids - The logical id, or ids, to delete
-    # + return - An `ai:Error` naming the failing ids if any (non-`not_found`) `_bulk` item fails,
-    # otherwise `()`
+    # + ids - The id or ids to delete
+    # + return - An `ai:Error` naming the ids that failed, if any
     public isolated function delete(string|string[] ids) returns ai:Error? {
         string[] idList;
         if ids is string {
@@ -299,35 +158,29 @@ public isolated class VectorStore {
         }
     }
 
-    # Releases the underlying AWS credential provider's background refresh threads and STS/SSO
-    # HTTP connections. Not part of the `ai:VectorStore` contract; call explicitly when this store
-    # is no longer needed, or let it live for the application's lifetime.
+    # Releases the AWS credential provider's refresh threads and connections. Not called
+    # automatically, since `ai:VectorStore` has no lifecycle hook.
     #
-    # + return - An `ai:Error` if releasing the resources fails, otherwise `()`
+    # + return - An `ai:Error` if releasing them fails
     public isolated function close() returns ai:Error? {
         return self.transport.close();
     }
 
-    # Implements the search-then-bulk-delete path required on `SERVERLESS_CLASSIC`.
-    #
-    # Because `add` is append-only there, a heavily re-added logical id can accumulate more
-    # duplicate documents than a single lookup's `size` (`Configuration.maxResultWindow`) can see.
-    # Rather than silently deleting only the first page and leaving the rest behind, a lookup that
-    # comes back exactly full is treated as "possibly incomplete" and fails loudly.
+    // `_delete_by_query` is not available on AOSS, so internal `_id`s are looked up first.
+    // Entries added within the last refresh interval are not found yet and survive.
+    # Deletes on Serverless Classic: looks up the internal `_id`s, then bulk-deletes them.
     #
     # + idList - The logical ids to delete
-    # + return - An `ai:Error` naming the failing internal ids if any (non-`not_found`) `_bulk`
-    # item fails, or if a lookup could not confirm it saw every duplicate, otherwise `()`
+    # + return - An `ai:Error` naming the ids that failed, or if a lookup may have missed some
     private isolated function deleteOnServerlessClassic(string[] idList) returns ai:Error? {
         string[] internalIds = [];
-        // Grown in lockstep with `internalIds`: the bulk delete below is submitted against
-        // internal `_id`s, and this is what lets a per-item failure be reported against the
-        // logical id the caller actually asked to delete.
+        // Parallel to `internalIds`, so a failure is reported against the caller's id.
         string[] logicalIds = [];
         foreach string[] chunk in chunkIds(idList, DOC_ID_LOOKUP_CHUNK_SIZE) {
             json searchBody = buildDocIdLookupBody(self.config.idFieldName, chunk, self.config.maxResultWindow);
             SearchResponse searchResponse = check self.transport.search(self.indexName, searchBody);
             int hitCount = searchResponse.hits.hits.length();
+            // `add` is append-only here, so a full page may have missed duplicates.
             if hitCount >= self.config.maxResultWindow {
                 return error(string `A lookup for ${chunk.length()} id(s) to delete on SERVERLESS_CLASSIC ` +
                         string `returned ${hitCount} documents, meeting the configured 'maxResultWindow' ` +
@@ -339,8 +192,7 @@ public isolated class VectorStore {
                 internalIds.push(hit._id);
                 map<json>? hitSource = hit?._source;
                 json logicalId = hitSource is map<json> ? hitSource[self.config.idFieldName] : ();
-                // A document written outside this module may carry no logical id at all; the
-                // internal `_id` is then the only handle there is.
+                // A document written elsewhere may have no logical id.
                 logicalIds.push(logicalId is string ? logicalId : hit._id);
             }
         }
@@ -357,16 +209,9 @@ public isolated class VectorStore {
     }
 }
 
-# Runs every construction-time step that talks to the cluster, in the order that makes the first
-# failure the most informative one.
-#
-# The cluster's version is checked before the index is created rather than after: a domain too old
-# to serve this store's `SearchMode` should be reported as a version problem, not left to produce
-# an index that nothing can then query. The index mapping is checked last, and only when this call
-# did not create the index — a mapping this module just wrote matches the store that wrote it.
-#
-# With `createIndexIfNotExists` and `verifyOnInit` both `false`, every branch here is skipped and
-# construction performs no network I/O at all.
+// The version is checked before the index is created, so a cluster too old for the search mode
+// fails as such instead of leaving an unusable index. A just-created mapping needs no check.
+# Runs the construction steps that talk to the cluster.
 #
 # + transport - The transport to issue requests through
 # + indexName - The index this store is pointed at
@@ -385,13 +230,7 @@ isolated function prepareIndex(OpenSearchTransport transport, string indexName, 
     }
 }
 
-# Runs the fail-fast construction validations before any network I/O is attempted.
-#
-# Most of what this function once checked is now unrepresentable rather than rejected: `BasicAuth`
-# on a Serverless collection, a non-Faiss engine on Serverless Classic, `refreshOnWrite` off a
-# managed domain, and quantization off NextGen are all type errors since those fields moved onto
-# the `Deployment` variant that honors them. What is left is the range and format checking that no
-# type can express.
+# Runs the construction checks that need no network I/O.
 #
 # + serviceUrl - The service URL, checked for a parseable host
 # + deployment - The target deployment
@@ -433,10 +272,8 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
                 string `${config.maxResultWindow}`);
     }
     if deployment is ServerlessNextGenDeployment {
-        // Both default to `()`, so "set" is distinguishable from "unset" -- which makes this worth
-        // rejecting rather than ignoring. They shape the `knn_vector` field, and a caller who set
-        // them for an index that has no such field has misunderstood something. Staying silent
-        // would repeat the very failure mode `IndexConfig` already warns about.
+        // Quantization shapes a `knn_vector` field, which a SPARSE index does not have, so setting
+        // it is a mistake worth reporting rather than ignoring.
         if searchMode is SparseSearch && deployment.compressionLevel is CompressionLevel {
             return error("'ServerlessNextGenDeployment.compressionLevel' shapes the 'knn_vector' " +
                     "field, which a 'SPARSE' index does not have; leave it unset, or use 'HYBRID' " +
@@ -450,15 +287,9 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
     }
 }
 
-# Rejects a document schema whose field names collide.
-#
-# Every name here addresses a distinct field in the same document, so a duplicate silently
-# produces a broken index rather than an error: `vectorFieldName: "content"` would map the chunk
-# text as a `knn_vector` and then overwrite it with the vector on every write, leaving `query`
-# returning empty content. `HYBRID` makes this materially easier to hit, since it names two vector
-# fields that must also differ from each other.
-#
-# The chunk-type field is fixed rather than configurable, so it is included as a literal.
+// A collision breaks the index silently: `vectorFieldName: "content"` would overwrite the chunk
+// text with the vector on every write.
+# Rejects document field names that are blank or used twice.
 #
 # + searchMode - The search mode, supplying whichever vector field names it declares
 # + config - The vector store configuration
@@ -466,9 +297,7 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
 isolated function validateFieldNames(SearchMode searchMode, Configuration config) returns ai:Error? {
     string[] names = [config.contentFieldName, config.idFieldName, CHUNK_TYPE_FIELD];
     names.push(...vectorFieldNamesOf(searchMode));
-    // A blank `metadataFieldName` is the documented way to ask for a flat schema, where metadata
-    // has no field of its own to collide with. `buildEntrySource` guards individual metadata keys
-    // against the reserved names separately.
+    // `""` selects a flat schema with no metadata field; `buildEntrySource` checks keys instead.
     if config.metadataFieldName != "" {
         names.push(config.metadataFieldName);
     }
@@ -488,12 +317,8 @@ isolated function validateFieldNames(SearchMode searchMode, Configuration config
     }
 }
 
-# Validates the fusion settings a `HYBRID` store will send, against the rules the
-# `normalization-processor` enforces server-side.
-#
-# Checked at construction rather than left to the server because a rejected weight list fails the
-# whole search, and the pipeline is sent inline on every query — so the same mistake would surface
-# on every call rather than once.
+// Checked up front because the pipeline goes with every query, so a bad value fails every call.
+# Checks hybrid fusion settings against what the `normalization-processor` accepts.
 #
 # + fusion - The fusion configuration to check
 # + return - An `ai:Error` naming the failing rule, otherwise `()`
@@ -507,8 +332,6 @@ isolated function validateHybridFusion(HybridFusion fusion) returns ai:Error? {
         return;
     }
     if fusion is RrfFusion {
-        // Nothing to check: the variant carries only its discriminator, for the reasons set out on
-        // `RrfFusion`.
         return;
     }
     float denseWeight = fusion.denseWeight;
@@ -517,8 +340,6 @@ isolated function validateHybridFusion(HybridFusion fusion) returns ai:Error? {
         return error(string `'HybridSearchConfig.denseWeight' and '.sparseWeight' must each be ` +
                 string `between 0.0 and 1.0, got: ${denseWeight} and ${sparseWeight}`);
     }
-    // A tolerance rather than an equality test: a caller writing 0.7 and 0.3 has expressed a
-    // valid split, and binary floating point does not sum those to exactly 1.0.
     float sum = denseWeight + sparseWeight;
     if sum - 1.0 > WEIGHT_SUM_TOLERANCE || 1.0 - sum > WEIGHT_SUM_TOLERANCE {
         return error(string `'HybridSearchConfig.denseWeight' and '.sparseWeight' must sum to 1.0, ` +
@@ -527,8 +348,7 @@ isolated function validateHybridFusion(HybridFusion fusion) returns ai:Error? {
     }
 }
 
-# Validates the search-time HNSW dial. Unset is the default and always valid — it simply omits
-# `method_parameters` and leaves the index's own `ef_search` setting in force.
+# Rejects a non-positive `efSearch`. Unset is always valid.
 #
 # + efSearch - The configured value, or `()`
 # + owner - The `SearchMode` variant the field is on, for the error message
@@ -540,11 +360,7 @@ isolated function validateEfSearch(int? efSearch, string owner) returns ai:Error
     }
 }
 
-# Validates the two-phase acceleration settings against the bounds the
-# `neural_sparse_two_phase_processor` enforces server-side.
-#
-# Checked at construction because the pipeline is sent inline with every sparse query, so a value
-# the processor rejects would fail every call rather than one.
+# Rejects a two-phase `pruneRatio` outside `[0, 1]`.
 #
 # + acceleration - The configured acceleration, or `()` when the processor is not used
 # + return - An `ai:Error` naming the failing rule, otherwise `()`

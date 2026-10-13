@@ -14,15 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Guards how `OpenSearchTransport` frames a request on the wire, which neither the pure unit
-// tests nor the container suite can see: both are blind to the HTTP version and to whether the
-// body was chunked. `OpenSearchTransport.init` pins `HTTP_1_1` and `CHUNKING_NEVER` over the
-// caller's `httpConfig` because Ballerina's defaults (`HTTP_2_0`, `CHUNKING_AUTO`) each break a
-// SigV4-signed request in a way that surfaces as a misleading 403 -- see the comment there. This
-// suite catches a regression that would otherwise only appear against real AWS.
-//
-// A local `http:Listener` stands in for OpenSearch: it records how the request arrived and
-// answers with an empty, successful `_bulk` response.
+// Checks request framing the other suites cannot see: HTTP/1.1 and an unchunked body, which SigV4
+// needs (see `OpenSearchTransport.init`). A local listener stands in for OpenSearch.
 
 import ballerina/ai;
 import ballerina/http;
@@ -78,8 +71,7 @@ service / on wireListener {
                               transferEncoding: optionalHeader(request, "transfer-encoding"),
                               bodyLength: body is byte[] ? body.length() : -1
                           });
-        // `http:Ok` rather than a bare `json`, which Ballerina would answer with a 201 that
-        // `OpenSearchTransport.bulk` treats as a failure.
+        // A bare `json` would be sent as a 201, which `bulk` treats as a failure.
         return {body: {"errors": false, "items": []}};
     }
 }
@@ -87,8 +79,7 @@ service / on wireListener {
 isolated function wireStore() returns VectorStore|ai:Error =>
     new (string `http://localhost:${WIRE_PORT}`, CONTAINER_REGION, "wire-index", containerDeployment(),
     {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}},
-    // The mock below implements `_bulk` alone, so the construction-time reads have nothing to
-    // answer them. These tests are about signing and framing; verification is covered elsewhere.
+    // The listener only implements `_bulk`, so construction must not read the cluster.
     {createIndexIfNotExists: false, verifyOnInit: false}
 );
 

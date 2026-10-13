@@ -17,16 +17,8 @@
 import ballerina/log;
 import ballerina/test;
 
-# Drops every index the `docker` group created, on both containers.
-#
-# `./gradlew test` throws the containers away afterwards, so this matters mainly for the local
-# workflow of leaving `docker compose up` running across repeated `bal test` invocations -- without
-# it, each run leaves a few dozen indices behind and the cluster slowly fills up.
-#
-# Failures are logged rather than raised: a teardown error would mask whatever the tests actually
-# found, and a leaked index is harmless in a throwaway container. When the group was skipped
-# entirely (`bal test --disable-groups docker`) nothing was ever tracked, so this makes no network
-# calls at all.
+// Failures are only logged, so a teardown error cannot mask a test result.
+# Drops every index the `docker` group created, for local runs that keep the containers up.
 @test:AfterSuite {alwaysRun: true}
 function cleanUpContainerIndexes() {
     foreach string indexName in trackedIndexNames() {

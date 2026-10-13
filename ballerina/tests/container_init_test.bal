@@ -14,11 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// `ensureIndex` and `buildIndexMapping` against a real cluster. `mapping_test.bal` already asserts
-// the *shape* of the JSON `buildIndexMapping` produces; what it cannot show is whether OpenSearch
-// accepts that JSON and materialises the field types the rest of the module depends on. A mapping
-// that OpenSearch silently reinterprets -- a `text` field where a `keyword` was intended -- passes
-// every unit test and then returns zero hits in production.
+// `ensureIndex` and `buildIndexMapping` against a real cluster, which shows whether OpenSearch
+// accepts the mapping and keeps the field types the module relies on.
 
 import ballerina/ai;
 import ballerina/test;
@@ -39,8 +36,7 @@ isolated function testContainerInitOnExistingIndexIsANoOp() returns error? {
     VectorStore first = check newContainerStore(indexName);
     check first.add([entry("seed", queryVector())]);
 
-    // A second store on the same index must take the `exists` short-circuit in `ensureIndex`
-    // rather than re-issuing `PUT /<index>`, which would fail with 400.
+    // Must see the existing index rather than send `PUT /<index>` again, which would 400.
     VectorStore second = check newContainerStore(indexName);
     ai:VectorMatch[] matches = check second.query({embedding: queryVector(), topK: 10});
     test:assertEquals(matches.length(), 1, "the second store should see the first store's data");
@@ -53,8 +49,7 @@ isolated function testContainerInitOnExistingIndexIsANoOp() returns error? {
 isolated function testContainerCreateIndexIfNotExistsFalseSkipsCreation() returns error? {
     string indexName = containerIndexName("init-nocreate");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    // Both switches: `createIndexIfNotExists` stops creation, `verifyOnInit` stops the mapping
-    // read that would otherwise 404 on the index this test is asserting does not exist.
+    // `verifyOnInit` is off too, or its mapping read would fail on the missing index.
     Configuration config = {createIndexIfNotExists: false, verifyOnInit: false};
     VectorStore store = check newContainerStore(indexName, configMode, config);
     test:assertFalse(check rawIndexExists(indexName),
@@ -68,8 +63,7 @@ isolated function testContainerMappingEnablesKnn() returns error? {
     VectorStore store = check newContainerStore(indexName);
 
     map<json> settings = check indexSettings(indexName);
-    // OpenSearch echoes index settings back as strings, hence the `toString()` rather than a
-    // comparison against the boolean `true` that was sent.
+    // OpenSearch returns settings as strings.
     test:assertEquals(settings["knn"].toString(), "true",
             "'index.knn' must be enabled, or a 'knn' query is rejected outright");
     check store.close();
@@ -131,7 +125,6 @@ isolated function testContainerLuceneEngineIsAccepted() returns error? {
     map<json> method = check mapField(vectorField, "method");
     test:assertEquals(method["engine"], "lucene");
 
-    // Prove the index is usable and not merely creatable.
     check store.add([entry("a", queryVector())]);
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 1});
     test:assertEquals(matches.length(), 1);
@@ -160,7 +153,6 @@ isolated function testContainerMappingHonoursCustomFieldNames() returns error? {
     test:assertTrue(properties.hasKey("props"), "the metadata object should use the configured name");
     test:assertFalse(properties.hasKey("embedding"), "the default field names should not also be mapped");
 
-    // The renamed fields have to survive a write/read round trip, not just appear in the mapping.
     check store.add([entry("custom", queryVector(), "renamed fields")]);
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 1});
     test:assertEquals(matches.length(), 1);
@@ -180,8 +172,7 @@ isolated function testContainerStringMetadataIsMappedAsKeyword() returns error? 
     map<json> metadata = check mapField(properties, "metadata");
     map<json> metadataProperties = check mapField(metadata, "properties");
     map<json> language = check mapField(metadataProperties, "language");
-    // Without the `dynamic_templates` block, OpenSearch would map this as analyzed `text` and
-    // every `term` filter on it would silently match nothing.
+    // As analyzed `text`, every `term` filter on it would match nothing.
     test:assertEquals(language["type"], "keyword",
             "the dynamic template must map string metadata to 'keyword', not 'text'");
     check store.close();
@@ -190,10 +181,7 @@ isolated function testContainerStringMetadataIsMappedAsKeyword() returns error? 
 @test:Config {groups: ["docker"]}
 isolated function testContainerConcurrentInitOnSameIndexSucceeds() returns error? {
     string indexName = containerIndexName("init-race");
-    // Whichever caller loses the race sees `resource_already_exists_exception` from `PUT /<index>`;
-    // `isAlreadyExistsError` is what stops that from surfacing as a construction failure. There is
-    // no way to provoke this deterministically, so this asserts the invariant instead: concurrent
-    // construction on one index name never fails, however the interleaving lands.
+    // The race cannot be forced, so this checks that concurrent construction never fails.
     future<ai:Error?> first = start initAndClose(indexName);
     future<ai:Error?> second = start initAndClose(indexName);
     future<ai:Error?> third = start initAndClose(indexName);

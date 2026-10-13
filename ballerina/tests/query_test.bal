@@ -19,8 +19,7 @@ import ballerina/test;
 
 isolated function queryMode() returns DenseSearch => {queryMode: ai:DENSE, indexConfig: {dimension: 3}};
 
-// `normalizeCosineScore` defaults to `true`, so a test that wants OpenSearch's raw `_score` has to
-// ask for it. See `testHitToVectorMatchNormalizesCosineByDefault` for why that is the default.
+// `normalizeCosineScore` defaults to `true`, so raw `_score` has to be asked for.
 isolated function rawScoreMode() returns DenseSearch =>
     {queryMode: ai:DENSE, indexConfig: {dimension: 3}, normalizeCosineScore: false};
 
@@ -174,7 +173,7 @@ isolated function testSparseEmbeddingQueryIsError() {
     test:assertTrue(result is ai:Error, "expected an ai:Error for a sparse embedding in a query");
 }
 
-// --- score normalization (C1) -------------------------------------------------------------------
+// --- score normalization ------------------------------------------------------------------------
 
 @test:Config
 isolated function testCosineScoreNormalizedWhenEnabled() {
@@ -271,10 +270,7 @@ isolated function testHitToVectorMatchScorePassedThroughWhenMeaningful() returns
     test:assertEquals('match.similarityScore, 0.42);
 }
 
-// The default exists so `similarityScore` means the same thing here as in
-// `ai:InMemoryVectorStore`, which returns a true cosine in [-1, 1]. OpenSearch's `cosinesimil`
-// `_score` is [0, 1], so without this a threshold tuned against any other `ai:VectorStore`
-// implementation would silently mean something else against this one.
+// The default matches `ai:InMemoryVectorStore`, which returns a cosine in [-1, 1].
 @test:Config
 isolated function testHitToVectorMatchNormalizesCosineByDefault() returns error? {
     SearchHit hit = {_id: "1", _score: 0.42, _source: {"content": "x"}};
@@ -329,9 +325,7 @@ isolated function testSparseQueryUsesNeuralSparseWithQueryTokens() returns error
     test:assertFalse(queryClause.hasKey("knn"), "a SPARSE query must carry no knn clause");
 }
 
-// `neural_sparse` over a rank_features field has no `filter` parameter of its own, so the filter
-// has to be a sibling inside a `bool`. A bool.filter clause does not contribute to `_score`, so
-// the sparse dot product stays the sole score.
+// `neural_sparse` has no `filter` parameter, so the filter is a `bool` sibling.
 @test:Config
 isolated function testSparseQueryPutsFilterAsBoolSibling() returns error? {
     ai:VectorStoreQuery query = {
@@ -366,8 +360,7 @@ isolated function testSparseQueryExcludesSparseFieldFromSource() returns error? 
     test:assertEquals(sourceDirective["excludes"], <json[]>["sparse_embedding"]);
 }
 
-// A query weight outside Lucene's (0, 64] fails the search with a shard exception naming nothing
-// useful, so it is caught here instead.
+// Lucene's (0, 64] query-weight bound, checked before the request is sent.
 @test:Config
 isolated function testSparseQueryRejectsWeightAboveLuceneCeiling() {
     ai:VectorStoreQuery query = {embedding: {indices: [1], values: [64.1]}};
@@ -378,8 +371,7 @@ isolated function testSparseQueryRejectsWeightAboveLuceneCeiling() {
     test:assertTrue(result.message().includes("(0, 64]"));
 }
 
-// One Lucene clause per term, bounded by the cluster's indices.query.bool.max_clause_count.
-// Exceeding it is a `too_many_clauses` shard exception that names neither the limit nor the query.
+// One Lucene clause per term, bounded by `indices.query.bool.max_clause_count`.
 @test:Config
 isolated function testSparseQueryRejectsTooManyTokens() {
     int[] indices = [];
@@ -511,8 +503,7 @@ isolated function testHybridQueryEmitsInlineNormalizationPipeline() returns erro
     test:assertEquals((check asJsonMap(combination["parameters"]))["weights"], <json[]>[0.5, 0.5]);
 }
 
-// The weights array is positional against the sub-query array. An asymmetric split is what makes
-// a swapped pair detectable at all -- with the 0.5/0.5 default it would pass either way.
+// Weights are positional; an uneven split makes a swap detectable.
 @test:Config
 isolated function testHybridWeightsAreOrderedDenseThenSparse() returns error? {
     HybridSearch mode = hybridMode({normalization: L2, combination: GEOMETRIC_MEAN,
@@ -528,8 +519,7 @@ isolated function testHybridWeightsAreOrderedDenseThenSparse() returns error? {
             "weights are positional: dense first, matching the sub-query order");
 }
 
-// A top-level hybrid.filter is OpenSearch 3.0+. AWS still offers 2.x domains, so the filter is
-// duplicated into each sub-query instead -- documented as equivalent, and the two shapes differ.
+// A top-level `hybrid.filter` is OpenSearch 3.0+, so the filter is repeated in each sub-query.
 @test:Config
 isolated function testHybridFilterIsDuplicatedIntoBothSubQueries() returns error? {
     ai:VectorStoreQuery query = {
@@ -549,8 +539,7 @@ isolated function testHybridFilterIsDuplicatedIntoBothSubQueries() returns error
     test:assertEquals(sparseFilter.length(), 1, "the sparse sub-query needs a bool sibling filter");
 }
 
-// A NamedSearchPipeline travels as ?search_pipeline=, never as a body object. OpenSearch rejects a
-// request carrying both with "Both named and inline search pipeline were specified".
+// A named pipeline goes only as `?search_pipeline=`; OpenSearch rejects a request with both.
 @test:Config
 isolated function testHybridNamedPipelineEmitsNoInlineObject() returns error? {
     HybridSearch mode = hybridMode({name: "my-pipeline"});
@@ -569,8 +558,7 @@ isolated function testInlineFusionSendsNoPipelineQueryParameter() {
     test:assertTrue(searchPipelineName(sparseMode(), true) is ());
 }
 
-// A query with no embedding scores nothing, so there is nothing to normalize. Emitting a pipeline
-// would ask OpenSearch to fuse a constant score with itself.
+// With no embedding there is nothing to fuse.
 @test:Config
 isolated function testHybridQueryWithoutEmbeddingEmitsNoPipeline() returns error? {
     json body = check buildSearchBody({}, hybridMode(), {});
@@ -616,16 +604,13 @@ isolated function testHitToVectorMatchHybridReturnsBothHalves() returns error? {
     }
     test:assertEquals(embedding.dense, <ai:Vector>[0.1, 0.2]);
     test:assertEquals(embedding.sparse.indices, [7]);
-    // Already normalized to (0.0, 1.0] by the fusion pipeline; the cosine transform is unreachable
-    // here because HybridSearch declares no normalizeCosineScore.
+    // Already normalized by the fusion pipeline, so passed through unchanged.
     test:assertEquals(hitMatch.similarityScore, 0.5005);
 }
 
 // --- ef_search: the search-time HNSW dial -------------------------------------------------------
 
-// Unset must leave the request byte-identical to what this module sent before the knob existed:
-// `method_parameters` is 2.16+, so emitting an empty one would raise the version floor of every
-// dense query for nothing.
+// `method_parameters` is 2.16+, so it must not be sent when `efSearch` is unset.
 @test:Config
 isolated function testUnsetEfSearchEmitsNoMethodParameters() returns error? {
     json body = check buildSearchBody({embedding: [0.1, 0.2, 0.3]}, queryMode(), {});
@@ -651,8 +636,7 @@ isolated function testEfSearchIsSentAsMethodParameters() returns error? {
     test:assertEquals(knnBody["k"], 10);
 }
 
-// Under HYBRID the dial belongs to the dense sub-query alone -- `neural_sparse` has no HNSW graph
-// to traverse and no `method_parameters` on a `rank_features` field.
+// Only the dense sub-query has an HNSW graph to tune.
 @test:Config
 isolated function testHybridEfSearchReachesOnlyTheDenseSubQuery() returns error? {
     HybridSearch mode = {queryMode: ai:HYBRID, indexConfig: {dimension: 3}, efSearch: 256};
@@ -689,10 +673,7 @@ isolated function testRrfFusionEmitsAScoreRankerProcessor() returns error? {
     test:assertEquals(combination["technique"], "rrf");
 }
 
-// Neither knob the processor documents has a wire shape that works across the versions this
-// variant admits: `weights` is ignored for RRF before 3.1, and `rank_constant` sits under
-// `combination.parameters` through 3.0 but is rejected there from 3.1. The technique alone is what
-// is portable, so the emitted processor must carry nothing else.
+// Only the technique is portable across neural-search 3.1; see `RrfFusion`.
 @test:Config
 isolated function testRrfFusionSendsTheTechniqueAlone() returns error? {
     json body = check buildSearchBody(hybridQuery(), hybridMode({technique: RRF}), {});
@@ -706,8 +687,7 @@ isolated function testRrfFusionSendsTheTechniqueAlone() returns error? {
             "a 'parameters' map is a hard error on 3.1+, which validates its contents");
 }
 
-// A bare `{}` has to keep resolving to HybridSearchConfig now that the union has a third member,
-// or every existing caller's default fusion changes meaning.
+// A bare `{}` must resolve to `HybridSearchConfig`.
 @test:Config
 isolated function testDefaultFusionIsStillInlineNormalization() returns error? {
     json body = check buildSearchBody(hybridQuery(), hybridMode(), {});
@@ -732,12 +712,10 @@ isolated function testTwoPhaseAccelerationEmitsARequestProcessor() returns error
     map<json> processor = check inlineProcessorOf(body, "request_processors");
     map<json> twoPhase = check asJsonMap(processor["neural_sparse_two_phase_processor"]);
     test:assertEquals(twoPhase["enabled"], true);
-    // Singular. OpenSearch names the field `two_phase_parameter`, and an unrecognised key here
-    // fails the whole search rather than being ignored.
+    // Singular, as OpenSearch names it; an unknown key fails the search.
     map<json> parameters = check asJsonMap(twoPhase["two_phase_parameter"]);
     test:assertEquals(parameters["prune_ratio"], 0.4);
-    // `expansion_rate` and `max_window_size` are left to the server rather than restated at their
-    // defaults, so a future OpenSearch that retunes them is not overridden by this module.
+    // Left to the server's defaults.
     test:assertFalse(parameters.hasKey("expansion_rate"));
     test:assertFalse(parameters.hasKey("max_window_size"));
 }
@@ -752,8 +730,7 @@ isolated function testTwoPhaseAccelerationHonorsItsSettings() returns error? {
     test:assertEquals(parameters["prune_ratio"], 0.7);
 }
 
-// A metadata-only query produces no `neural_sparse` clause, so there is nothing for the processor
-// to split and no reason to raise the request's version floor to 2.15.
+// A metadata-only query has no `neural_sparse` clause for the processor to split.
 @test:Config
 isolated function testTwoPhaseAccelerationIsOmittedWithoutASparseEmbedding() returns error? {
     SparseSearch mode = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}};
@@ -764,9 +741,7 @@ isolated function testTwoPhaseAccelerationIsOmittedWithoutASparseEmbedding() ret
 
 // --- the named and inline fusion variants must agree ---------------------------------------------
 
-// The inline path has always omitted its pipeline for an embedding-less query. The named path used
-// to attach `?search_pipeline=` unconditionally, so the same query shape behaved differently
-// depending on which variant of the union the caller picked.
+// Like the inline pipeline, a named one is omitted when there is no embedding to fuse.
 @test:Config
 isolated function testNamedPipelineIsOmittedWithoutAnEmbedding() {
     HybridSearch mode = hybridMode({name: "my-pipeline"});
@@ -777,9 +752,7 @@ isolated function testNamedPipelineIsOmittedWithoutAnEmbedding() {
 
 // --- the sentinel-score guard ---------------------------------------------------------------------
 
-// A `hybrid` query whose pipeline carried no fusion processor does not fail: OpenSearch's negative
-// sub-query delimiter scores survive into the results. Without this guard they reach the caller as
-// `similarityScore: -9.5e9` and read as a ranking.
+// Without a fusion processor, OpenSearch's negative delimiter scores come back as results.
 @test:Config
 isolated function testUnfusedHybridScoreIsRejected() {
     SearchHit hit = {_id: "1", _score: -9500000000.0, _source: {"doc_id": "1"}};
@@ -791,8 +764,7 @@ isolated function testUnfusedHybridScoreIsRejected() {
             string `an inline-fusion store should blame the inline pipeline, got: ${result.message()}`);
 }
 
-// With a named pipeline the store cannot see what the pipeline contains, so the error has to name
-// it -- that is the only handle the caller has on the actual cause.
+// The store cannot see inside a named pipeline, so the error names it.
 @test:Config
 isolated function testUnfusedHybridScoreNamesTheOffendingPipeline() {
     SearchHit hit = {_id: "42", _score: -4400000000.0, _source: {"doc_id": "42"}};
@@ -812,8 +784,7 @@ isolated function testFusedHybridScoresPassThroughUnchanged() returns error? {
             "min_max's lowest legitimate score is 0.001 and must not be mistaken for a sentinel");
 }
 
-// The guard is HYBRID-only. A DENSE store under `innerproduct` can legitimately return a negative
-// `_score`, and `normalizeCosineScore` produces one for any cosine below zero.
+// Negative dense scores are legitimate, e.g. a cosine below zero.
 @test:Config
 isolated function testNegativeScoresAreLeftAloneOutsideHybrid() returns error? {
     SearchHit hit = {_id: "1", _score: 0.25, _source: {"doc_id": "1"}};

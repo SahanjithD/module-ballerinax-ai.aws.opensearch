@@ -22,8 +22,7 @@ import ballerinax/aws.auth;
 configurable string serviceUrl = ?;
 configurable string region = "us-east-1";
 configurable string indexName = "rag-search-example";
-// The managed-domain variant of `opensearch:Deployment`. `auth` has no default on any variant, so
-// opting into the ambient AWS credential chain is stated rather than assumed.
+// `auth` has no default, so the default AWS credential chain is chosen explicitly.
 configurable opensearch:ManagedDomainDeployment deployment = {
     deploymentType: opensearch:MANAGED_DOMAIN,
     auth: auth:DEFAULT_CREDENTIALS
@@ -35,8 +34,7 @@ type Article record {
     float[] embedding;
 };
 
-// Toy embeddings standing in for a real embedding model's output — small enough to read at a
-// glance, and close enough to each other that the query embedding below is nearest to "article-1".
+// Toy embeddings in place of a real embedding model's output.
 public function main() returns error? {
     opensearch:VectorStore vectorStore = check new (
         serviceUrl,
@@ -67,8 +65,7 @@ public function main() returns error? {
         return;
     }
 
-    // A query embedding close to the "Getting started with Ballerina" article, restricted to
-    // English content — so the French article with a similar embedding is excluded.
+    // Nearest to "Getting started with Ballerina"; the filter excludes the similar French article.
     ai:Vector queryEmbedding = [0.91, 0.09, 0.05, 0.03];
     ai:VectorMatch[] results = check vectorStore.query({
         embedding: queryEmbedding,

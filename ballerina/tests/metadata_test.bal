@@ -18,9 +18,7 @@ import ballerina/ai;
 import ballerina/test;
 import ballerina/time;
 
-// The fixed [int, decimal] tuple <-> RFC 3339 string pair used throughout these tests, copied
-// from ai.pinecone's test convention: deterministic, no clock dependency, and exercises 6-digit
-// microsecond precision on both `time:utcToString` and `time:utcFromString`.
+// A fixed timestamp with microsecond precision, so the tests do not depend on the clock.
 const string FIXED_TIMESTAMP_STRING = "2025-09-25T09:36:47.798845Z";
 
 isolated function fixedTimestamp() returns time:Utc => [1758793007, 0.798845];
@@ -67,8 +65,7 @@ isolated function testCreateAiMetadataModifiedAt() returns error? {
 
 @test:Config
 isolated function testFileSizeIntToDecimal() returns error? {
-    // A document read back from OpenSearch decodes a whole-number JSON field as `int`, never
-    // `decimal` — createAiMetadata must convert it explicitly for the `fileSize` key.
+    // A whole-number JSON field decodes as `int`, so `fileSize` is converted to `decimal`.
     map<json> stored = {"fileSize": 100};
     ai:Metadata? result = check createAiMetadata(stored);
     ai:Metadata expected = {fileSize: 100d};

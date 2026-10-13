@@ -14,21 +14,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// `mapErrorResponse` and `executeWithRetry` against responses a real cluster produces. The error
-// bodies OpenSearch returns are the one part of the protocol that cannot be usefully guessed at:
-// the `error.type`/`error.reason` shape, and the fact that some failures never carry a JSON body
-// at all, are exactly what a hand-written stub would get wrong.
+// `mapErrorResponse` and `executeWithRetry` against real error responses, whose shape a stub would
+// likely get wrong.
 
 import ballerina/ai;
 import ballerina/test;
 
-# A store pointed at an index that does not exist, with index creation switched off so `init`
-# creates nothing and every subsequent call hits a missing index.
-#
-# `verifyOnInit` is switched off alongside it. With verification on, `init` reads the index mapping,
-# gets a 404 and refuses to construct the store at all -- which is the point of the setting, and is
-# covered by `testContainerVerificationRejectsAMissingIndex`. These tests need the store to exist
-# so the *operation's* 404 mapping can be asserted, so they opt out.
+// Verification is off too, since it would refuse to construct the store over a missing index.
+# A store over an index that does not exist and will not be created.
 #
 # + indexName - The index that will not exist
 # + return - The store, or an `ai:Error`
@@ -62,11 +55,8 @@ isolated function testContainerDeleteOnMissingIndexIsReported() returns error? {
     if result !is ai:Error {
         test:assertFail("deleting from a missing index should fail");
     }
-    // A missing *index* and a missing *document* both come back as a per-item 404 at HTTP 200, and
-    // `extractDeleteFailures` has to tell them apart: only the missing index carries an `error`
-    // object, and only it is a real failure. `testContainerDeleteMissingIdIsNotAnError` pins the
-    // other half of that distinction. Note this is a bulk-item failure, not a mapped HTTP
-    // response, so it carries no `status` detail.
+    // Both a missing index and a missing document are per-item 404s; only the index one carries
+    // an `error` object and counts as a failure.
     test:assertTrue(result.message().includes("no such index"),
             string `the server's reason should be preserved, got: ${result.message()}`);
     check store.close();
@@ -77,15 +67,8 @@ isolated function testContainerAddOnMissingIndexAutoCreatesAnUnusableIndex() ret
     string indexName = containerIndexName("err-autocreate");
     VectorStore store = check storeOnMissingIndex(indexName);
 
-    // OpenSearch ships with `action.auto_create_index: true`, so a `_bulk` write against an index
-    // that does not exist does not fail -- it creates one from the document's inferred shape. The
-    // result is an index with no `index.knn` setting and `embedding` mapped as a plain `float`
-    // array, which accepts writes happily and then rejects every k-NN query against it.
-    //
-    // This is the failure mode of setting `createIndexIfNotExists: false` against an index that
-    // was never provisioned out of band, and it is silent at the point of the mistake. Pinned here
-    // so the behaviour is at least documented and any future guard against it is a deliberate
-    // change rather than an accidental one.
+    // `action.auto_create_index` creates an index from the document's shape: no `index.knn` and
+    // a plain `float` vector, so writes succeed and every k-NN query fails.
     check store.add([entry("orphan", queryVector())]);
     test:assertTrue(check rawIndexExists(indexName), "the server should have auto-created the index");
 
@@ -119,20 +102,15 @@ isolated function testContainerDimensionMismatchIsReported() returns error? {
     }
     test:assertTrue(result.message().includes("short"),
             string `the error should name the failing entry, got: ${result.message()}`);
-    // The server's own explanation has to survive into the message, not be replaced by a generic one.
     test:assertTrue(result.message().includes("dimension") || result.message().includes("vector"),
             string `the server's reason should be preserved, got: ${result.message()}`);
-    // And specifically the *nested* one. A failed `_bulk` item's top-level reason is a parse
-    // summary whose preview of the offending value is the literal string `null`; the numbers that
-    // tell the caller what was wrong live in `caused_by`, which is what must reach the message.
+    // The useful numbers are only in the item's nested `caused_by`.
     test:assertTrue(result.message().includes("Expected: 4") && result.message().includes("Given: 2"),
             string `the nested cause carries the only actionable detail, got: ${result.message()}`);
     check store.close();
 }
 
-// The case that motivated unwrapping nested causes at all: a shard-level search failure reports
-// `all shards failed` and nothing else at the top level, and every word explaining what the caller
-// did wrong sits in `root_cause[0]`.
+// A shard-level failure says only `all shards failed`; the explanation is in `root_cause[0]`.
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryDimensionMismatchSurfacesRootCause() returns error? {
     string indexName = containerIndexName("err-qdim");
@@ -149,15 +127,13 @@ isolated function testContainerQueryDimensionMismatchSurfacesRootCause() returns
             string `the server's own top-level reason should still be reported, got: ${result.message()}`);
     test:assertTrue(result.message().includes("Dimension should be: 4"),
             string `the nested root cause must reach the caller, got: ${result.message()}`);
-    // The wrapper's type names the phase that failed and is useless for branching; the specific
-    // classification is carried alongside it rather than replacing it.
+    // The wrapper's type is kept, with the specific one beside it.
     test:assertEquals(result.detail()["openSearchErrorType"], "search_phase_execution_exception");
     test:assertEquals(result.detail()["openSearchRootCauseType"], "query_shard_exception");
     check store.close();
 }
 
-// A 404 wraps nothing, so its `root_cause` repeats the outer reason verbatim. The message must not
-// say the same thing twice, and there is no distinct classification to carry.
+// A 404's `root_cause` repeats the outer reason, which must not be appended twice.
 @test:Config {groups: ["docker"]}
 isolated function testContainerNonWrapperErrorIsNotDuplicated() returns error? {
     string indexName = containerIndexName("err-nodup");
@@ -176,9 +152,7 @@ isolated function testContainerNonWrapperErrorIsNotDuplicated() returns error? {
     check store.close();
 }
 
-// Attribution by position, proven against a real `_bulk` response rather than a hand-built one:
-// the failing entry is named by the id the caller supplied, and the ids that succeeded are not
-// dragged into the message.
+// The failing entry is named by the caller's id, and successful entries are left out.
 @test:Config {groups: ["docker"]}
 isolated function testContainerBulkFailureNamesTheCallersEntry() returns error? {
     string indexName = containerIndexName("err-attrib");
@@ -205,9 +179,7 @@ isolated function testContainerBulkFailureNamesTheCallersEntry() returns error? 
 @test:Config {groups: ["docker"]}
 isolated function testContainerCreateIndexOnBadMappingIsReported() returns error? {
     string indexName = containerIndexName("err-mapping");
-    // `dimension` is passed to the server untouched -- the module deliberately enforces no ceiling,
-    // because AWS's own documentation disagrees about what it is. This confirms the server's
-    // rejection surfaces as a construction failure rather than a silent half-built store.
+    // The module sets no dimension ceiling, so the server's rejection must fail construction.
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 99999}};
     VectorStore|ai:Error result = newContainerStore(indexName, configMode);
 
@@ -221,8 +193,7 @@ isolated function testContainerCreateIndexOnBadMappingIsReported() returns error
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerUnreachableEndpointFailsAfterRetries() returns error? {
-    // Nothing is listening on 9299. With retries switched off this is a single attempt, so the
-    // test asserts `executeWithRetry`'s give-up path without waiting out any backoff.
+    // Nothing listens on 9299, and with no retries there is no backoff to wait out.
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
     Configuration config = {retryConfig: {maxRetries: 0}};
     VectorStore|ai:Error result = new ("http://localhost:9299", CONTAINER_REGION, "unreachable",

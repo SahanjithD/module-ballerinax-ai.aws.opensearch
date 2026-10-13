@@ -14,16 +14,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// `convertFilters` against the real query DSL. This is where a container earns the most: a unit
-// test can only confirm that a `term` clause was emitted, and a `term` clause on a field the
-// dynamic template mapped as analyzed `text` is emitted perfectly and matches nothing. Every
-// operator here is asserted by the documents it actually selects.
+// Filters checked by the documents they select, since a correct-looking `term` clause on a `text`
+// field matches nothing.
 
 import ballerina/ai;
 import ballerina/test;
 
-# Seeds the shared filter dataset. Every filter test creates its own index and seeds it, so the
-# tests stay order-independent and can run in any subset.
+# Seeds the filter dataset. Each test seeds its own index, so tests are order-independent.
 #
 # + store - The store to seed
 # + return - An error if seeding fails
@@ -58,8 +55,7 @@ isolated function queryWithFilters(string prefix, ai:MetadataFilters filters) re
 isolated function testContainerFilterEqualOnString() returns error? {
     ai:VectorMatch[] matches = check queryWithFilters("f-eq",
             {filters: [{key: "language", operator: ai:EQUAL, value: "en"}]});
-    // A `term` clause only matches here because the dynamic template mapped `metadata.language`
-    // as `keyword`; under the default `text` mapping this would silently return nothing.
+    // Matches only because the dynamic template maps `metadata.language` as `keyword`.
     assertIdsEqual(matches, ["en-2020", "en-2024"], "EQUAL should select both English entries");
 }
 
@@ -156,8 +152,7 @@ isolated function testContainerFilterOrCombinesConditions() returns error? {
                                                                       {key: "year", operator: ai:EQUAL, value: 2020}
                                                                   ]
                                                               });
-    // `bool.should` without `minimum_should_match: 1` would match everything; this is what proves
-    // that clause is present and doing its job.
+    // Without `minimum_should_match: 1`, `bool.should` would match everything.
     assertIdsEqual(matches, ["fr-2022", "en-2020"], "OR should require at least one clause to match");
 }
 
@@ -193,9 +188,8 @@ isolated function testContainerFilterPreFiltersKnnQuery() returns error? {
     VectorStore store = check newContainerStore(indexName);
     check seedFilterEntries(store);
 
-    // `fr-2022` is the *least* similar entry to `queryVector()`, so a `topK: 1` k-NN search that
-    // returns it can only have filtered before ranking. A `post_filter` would have ranked first,
-    // taken `en-2020`, then filtered it away and returned nothing.
+    // `fr-2022` is the least similar entry, so getting it with `topK: 1` means the filter ran
+    // before ranking.
     ai:VectorMatch[] matches = check store.query({
         embedding: queryVector(),
         topK: 1,
@@ -217,8 +211,7 @@ isolated function testContainerFilterUnderFlatSchema() returns error? {
         entry("flat-fr", vec(0.0, 1.0), "french", {"language": "fr"})
     ]);
 
-    // With `metadataFieldName: ""` the filter path is a bare `language`, not `metadata.language`,
-    // and metadata is spread across the top level of the document rather than nested.
+    // A flat schema filters on `language`, not `metadata.language`.
     ai:VectorMatch[] matches = check store.query({
         filters: {filters: [{key: "language", operator: ai:EQUAL, value: "en"}]},
         topK: 10

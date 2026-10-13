@@ -14,11 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// `SearchMode` builders for the offline unit tests, mirroring `deployment_commons.bal`.
-//
-// `queryMode` is a required field on every variant -- deliberately, so a record literal resolves
-// to exactly one member of the union -- but restating it at every call site says nothing a
-// reader does not already know from the builder's name. These supply it.
+// `SearchMode` builders for the offline unit tests, so call sites need not restate `queryMode`.
 
 import ballerina/ai;
 

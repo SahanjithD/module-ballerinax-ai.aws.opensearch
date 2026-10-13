@@ -17,36 +17,22 @@
 import ballerina/ai;
 import ballerina/log;
 
-// The construction-time checks that connect a store's configuration to the cluster and index it is
-// actually pointed at, governed by `Configuration.verifyOnInit`.
-//
-// Everything else in this module validates a request before it is sent or a response after it
-// arrives. These two functions are the only ones that ask the server what it *is*, and they exist
-// because the alternative is silence: a `SPARSE` store aimed at a dense index writes successfully
-// forever and fails every query with a bare 400, and a cluster three minor versions too old to
-// serve a `hybrid` query says so only as a parse failure buried in a 400 body.
-//
-// Both follow the same failure policy, and the distinction is the point: a check that *runs* and
-// disagrees is fatal, because the store is provably misconfigured. A check that cannot run — a
-// least-privilege principal without `cluster:monitor/main` or `indices:admin/mappings/get` — is a
-// warning, because refusing to construct a store that would have worked is the worse outcome.
+// Construction-time checks for `Configuration.verifyOnInit`. A check that disagrees fails `init`;
+// one that cannot run (e.g. no permission) only warns, since refusing a working store is worse.
 
-# A capability this store's configuration will exercise, paired with the first OpenSearch version
-# that serves it and the setting that asked for it.
+# A feature the store's configuration uses, with the first OpenSearch version that supports it.
 type VersionRequirement record {|
     # The version floor, as `[major, minor]`.
     int[] floor;
-    # What needs it, named as the caller would recognise it.
+    # The feature, as the caller would recognise it.
     string feature;
-    # What the caller can change to drop the requirement.
+    # How the caller can avoid needing it.
     string remedy;
 |};
 
-# The version floors this store's `SearchMode` implies.
-#
-# Ordered highest floor first, so the error a caller sees names the requirement that is furthest
-# out of reach rather than whichever happened to be checked first — upgrading to satisfy a lower
-# floor would only surface the next one.
+// Highest first, so the error names the floor furthest out of reach rather than one that would
+// only reveal the next after an upgrade.
+# The OpenSearch version floors a search mode implies, highest first.
 #
 # + searchMode - The store's search mode
 # + return - The requirements, highest floor first
@@ -94,9 +80,6 @@ isolated function versionRequirements(SearchMode searchMode) returns VersionRequ
             remedy: "leave 'DenseSearch.efSearch' unset"
         });
     }
-    // Listed last and sorted to the front only if nothing outranks it: the `hybrid` query is the
-    // lowest floor `HYBRID` carries, so naming it while a 2.19 processor is also configured would
-    // send a caller to an upgrade that still does not work.
     if searchMode is HybridSearch {
         requirements.push({
             floor: [2, 11],
@@ -108,13 +91,8 @@ isolated function versionRequirements(SearchMode searchMode) returns VersionRequ
             r.floor[0] * 1000 + r.floor[1]);
 }
 
-# Checks the cluster's OpenSearch version against every floor this store's configuration implies.
-#
-# Only meaningful on a managed domain. Both Serverless generations reject `GET /` outright — the
-# AOSS proxy does not expose the root endpoint — so there is nothing to read and nothing to
-# conclude, and the check is skipped rather than attempted and warned about on every construction.
-# That absence is itself informative: AWS documents which of its Serverless regions serve neural
-# search at all, and a region that does not will fail the search rather than the version check.
+// Serverless rejects `GET /`, so the check is skipped there rather than warning every time.
+# Checks the cluster's OpenSearch version against the floors the search mode implies.
 #
 # + transport - The transport to read `GET /` through
 # + searchMode - The store's search mode, supplying the floors
@@ -156,18 +134,8 @@ isolated function verifyClusterVersion(OpenSearchTransport transport, SearchMode
     }
 }
 
-# Checks that the target index actually declares the vector field(s) this store reads and writes.
-#
-# This is the check with no substitute anywhere else in the module. Every other setting that can be
-# wrong against an existing index is wrong loudly — a bad filter path returns no hits, a bad
-# credential returns 403 — but a vector field that is absent, is mapped as something else, or holds
-# a different number of dimensions produces writes that succeed and queries that fail with a bare
-# `400`, and nothing in either says which end is wrong.
-#
-# Only the vector fields are checked. The content, id and metadata fields are deliberately left
-# alone: pointing this module at a pre-existing index with a different document shape is a
-# supported use (`Configuration.metadataFieldName = ""` exists for exactly that), and a mapping
-# this module did not write is entitled to look different everywhere the vectors are not.
+// Only the vector fields are checked; an index created elsewhere may differ in the rest.
+# Checks that the index declares this store's vector fields with the expected type and dimension.
 #
 # + transport - The transport to read `GET /<index>/_mapping` through
 # + indexName - The index to check
@@ -213,20 +181,13 @@ isolated function verifyIndexMapping(OpenSearchTransport transport, string index
     }
 }
 
-# Checks one vector field against the index's mapping: that it is declared, that its `type` is the
-# one this store's mode requires, and — for a `knn_vector` — that its `dimension` matches.
-#
-# The three failures are reported separately because they have three different causes. A missing
-# field usually means a renamed `vectorFieldName` or an index built for a different mode; a wrong
-# type means the store's `SearchMode` and the index disagree about what kind of search this is; a
-# wrong dimension means the embedding model changed under a store that was not rebuilt.
+# Checks one vector field's presence, type and, for a `knn_vector`, dimension.
 #
 # + properties - The `properties` object of the index's mapping
 # + indexName - The index, for the error message
 # + fieldName - The field this store expects
 # + expectedType - `knn_vector` or `rank_features`
-# + expectedDimension - The configured dimension for a `knn_vector`, or `()` for a
-# `rank_features` field, which has none
+# + expectedDimension - The configured dimension, or `()` for a `rank_features` field
 # + return - An `ai:Error` naming the specific disagreement, otherwise `()`
 isolated function verifyMappedField(map<json> properties, string indexName, string fieldName,
         string expectedType, int? expectedDimension) returns ai:Error? {
@@ -263,12 +224,7 @@ isolated function verifyMappedField(map<json> properties, string indexName, stri
     }
 }
 
-# Parses an OpenSearch version string into its numeric components.
-#
-# Tolerant by design: it reads the leading dot-separated integers and stops at anything else, so a
-# distribution suffix (`3.0.0-SNAPSHOT`, `2.11.0-rc1`) parses to the release it precedes rather
-# than failing. A string with no leading digit at all yields `()`, and the caller warns rather than
-# guessing.
+# Parses the leading numbers of a version, so `3.0.0-SNAPSHOT` reads as `[3, 0, 0]`.
 #
 # + version - The version string, e.g. `2.19.1`
 # + return - The components, e.g. `[2, 19, 1]`, or `()` if none could be read
@@ -300,10 +256,7 @@ isolated function parseVersion(string version) returns int[]? {
     return components.length() == 0 ? () : components;
 }
 
-# Whether a parsed version meets a floor, comparing only as many components as the floor names.
-#
-# A version shorter than the floor is padded with zeros rather than rejected: a cluster reporting
-# `3` satisfies a `2.11` floor, since a missing minor component means zero and 3.0 is past 2.11.
+# Whether a version meets a floor. Missing components count as zero.
 #
 # + version - The parsed cluster version
 # + floor - The required version, as `[major, minor]`

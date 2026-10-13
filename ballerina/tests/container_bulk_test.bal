@@ -14,11 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// `add`'s `_bulk` chunking and per-item failure handling. `bulk_test.bal` covers the pure
-// splitting and summarising functions; what needs a server is the fact that OpenSearch answers a
-// partially-failed `_bulk` with HTTP 200, so a failure is only visible if `errors: true` is read
-// out of the body -- the single easiest thing to get wrong in a bulk client, and invisible to any
-// test that does not talk to a real cluster.
+// `_bulk` chunking and per-item failures. A partly failed `_bulk` is still HTTP 200, so the
+// failure is only visible in the body.
 
 import ballerina/ai;
 import ballerina/test;
@@ -39,7 +36,7 @@ isolated function testContainerBulkAddChunksLargeBatch() returns error? {
     }
     check store.add(entries);
 
-    // 250 entries at 100 per request is three `_bulk` calls; every entry has to survive all three.
+    // Three `_bulk` calls.
     test:assertEquals(check documentCount(indexName), BULK_ENTRY_COUNT,
             "every entry across every chunk should have been indexed");
     check store.close();
@@ -52,9 +49,8 @@ isolated function testContainerBulkAddStopsAtTheFailingChunk() returns error? {
     Configuration config = {maxBulkSize: 2};
     VectorStore store = check newContainerStore(indexName, configMode, config);
 
-    // Batches at `maxBulkSize: 2` are [ok-1, bad], [ok-3, ok-4]. `add` fails on the first batch,
-    // so the second is never sent -- which is what distinguishes real chunking from one large
-    // request, where `_bulk`'s per-item semantics would have indexed ok-3 and ok-4 as well.
+    // Batches are [ok-1, bad] and [ok-3, ok-4]; failing on the first means the second is never
+    // sent.
     ai:Error? result = store.add([
         entry("ok-1", queryVector()),
         {id: "bad", embedding: [0.1, 0.2, 0.3], chunk: <ai:TextChunk>{content: "wrong dimension"}},
@@ -77,8 +73,7 @@ isolated function testContainerBulkPartialFailureIsDetectedAtHttp200() returns e
     string indexName = containerIndexName("bulk-partial");
     VectorStore store = check newContainerStore(indexName);
 
-    // OpenSearch returns HTTP 200 for this request; only `errors: true` in the body reveals that
-    // one item was rejected.
+    // HTTP 200; only `errors: true` in the body shows the rejected item.
     ai:Error? result = store.add([
         entry("good", queryVector()),
         {id: "oversized", embedding: [0.1, 0.2, 0.3, 0.4, 0.5], chunk: <ai:TextChunk>{content: "5 dims"}}
@@ -108,8 +103,7 @@ isolated function testContainerBulkDeleteChunkIsAtomicPerItem() returns error? {
     check store.add(entries);
     test:assertEquals(check documentCount(indexName), 20);
 
-    // A single `_bulk` carrying both real and imaginary ids: the `not_found` items must be
-    // dropped by `extractDeleteFailures` while the real ones still take effect.
+    // The ghost ids come back `not_found`, which is not a failure.
     check store.delete([...ids, "ghost-1", "ghost-2"]);
     test:assertEquals(check documentCount(indexName), 0);
     check store.close();

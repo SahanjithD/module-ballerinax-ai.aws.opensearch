@@ -14,25 +14,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Integration coverage for HYBRID against the throwaway OpenSearch container.
-//
-// The load-bearing test here is `testContainerHybridInlinePipelineIsAcceptedAndScoresAreSane`.
-// An inline `search_pipeline` carrying `phase_results_processors` is confirmed by the OpenSearch
-// source but has no official documentation example, and the whole zero-provisioning design rests
-// on it. Its negative control sits immediately below: without the processor, OpenSearch leaks
-// sentinel scores into the results rather than failing, so a test that only asserted "no error"
-// would pass against completely broken output.
-//
-// Every test seeds at least two documents. With a single hit, min_max normalization has
-// `max == min` and the resulting score is an implementation detail not worth asserting.
+// HYBRID against the container. Every test seeds at least two documents, since with a single hit
+// min_max normalization has `max == min`.
 
 import ballerina/ai;
 import ballerina/http;
 import ballerina/test;
 
-# The sentinel score OpenSearch uses to delimit hybrid sub-query results, which the
-# `normalization-processor` is responsible for stripping. Anything at this magnitude in a result
-# means no processor ran.
+# Below this, a score is one of the sub-query delimiters a fusion processor should have stripped.
 const float HYBRID_SENTINEL_CEILING = -1.0e9;
 
 # A hybrid search mode over `CONTAINER_DIMENSION`.
@@ -79,10 +68,7 @@ isolated function hybridContainerQuery() returns ai:VectorStoreQuery => {
     topK: 10
 };
 
-// The critical test. It proves two things at once: that OpenSearch 2.19.1 accepts an inline
-// `search_pipeline` object carrying `phase_results_processors` on a plain `_search` request, and
-// that the processor actually ran -- a score in (0.0, 1.0] is only possible if the sentinels were
-// stripped and min_max normalization was applied.
+// An inline `search_pipeline` must be accepted and must run: only then are scores in (0.0, 1.0].
 @test:Config {groups: ["docker"]}
 isolated function testContainerHybridInlinePipelineIsAcceptedAndScoresAreSane() returns error? {
     string indexName = containerIndexName("hybrid-inline");
@@ -101,9 +87,7 @@ isolated function testContainerHybridInlinePipelineIsAcceptedAndScoresAreSane() 
     check store.close();
 }
 
-// The negative control, without which the test above is vacuous. The same hybrid query sent with
-// the `search_pipeline` key stripped must produce the sentinel scores, confirming that the
-// positive test's (0.0, 1.0] range is evidence the processor ran rather than a coincidence.
+// Negative control for the test above: without the pipeline, the sentinel scores leak through.
 @test:Config {groups: ["docker"]}
 isolated function testContainerHybridWithoutPipelineLeaksSentinelScores() returns error? {
     string indexName = containerIndexName("hybrid-nopipe");
@@ -111,8 +95,7 @@ isolated function testContainerHybridWithoutPipelineLeaksSentinelScores() return
     check store.add(hybridSeedEntries());
     check store.close();
 
-    // Built by this module, then stripped -- so the only difference from the passing case is the
-    // absence of the processor.
+    // The module's own body with only the pipeline removed.
     map<json> body = check buildSearchBody(hybridContainerQuery(), containerHybridMode(), {}).ensureType();
     test:assertTrue(body.hasKey("search_pipeline"), "the module must normally send an inline pipeline");
     _ = body.remove("search_pipeline");
@@ -136,8 +119,7 @@ isolated function testContainerHybridWithoutPipelineLeaksSentinelScores() return
             string `stopped being evidence that the processor ran. Got: ${hitList.toJsonString()}`);
 }
 
-// Without this, a silently ignored `combination.parameters` block would pass every other test
-// here: the scores would still be in range and still be ordered somehow.
+// Catches a silently ignored `combination.parameters` block, which the range checks would miss.
 @test:Config {groups: ["docker"]}
 isolated function testContainerHybridWeightsShiftRanking() returns error? {
     string indexName = containerIndexName("hybrid-weights");
@@ -161,8 +143,7 @@ isolated function testContainerHybridWeightsShiftRanking() returns error? {
             "weighting the sparse sub-query at 0.9 should surface the strong token match");
 }
 
-// Proves per-sub-query filter duplication is a working substitute for the top-level
-// `hybrid.filter`, which is OpenSearch 3.0+ and unavailable on the 2.x this container runs.
+// Per-sub-query filters stand in for `hybrid.filter`, which is OpenSearch 3.0+.
 @test:Config {groups: ["docker"]}
 isolated function testContainerHybridFilterAppliesToBothSubQueries() returns error? {
     string indexName = containerIndexName("hybrid-filter");
@@ -181,7 +162,7 @@ isolated function testContainerHybridFilterAppliesToBothSubQueries() returns err
     check store.close();
 }
 
-// Proves the ?search_pipeline= escape hatch works end to end, including the transport change.
+// A named pipeline sent as `?search_pipeline=`.
 @test:Config {groups: ["docker"]}
 isolated function testContainerHybridNamedPipelineViaQueryParameter() returns error? {
     string indexName = containerIndexName("hybrid-named");
@@ -245,11 +226,8 @@ isolated function testContainerHybridRoundTripsBothHalves() returns error? {
 
 // --- reciprocal rank fusion ----------------------------------------------------------------------
 
-// The RRF counterpart to `testContainerHybridInlinePipelineIsAcceptedAndScoresAreSane`, and it
-// proves the same two things for a different processor: that OpenSearch 2.19.1 accepts an inline
-// `score-ranker-processor` and that it actually ran. The score range is the evidence -- RRF sums
-// `1 / (rankConstant + rank)` across two sub-queries, so with the default constant of 60 no score
-// can exceed `2 / 61`, and any sentinel leaking through would be hugely negative.
+// RRF sums `1 / (60 + rank)` over two sub-queries, so a score that ran through the processor is in
+// (0, 2/61]; a leaked sentinel would be hugely negative.
 @test:Config {groups: ["docker"]}
 isolated function testContainerRrfFusionIsAcceptedAndScoresAreSane() returns error? {
     string indexName = containerIndexName("hybrid-rrf");
@@ -269,10 +247,7 @@ isolated function testContainerRrfFusionIsAcceptedAndScoresAreSane() returns err
     check store.close();
 }
 
-// The counterpart to the weights test above, and the reason `RrfFusion` carries no settings. The
-// processor must be sent as the technique alone: neural-search reads `rank_constant` from
-// `combination.parameters` through 3.0 and from `combination` itself from 3.1, where the old
-// location became a hard error. Naming it in either place breaks on one side of that line.
+// The technique alone is portable across neural-search 3.1; see `RrfFusion`.
 @test:Config {groups: ["docker"]}
 isolated function testContainerRrfSendsTechniqueAlone() returns error? {
     json body = check buildSearchBody(hybridContainerQuery(), containerHybridMode({technique: RRF}), {});
@@ -287,8 +262,7 @@ isolated function testContainerRrfSendsTechniqueAlone() returns error? {
 
 // --- ef_search on the wire -------------------------------------------------------------------------
 
-// `method_parameters` is 2.16+, and a rejected one fails the whole search. This proves the
-// container accepts the object this module builds rather than merely that the JSON looks right.
+// `method_parameters` is 2.16+, and a rejected one fails the whole search.
 @test:Config {groups: ["docker"]}
 isolated function testContainerEfSearchIsAcceptedByTheDenseSubQuery() returns error? {
     string indexName = containerIndexName("hybrid-efsearch");

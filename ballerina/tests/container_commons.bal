@@ -14,27 +14,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Shared fixtures for the `docker` test group -- the integration suite that runs against the two
-// throwaway OpenSearch containers in `tests/resources/compose.yaml`.
-//
-// These cover the layer the unit tests structurally cannot reach: `OpenSearchTransport`'s signing,
-// sending, response parsing and error mapping, `ensureIndex`'s create-or-skip logic, and whether
-// the request bodies the pure functions build are actually *accepted* by an OpenSearch server. A
-// unit test can assert that `convertFilters` emits a `term` clause; only a real server can prove
-// that clause matches the documents it is supposed to match.
-//
-// `./gradlew test` starts and stops the containers automatically. To run them directly:
+// Fixtures for the `docker` group, which runs against the containers in
+// `tests/resources/compose.yaml`. `./gradlew test` starts them; to run the group directly:
 //
 //   docker compose -f tests/resources/compose.yaml up -d
 //   bal test --groups docker
 //
-// To skip them when Docker is unavailable:
-//
-//   bal test --disable-groups docker
-//
-// Deployment type is always `MANAGED_DOMAIN` here: a container is not AWS, so the append-only
-// `add` and search-then-bulk-delete semantics of `SERVERLESS_CLASSIC` cannot be reproduced
-// locally. Those stay in `live_test.bal`.
+// Skip it with `bal test --disable-groups docker`. Only `MANAGED_DOMAIN` can run in a container;
+// Serverless behavior is covered by `live_test.bal`.
 
 import ballerina/ai;
 import ballerina/http;
@@ -55,21 +42,17 @@ configurable string secureContainerUsername = "admin";
 # `OPENSEARCH_INITIAL_ADMIN_PASSWORD` in `compose.yaml`.
 configurable string secureContainerPassword = "Ballerina@OpenSearch1";
 
-# Small enough to keep request bodies readable in a failure message, large enough for the
-# orthogonal-vs-identical vectors the scoring tests rely on.
+# Small enough for readable request bodies, large enough for orthogonal test vectors.
 const int CONTAINER_DIMENSION = 4;
 
-# The region name folded into the SigV4 credential scope. The container never verifies the
-# signature, but signing still has to succeed for the request to be sent at all.
+# Region for the SigV4 scope. The container ignores the signature, but signing must still succeed.
 const string CONTAINER_REGION = "us-east-1";
 
 # The prefix every index created by this suite carries, so `@test:AfterSuite` can recognise them.
 const string CONTAINER_INDEX_PREFIX = "it-";
 
-# Dummy static credentials. The point is not that they are valid -- the container ignores the
-# `Authorization` header entirely -- but that `sendSigned` takes its SigV4 path and produces a
-# well-formed signature for every request the suite makes. `DEFAULT_CREDENTIALS` would instead
-# walk the AWS provider chain and fail outright on a CI runner with no AWS configuration.
+// `DEFAULT_CREDENTIALS` would walk the AWS provider chain and fail on a CI runner.
+# Dummy credentials, so every request takes the SigV4 path. The container ignores them.
 final auth:StaticAuthConfig & readonly containerAuth = {
     accessKeyId: "AKIAIOSFODNN7EXAMPLE",
     secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
@@ -100,8 +83,7 @@ isolated function trackedIndexNames() returns string[] {
     }
 }
 
-# The configuration most container tests use. Everything mode-specific now lives on the
-# `SearchMode` instead, so this is simply the defaults.
+# The default store configuration.
 #
 # + return - The default container test configuration
 isolated function containerConfig() returns Configuration => {};
@@ -115,10 +97,7 @@ isolated function containerDenseMode(ai:SimilarityMetric similarityMetric = ai:C
     indexConfig: {dimension: CONTAINER_DIMENSION, similarityMetric}
 };
 
-# The deployment every container test uses: a managed domain with `refreshOnWrite` set, so a write
-# is visible to the very next query. That flag is what makes this suite deterministic where
-# `live_test.bal` has to poll -- a managed domain (and a container) honors `refresh=wait_for`,
-# while Serverless does not, which is why neither Serverless variant offers the field at all.
+# A managed domain with `refreshOnWrite`, so a write is visible to the next query without polling.
 #
 # + engine - The ANN engine to configure, which only a managed domain lets a caller choose
 # + return - The default container test deployment
@@ -155,8 +134,7 @@ isolated function newContainerStore(string indexName, SearchMode searchMode = {
 # + return - The vector
 isolated function vec(float a, float b = 0.0, float c = 0.0, float d = 0.0) returns ai:Vector => [a, b, c, d];
 
-# The reference query vector. `vec(1.0)` scores 1.0 against it under cosine and `vec(0.0, 1.0)`
-# scores 0.0, which is what the scoring assertions key off.
+# The reference query vector: `vec(1.0)` scores 1.0 against it under cosine, `vec(0.0, 1.0)` 0.0.
 #
 # + return - The reference vector
 isolated function queryVector() returns ai:Vector => vec(1.0);
@@ -172,11 +150,9 @@ isolated function entry(string? id, ai:Vector embedding, string content = "hello
         ai:Metadata? metadata = ()) returns ai:VectorEntry =>
     {id, embedding, chunk: <ai:TextChunk>{content, metadata}};
 
-// --- raw cluster access, for asserting server-side state the module itself never reads ---------
+// --- raw cluster access, bypassing the module so an assertion cannot share its bugs ------------
 
-# An HTTP client pointed straight at a container, bypassing this module entirely. Used to inspect
-# what the server actually stored -- a mapping the module only ever writes, a document count the
-# module has no API for -- so an assertion cannot be satisfied by the same bug it is meant to catch.
+# An HTTP client straight to a container.
 #
 # + url - The container URL
 # + return - The client, or an error if it cannot be created
@@ -250,8 +226,7 @@ isolated function rawDeleteIndex(string indexName) returns error? => rawDeleteIn
 isolated function rawDeleteIndexOn(string url, string indexName) returns error? {
     http:Client cl = check rawClient(url);
     http:Response resp = check cl->delete(string `/${indexName}`);
-    // 404 just means the test never created it. Anything else -- most plausibly a 401 from the
-    // secure container -- would otherwise leak indices silently, one per run.
+    // A 404 means the test never created it; anything else would leak indices silently.
     if resp.statusCode != 200 && resp.statusCode != 404 {
         return error(string `Deleting '${indexName}' returned HTTP ${resp.statusCode}`);
     }

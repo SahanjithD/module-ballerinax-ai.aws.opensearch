@@ -14,11 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Integration coverage for SPARSE against the throwaway OpenSearch container.
-//
-// A unit test can assert that a `rank_features` mapping is emitted; only a real server can prove
-// that OpenSearch accepts an index with no `settings` block at all, and that a `neural_sparse`
-// query against it works with no ML model, no ingest pipeline and no `index.knn` setting.
+// SPARSE against the container: a `rank_features` index with no `settings` block, queried with
+// `neural_sparse` and no ML model, ingest pipeline or `index.knn`.
 
 import ballerina/ai;
 import ballerina/test;
@@ -60,16 +57,13 @@ isolated function testContainerSparseIndexIsCreatedWithoutSettings() returns err
     map<json> sparseField = check mapField(properties, "sparse_embedding");
     test:assertEquals(sparseField["type"], "rank_features");
 
-    // The mapping carries no `settings` block, so OpenSearch must have defaulted `index.knn` to
-    // absent rather than rejecting the create.
     map<json> settings = check indexSettings(indexName);
     test:assertFalse(settings.hasKey("knn"),
             string `a SPARSE index must not request the k-NN codec, got: ${settings.toJsonString()}`);
     check store.close();
 }
 
-// A zero weight is rejected by Lucene at index time. Asserting the document count stayed at zero
-// proves the guard fired client-side rather than the whole _bulk failing at the server.
+// Lucene rejects a zero weight; a document count of zero shows the client caught it first.
 @test:Config {groups: ["docker"]}
 isolated function testContainerSparseZeroWeightIsRejectedBeforeTheWire() returns error? {
     string indexName = containerIndexName("sparse-zero");
@@ -80,9 +74,8 @@ isolated function testContainerSparseZeroWeightIsRejectedBeforeTheWire() returns
     test:assertEquals(check documentCount(indexName), 0, "nothing should have reached the server");
     check store.close();
 }
-// The gating test for the whole sparse design: it proves the `neural-search` plugin is present in
-// the container image and that raw `query_tokens` scoring works with no model deployed anywhere.
-// The expected order is the plain dot product of the query weights against the stored ones.
+
+// Raw `query_tokens` scoring with no model: results rank by the plain dot product.
 @test:Config {groups: ["docker"]}
 isolated function testContainerSparseQueryRanksByDotProduct() returns error? {
     string indexName = containerIndexName("sparse-rank");
@@ -107,8 +100,7 @@ isolated function testContainerSparseQueryRanksByDotProduct() returns error? {
     check store.close();
 }
 
-// A sparse score is an unbounded dot product, not a similarity in [0, 1]. This pins that the
-// cosine transform is never applied to it -- 14.75 could not survive `2 * score - 1`.
+// A sparse score is an unbounded dot product; 14.75 shows no cosine transform was applied.
 @test:Config {groups: ["docker"]}
 isolated function testContainerSparseScoreIsUnboundedAndUntransformed() returns error? {
     string indexName = containerIndexName("sparse-score");
@@ -125,8 +117,7 @@ isolated function testContainerSparseScoreIsUnboundedAndUntransformed() returns 
     check store.close();
 }
 
-// `neural_sparse` over a rank_features field takes no `filter` parameter of its own, so the filter
-// travels as a sibling inside a `bool`. This proves that shape actually filters.
+// The filter goes in a `bool` beside `neural_sparse`, which has no `filter` parameter.
 @test:Config {groups: ["docker"]}
 isolated function testContainerSparseFilterAppliesAsBoolSibling() returns error? {
     string indexName = containerIndexName("sparse-filter");
@@ -147,9 +138,7 @@ isolated function testContainerSparseFilterAppliesAsBoolSibling() returns error?
 }
 
 
-// `rank_features` keeps roughly nine significant bits, so a round-tripped weight carries about
-// 0.4% relative error. Asserted as a tolerance so nobody later writes an exact-equality check
-// here and watches it flake.
+// `rank_features` keeps about nine significant bits, so weights are compared with a tolerance.
 @test:Config {groups: ["docker"]}
 isolated function testContainerSparseRoundTripIsLossy() returns error? {
     string indexName = containerIndexName("sparse-roundtrip");
@@ -174,31 +163,19 @@ isolated function testContainerSparseRoundTripIsLossy() returns error? {
 
 // --- two-phase acceleration ------------------------------------------------------------------------
 
-// The query the two-phase tests issue. The weights are chosen so the split actually happens: with
-// the default `pruneRatio` of 0.4 the threshold is `0.4 * 10.0 = 4.0`, so token 1055 (weight 10.0)
-// scores in the first phase and token 2001 (weight 1.0) is left to the rescoring pass. A query
-// whose tokens all clear the threshold would exercise the pipeline without exercising the split.
+// With the default `pruneRatio` of 0.4 the threshold is 4.0, so token 1055 runs in the first phase
+// and token 2001 is left to the rescoring pass.
 isolated function twoPhaseContainerQuery() returns ai:VectorStoreQuery =>
     {embedding: {indices: [1055, 2001], values: [10.0, 1.0]}, topK: 10};
 
-// The two entries the two-phase tests seed. `high-then-low` wins on the first-phase token and
-// `low-then-high` wins on the rescoring token, so a rescoring pass that never ran, or that dropped
-// its contribution, changes the scores.
+// Each entry wins on a different phase's token, so a skipped rescoring pass changes the scores.
 isolated function twoPhaseSeedEntries() returns ai:VectorEntry[] => [
     sparseVectorEntry("high-then-low", [1055, 2001], [9.0, 1.0]),
     sparseVectorEntry("low-then-high", [1055, 2001], [1.0, 9.0])
 ];
 
-// The gating test for `TwoPhaseAcceleration`: it proves the container accepts an inline
-// `request_processors` pipeline carrying `neural_sparse_two_phase_processor` (2.15+), and that the
-// accelerated result is the same as the unaccelerated one. A rejected pipeline fails the search
-// outright rather than degrading.
-//
-// Comparing against the same query without the processor is what makes this meaningful. The
-// acceleration is an optimisation, so on a corpus this small -- well inside `expansionRate * size`
-// -- it must reproduce the exact scores rather than merely something plausible. Asserting the
-// scores rather than only the order is what would catch a rescoring pass that silently dropped its
-// tokens' contribution: the ranking here survives that, but the scores do not.
+// On a corpus this small the acceleration must reproduce the unaccelerated scores exactly; the
+// ranking alone would not catch a rescoring pass that dropped its tokens.
 @test:Config {groups: ["docker"]}
 isolated function testContainerTwoPhaseAccelerationMatchesTheUnacceleratedResult() returns error? {
     string indexName = containerIndexName("sparse-twophase");
@@ -224,8 +201,7 @@ isolated function testContainerTwoPhaseAccelerationMatchesTheUnacceleratedResult
     }
 }
 
-// The processor rewrites the query, so it has to survive the `bool` wrapper a filtered sparse
-// query is nested in -- the only other clause shape this mode produces.
+// The processor must also rewrite a filtered query, which is wrapped in a `bool`.
 @test:Config {groups: ["docker"]}
 isolated function testContainerTwoPhaseAccelerationWorksWithAFilter() returns error? {
     string indexName = containerIndexName("sparse-twophase-filter");

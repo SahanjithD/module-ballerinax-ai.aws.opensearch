@@ -14,9 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// `add`, `query`, and `delete` end to end. Everything here runs with `refreshOnWrite`, so a write
-// is visible to the next query with no polling -- the determinism `live_test.bal` gives up because
-// Serverless will not honour `refresh=wait_for`.
+// `add`, `query` and `delete` end to end, with `refreshOnWrite` so writes are visible at once.
 
 import ballerina/ai;
 import ballerina/test;
@@ -46,8 +44,6 @@ isolated function testContainerAddGeneratesIdWhenAbsent() returns error? {
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 10});
 
     test:assertEquals(matches.length(), 1);
-    // The generated UUID must have reached the server as both `_id` and `doc_id`, otherwise the
-    // id read back here would be empty or a server-assigned opaque value.
     test:assertTrue((matches[0].id ?: "").length() > 0, "a generated id should have been stored and returned");
     test:assertEquals(matches[0].chunk.content, "no id supplied");
     check store.close();
@@ -131,8 +127,7 @@ isolated function testContainerDeleteMissingIdIsNotAnError() returns error? {
     VectorStore store = check newContainerStore(indexName);
     check store.add([entry("present", queryVector())]);
 
-    // OpenSearch returns a per-item `not_found` here, at HTTP 200. `extractDeleteFailures` has to
-    // recognise and drop it; if it did not, this would surface as a spurious failure.
+    // A per-item `not_found` is not a failure.
     check store.delete("never-existed");
     check store.delete(["present", "also-never-existed"]);
 
@@ -160,8 +155,7 @@ isolated function testContainerAddRejectsZeroVectorUnderCosine() returns error? 
     string indexName = containerIndexName("zerovec");
     VectorStore store = check newContainerStore(indexName);
 
-    // The client-side guard must fire before anything is sent, leaving the index untouched --
-    // reaching the server would fail the whole `_bulk` request with an opaque exception.
+    // Rejected before sending, so the index is untouched.
     ai:Error? result = store.add([entry("zero", vec(0.0, 0.0, 0.0, 0.0))]);
     test:assertTrue(result is ai:Error, "a zero vector under COSINE should be rejected");
     test:assertEquals(check documentCount(indexName), 0, "nothing should have been written");

@@ -14,14 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// The `BasicAuth` branch of the transport, over TLS, against the second container -- the one
-// running the security plugin and its internal user database. This is the fine-grained access
-// control setup a managed domain uses, and it is the only path in `sendSigned` that does not go
-// through SigV4. Nothing else in the suite reaches it.
-//
-// `secureSocket: {enable: false}` skips verification of the container's self-signed demo
-// certificate. That is a property of the fixture, not a recommendation: the point being tested is
-// that `httpConfig` is passed through to the underlying client at all.
+// `BasicAuth` over TLS against the container running the security plugin: the only path in
+// `sendSigned` that skips SigV4. `secureSocket: {enable: false}` only accepts the demo certificate.
 
 import ballerina/ai;
 import ballerina/http;
@@ -82,8 +76,7 @@ isolated function testSecureContainerRejectsWrongPassword() returns error? {
     }
     test:assertEquals(result.detail()["status"], 401,
             string `expected a 401, got: ${result.message()}`);
-    // The 401/403 hint names both the managed-domain and the Serverless diagnosis, since the
-    // module cannot tell which one the caller is looking at.
+    // The hint covers both managed and Serverless, since the module cannot tell which applies.
     test:assertTrue(result.message().includes("FGAC") || result.message().includes("IAM"),
             string `the auth hint should be attached, got: ${result.message()}`);
 }
@@ -91,9 +84,7 @@ isolated function testSecureContainerRejectsWrongPassword() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testSecureContainerRejectsSigV4Credentials() returns error? {
     string indexName = containerIndexName("tls-sigv4");
-    // The security plugin has no idea what a SigV4 `Authorization` header is. This is the same
-    // failure a caller gets by pointing SigV4 credentials at an FGAC domain, so it is worth
-    // confirming it arrives as a clean 401 rather than an unparsed transport error.
+    // SigV4 credentials against an FGAC-only domain should fail as a clean 401.
     VectorStore|ai:Error result = new (secureContainerUrl, CONTAINER_REGION, indexName,
         containerDeployment(), containerDenseMode(), containerConfig(), secureContainerHttpConfig()
     );

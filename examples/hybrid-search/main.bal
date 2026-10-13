@@ -32,15 +32,13 @@ type Article record {
     string language;
     // The dense half, from an embedding model.
     float[] dense;
-    // The sparse half, from a learned sparse encoder such as SPLADE: term ids and their weights.
-    // Sent to OpenSearch as they are -- no model is deployed server-side.
+    // The sparse half, from a sparse encoder such as SPLADE. No model runs on the cluster.
     int[] termIds;
     float[] termWeights;
 };
 
-// Toy vectors standing in for real model output, small enough to read at a glance. "Deploying to
-// Kubernetes" is the closest dense match to the query below, while "Ballerina on Kubernetes" is
-// the strongest term match -- so the two sub-queries disagree, which is the point of fusing them.
+// Toy vectors in place of model output. The dense and sparse halves favour different articles,
+// which is what fusion resolves.
 public function main() returns error? {
     opensearch:VectorStore vectorStore = check new (
         serviceUrl,
@@ -50,14 +48,8 @@ public function main() returns error? {
         {
             queryMode: ai:HYBRID,
             indexConfig: {dimension: 4},
-            // Leaning on the sparse side. The weights must sum to 1.0; the pipeline that applies
-            // them is sent inline with every query, so nothing is provisioned on the cluster and
-            // retuning these takes effect immediately.
-            //
-            // Normalizing two differently-scaled scores onto a shared range is one way to fuse
-            // them. The other is to ignore the scores and combine the two rankings instead, which
-            // needs no comparable scales at all: `fusion: {technique: opensearch:RRF}` on
-            // OpenSearch 2.19+. It takes no weights, so this example uses the weighted form.
+            // Weights must sum to 1.0. For rank-based fusion without weights, use
+            // `fusion: {technique: opensearch:RRF}` (OpenSearch 2.19+).
             fusion: {denseWeight: 0.4, sparseWeight: 0.6}
         }
     );
@@ -96,8 +88,7 @@ public function main() returns error? {
     ai:VectorEntry[] entries = from Article article in articles
         select {
             id: article.title,
-            // A HYBRID store requires both halves on every entry. An entry missing one would score
-            // zero on that sub-query and be penalised by the combination rather than ignored.
+            // A HYBRID store needs both halves on every entry.
             embedding: {
                 dense: article.dense,
                 sparse: {indices: article.termIds, values: article.termWeights}
@@ -116,13 +107,12 @@ public function main() returns error? {
             dense: [0.25, 0.80, 0.10, 0.05],
             sparse: {indices: [101, 310], values: [2.0, 2.0]}
         },
-        // Applied to both sub-queries, which is what keeps the French article out of either.
+        // Applied to both sub-queries.
         filters: {filters: [{key: "language", operator: ai:EQUAL, value: "en"}]},
         topK: 3
     });
 
-    // Scores are the fused, normalized result in (0.0, 1.0] -- not a cosine, and not the
-    // unbounded dot product a SPARSE store would return.
+    // Fused scores are in (0.0, 1.0].
     io:println("\nTop matches:");
     foreach ai:VectorMatch item in matches {
         io:println(string `  ${item.similarityScore}  ${item.chunk.content.toString()}`);

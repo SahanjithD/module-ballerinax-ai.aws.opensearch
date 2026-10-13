@@ -70,8 +70,7 @@ isolated function testManagedDomainEngineIsSelectable() returns error? {
     test:assertEquals(method["engine"], "lucene");
 }
 
-// Classic supports Faiss alone, so the variant exposes no `engine` field and the mapping hard-codes
-// it. Relying on the server's default engine instead is what silently breaks k-NN pre-filtering.
+// Classic supports Faiss only; leaving the engine to the server breaks k-NN pre-filtering.
 @test:Config
 isolated function testServerlessClassicEmitsMethodBlockPinnedToFaiss() returns error? {
     json mapping = buildIndexMapping(baseMode(), {}, classicDeployment());
@@ -81,11 +80,7 @@ isolated function testServerlessClassicEmitsMethodBlockPinnedToFaiss() returns e
     test:assertEquals(method["name"], "hnsw");
 }
 
-// NextGen gets a `method` block too, carrying the HNSW `parameters` but no `engine`. `engine`
-// inside the block is the one thing its proxy rejects; a block without it is accepted and the
-// parameters are stored intact, with NextGen supplying `engine: faiss` itself in the stored
-// mapping. Sending no block at all -- which this module used to do -- cost HNSW tuning here for no
-// reason AWS imposes.
+// NextGen gets a `method` block with the HNSW parameters but no `engine`, which its proxy rejects.
 @test:Config
 isolated function testServerlessNextGenEmitsMethodBlockWithoutEngine() returns error? {
     json mapping = buildIndexMapping(baseMode(), {}, nextGenDeployment());
@@ -134,9 +129,7 @@ isolated function testSpaceTypePropagatesPerDeploymentType() returns error? {
 
 // --- quantization (NextGen only, by construction) ----------------------------------------------
 
-// The default has to stay byte-identical to what was sent before these fields existed: a NextGen
-// collection provisions `on_disk`/`32x` on its own, and this module deciding to send something
-// different by default would silently change the storage of every existing index it recreates.
+// Unset must leave NextGen's own default in place.
 @test:Config
 isolated function testQuantizationOmittedWhenUnset() returns error? {
     map<json> vectorField = check vectorFieldOf(
@@ -145,9 +138,7 @@ isolated function testQuantizationOmittedWhenUnset() returns error? {
             "an unset 'compressionLevel' must leave the server's own default in place");
 }
 
-// `compression_level` sits at the field's top level and coexists with the `method` block --
-// verified on a live NextGen collection, which stored the HNSW parameters and the compression
-// ratio together.
+// `compression_level` sits at the field's top level, beside the `method` block.
 @test:Config
 isolated function testQuantizationEmittedAtFieldTopLevelBesideTheMethodBlock() returns error? {
     map<json> vectorField = check vectorFieldOf(
@@ -160,10 +151,7 @@ isolated function testQuantizationEmittedAtFieldTopLevelBesideTheMethodBlock() r
             "the HNSW parameters must survive alongside the quantization parameter");
 }
 
-// Every member of the enum has to be one the AOSS proxy actually stores. `4x` was removed after it
-// came back as `Unknown value [4x] for field [compression_level] -- accepted values are
-// [, 1x, 2x, 8x, 16x, 32x]`; this pins the enum against that set so restoring the member cannot
-// pass unnoticed.
+// Pins the enum to the ratios NextGen accepts: 1x, 2x, 8x, 16x and 32x.
 @test:Config
 isolated function testEveryCompressionLevelIsOneNextGenAccepts() returns error? {
     string[] acceptedByNextGen = ["1x", "2x", "8x", "16x", "32x"];
@@ -180,10 +168,7 @@ isolated function testEveryCompressionLevelIsOneNextGenAccepts() returns error? 
             "'CompressionLevel' must offer exactly the ratios NextGen stores, no more and no fewer");
 }
 
-// `mode` is a real `knn_vector` parameter that a managed 2.19 domain stores, and the AOSS proxy
-// implements no value for it -- `Field parameter 'mode' is not supported`, for both `in_memory`
-// and `on_disk`. Since NextGen is the only flavour that could ever have carried it, nothing may
-// emit it at all.
+// The AOSS proxy rejects every value of `mode`, so no mapping may carry it.
 @test:Config
 isolated function testVectorModeIsNeverEmitted() returns error? {
     Deployment[] deployments = [nextGenDeployment(), nextGenDeployment(COMPRESSION_1X),
@@ -196,9 +181,7 @@ isolated function testVectorModeIsNeverEmitted() returns error? {
     }
 }
 
-// `compressionLevel` is declared only on `ServerlessNextGenDeployment`, so a managed or Classic
-// mapping cannot carry it however the caller is configured. This pins that the mapping builder
-// invents it nowhere.
+// Only NextGen declares `compressionLevel`; the builder must not add it elsewhere.
 @test:Config
 isolated function testQuantizationNeverAppearsOffNextGen() returns error? {
     Deployment[] methodBlockDeployments = [
@@ -298,10 +281,7 @@ isolated function testSparseMappingUsesRankFeatures() returns error? {
             "a SPARSE index stores no dense vector, so it must map no knn_vector field");
 }
 
-// `index.knn` is not an inert flag: it switches the index onto the k-NN codec and wires up
-// per-shard native-memory circuit-breaker accounting. Buying that for a field that does not exist
-// would also misdescribe the index to anyone reading `_settings`. Verified against OpenSearch
-// 2.19.1 that a rank_features-only index is created and queried with no settings block at all.
+// `index.knn` turns on the k-NN codec, which a SPARSE index has no use for.
 @test:Config
 isolated function testSparseMappingOmitsSettingsEntirely() returns error? {
     map<json> mapping = check asMap(buildIndexMapping(sparseMode(), {}, managedDeployment()));
@@ -309,9 +289,7 @@ isolated function testSparseMappingOmitsSettingsEntirely() returns error? {
             "a SPARSE index has no knn_vector field and must not request the k-NN codec");
 }
 
-// A `rank_features` field takes no `method` block, and none of the knn_vector tuning belongs
-// anywhere in a SPARSE mapping -- on any deployment, including the two that shape that block
-// differently.
+// No `knn_vector` settings belong in a SPARSE mapping on any deployment.
 @test:Config
 isolated function testSparseMappingLeaksNoDenseVectorParameters() returns error? {
     foreach Deployment deployment in allDeployments() {

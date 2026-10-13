@@ -14,19 +14,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// The construction-time verification, exercised against a real cluster.
-//
-// The unit tests in `preflight_test.bal` cover the comparison logic against hand-written mappings.
-// What only a live cluster can prove is that `GET /` and `GET /<index>/_mapping` return what this
-// module expects to read out of them -- and, in the mapping's case, that a mapping OpenSearch
-// itself stored still satisfies the check that a mapping this module wrote produced. A verification
-// that false-positives on the module's own index would be worse than no verification.
+// Construction-time verification against a real cluster. It must accept the module's own index,
+// whose stored mapping has fields the create request never sent.
 
 import ballerina/ai;
 import ballerina/test;
 
-// The load-bearing case: the version this module reads out of `GET /` has to be the container's
-// actual version, or every floor comparison is meaningless.
 @test:Config {groups: ["docker"]}
 isolated function testContainerClusterVersionIsReadable() returns error? {
     OpenSearchTransport transport = check new (containerUrl, CONTAINER_REGION,
@@ -44,15 +37,12 @@ isolated function testContainerClusterVersionIsReadable() returns error? {
     check transport.close();
 }
 
-// Verification must be silent on an index this module created, in every mode. This is the test
-// that would catch a check strict enough to reject the module's own output -- OpenSearch stores a
-// mapping back with fields the create request never sent, so the two are not identical documents.
 @test:Config {groups: ["docker"]}
 isolated function testContainerVerificationAcceptsTheModulesOwnIndex() returns error? {
     string denseIndex = containerIndexName("verify-dense");
     VectorStore dense = check newContainerStore(denseIndex, containerDenseMode());
     check dense.close();
-    // A second store over the same index takes the `!created` branch, so verification actually runs.
+    // A second store over the same index skips creation, so verification runs.
     VectorStore denseAgain = check newContainerStore(denseIndex, containerDenseMode(),
             {createIndexIfNotExists: false});
     check denseAgain.close();
@@ -72,8 +62,6 @@ isolated function testContainerVerificationAcceptsTheModulesOwnIndex() returns e
     check hybridAgain.close();
 }
 
-// The `createIndexIfNotExists: false` hazard, caught at construction instead of becoming an index
-// that accepts every write and fails every query.
 @test:Config {groups: ["docker"]}
 isolated function testContainerVerificationRejectsAMissingIndex() {
     string indexName = containerIndexName("verify-missing");
@@ -86,8 +74,6 @@ isolated function testContainerVerificationRejectsAMissingIndex() {
             string `the error should explain why writing anyway would not fail, got: ${result.message()}`);
 }
 
-// The mode-mismatch case: a SPARSE store aimed at an index built for DENSE. Without verification
-// this writes successfully forever and fails every query with a bare 400.
 @test:Config {groups: ["docker"]}
 isolated function testContainerVerificationRejectsAModeMismatch() returns error? {
     string indexName = containerIndexName("verify-mismatch");
@@ -103,7 +89,6 @@ isolated function testContainerVerificationRejectsAModeMismatch() returns error?
             string `the error should name the field the index does not declare, got: ${result.message()}`);
 }
 
-// The drifted-dimension case: the embedding model changed under a store that was not rebuilt.
 @test:Config {groups: ["docker"]}
 isolated function testContainerVerificationRejectsADriftedDimension() returns error? {
     string indexName = containerIndexName("verify-dimension");
@@ -119,8 +104,6 @@ isolated function testContainerVerificationRejectsADriftedDimension() returns er
             string `the error should name the index's own dimension, got: ${result.message()}`);
 }
 
-// A renamed `vectorFieldName` reads and writes a field that is not there. Writes succeed, and
-// every query returns nothing rather than failing.
 @test:Config {groups: ["docker"]}
 isolated function testContainerVerificationRejectsARenamedVectorField() returns error? {
     string indexName = containerIndexName("verify-renamed");
@@ -140,7 +123,6 @@ isolated function testContainerVerificationRejectsARenamedVectorField() returns 
             string `the error should name the missing field, got: ${result.message()}`);
 }
 
-// Opting out has to actually opt out, or the setting is decoration.
 @test:Config {groups: ["docker"]}
 isolated function testContainerVerificationCanBeSwitchedOff() returns error? {
     string indexName = containerIndexName("verify-off");

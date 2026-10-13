@@ -14,10 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// `query` against a real k-NN index. `query_test.bal` asserts the search body that
-// `buildSearchBody` emits; these assert what OpenSearch does with it -- result ordering, the
-// `size`/`k` ceiling, the `_source` exclusion, and the score arithmetic, none of which can be
-// checked by inspecting a request body.
+// `query` against a real k-NN index: ordering, `size`/`k`, `_source` exclusion and scores.
 
 import ballerina/ai;
 import ballerina/test;
@@ -127,8 +124,7 @@ isolated function testContainerQueryRawCosineScore() returns error? {
     check store.add([entry("same", vec(1.0)), entry("orthogonal", vec(0.0, 1.0))]);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 2});
-    // OpenSearch's `cosinesimil` space scores as `(1 + cos) / 2`, so an identical vector is 1.0
-    // and an orthogonal one is 0.5 -- not the [-1, 1] a caller may expect from "cosine similarity".
+    // `cosinesimil` scores as `(1 + cos) / 2`: 1.0 for identical, 0.5 for orthogonal.
     test:assertEquals(matches[0].id, "same");
     assertScoreCloseTo(matches[0].similarityScore, 1.0, "an identical vector should score 1.0 raw");
     assertScoreCloseTo(matches[1].similarityScore, 0.5, "an orthogonal vector should score 0.5 raw");
@@ -138,7 +134,6 @@ isolated function testContainerQueryRawCosineScore() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryNormalizedCosineScore() returns error? {
     string indexName = containerIndexName("q-normscore");
-    // Normalization is the default; named explicitly here so the test reads against its opposite.
     DenseSearch configMode = {
         queryMode: ai:DENSE,
         indexConfig: {dimension: CONTAINER_DIMENSION},
@@ -160,8 +155,7 @@ isolated function testContainerQueryWithoutEmbeddingHasZeroScore() returns error
     VectorStore store = check newContainerStore(indexName);
     check store.add([entry("a", queryVector(), "doc", {"language": "en"})]);
 
-    // With no embedding, OpenSearch returns a constant score that is not a similarity at all, so
-    // the module reports 0.0 rather than passing a meaningless number through.
+    // Without an embedding the constant score is not a similarity, so it is reported as 0.0.
     ai:VectorMatch[] filtered = check store.query({
         filters: {filters: [{key: "language", operator: ai:EQUAL, value: "en"}]},
         topK: 10

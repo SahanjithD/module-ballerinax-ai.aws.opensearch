@@ -20,17 +20,15 @@ import ballerina/lang.runtime;
 import ballerinax/aws;
 import ballerinax/aws.auth;
 
-# The SigV4 signing name for an OpenSearch Service (managed) domain.
+// AWS docs: requests to an OpenSearch Service domain are signed with the service name `es`.
 const string SIGNING_NAME_MANAGED = "es";
 
-# The SigV4 signing name for OpenSearch Serverless (both generations).
+// AWS docs: OpenSearch Serverless requests are signed with the service name `aoss`.
 const string SIGNING_NAME_SERVERLESS = "aoss";
 
-# Owns the HTTP client, request signing, retry, and error mapping for talking to the OpenSearch
-# REST API directly — there is no `ballerinax/opensearch` connector to wrap. Every public
-# operation signs the exact bytes it sends and never re-serializes between signing and sending,
-# since a payload-hash mismatch fails as an unexplained 403. For the same reason the HTTP client
-# is pinned to HTTP/1.1 with chunking disabled — see the comment in `init`.
+// Signs the exact bytes it sends and never re-serializes them, since a payload-hash mismatch fails
+// as an unexplained 403.
+# HTTP client, SigV4 signing, retries and error mapping for the OpenSearch REST API.
 isolated class OpenSearchTransport {
     private final http:Client httpClient;
     private final string host;
@@ -50,12 +48,10 @@ isolated class OpenSearchTransport {
         self.region = region;
         self.additionalHeaders = buildCollectionHeaders(deployment).cloneReadOnly();
         self.retryConfig = retryConfig.cloneReadOnly();
-        // Only a managed domain can force a refresh, and only that variant carries the field —
-        // the Serverless generations have a fixed, unforceable refresh interval.
+        // Serverless has a fixed refresh interval, so only a managed domain carries this.
         self.refreshOnWrite = deployment is ManagedDomainDeployment && deployment.refreshOnWrite;
-        // Classic rejects a custom document `_id`, so a `_bulk` add carries none and a retry after
-        // a partially-applied batch appends the same documents again. Everywhere else the action
-        // line names an `_id`, which makes the retry an idempotent upsert.
+        // Without a custom `_id` (Classic), retrying a partly applied batch appends duplicates.
+        // Elsewhere the `_id` makes a retry an idempotent upsert.
         self.retryWrites = deployment !is ServerlessClassicDeployment;
 
         Auth authConfig = deployment.auth;
@@ -72,26 +68,9 @@ isolated class OpenSearchTransport {
             self.basicAuthHeader = ();
         }
 
-        // HTTP/1.1 and an unchunked body are correctness requirements here, not preferences, so
-        // both are pinned over whatever the caller passed.
-        //
-        // Ballerina's HTTP/2 outbound path alters an `application/json` body between signing and
-        // the wire. On `SERVERLESS_NEXTGEN`, which verifies the SigV4 payload checksum, every
-        // `_search` fails with `403 Request Content Checksum Verification Failed` while the
-        // byte-identical request over HTTP/1.1 succeeds; `POST /_bulk` (`application/x-ndjson`)
-        // is unaffected on the same connection. What was measured on Classic and managed domains
-        // is only that HTTP/2 works there — whether the body is left intact, or is altered the
-        // same way and accepted because those endpoints do not verify the checksum, was not
-        // tested. Pinning HTTP/1.1 everywhere makes the question moot rather than answering it.
-        //
-        // Chunked transfer encoding breaks independently: SigV4 signs the whole body and the
-        // signature is matched against a `Content-Length`-framed request, which a chunked body
-        // does not provide. This bites any hand-signed AWS call whose payload crosses the
-        // chunking threshold — for this module, any `_bulk` batch of realistic dimensionality.
-        // Ballerina's defaults (`HTTP_2_0`, `CHUNKING_AUTO`) are wrong on both counts, and the
-        // failure they produce is a 403 whose text points at IAM.
-        // (Copy-then-assign, not a spread with overriding fields: Ballerina rejects a record
-        // constructor whose explicit key duplicates one supplied by the spread.)
+        // Both Ballerina defaults break SigV4 with a misleading 403: HTTP/2 can alter a signed JSON
+        // body, and a chunked body has no `Content-Length` to check the signature against.
+        // Copied then assigned, since a spread cannot be combined with a key it also supplies.
         http:ClientHttp1Settings http1Settings = {...httpConfig.http1Settings};
         http1Settings.chunking = http:CHUNKING_NEVER;
         http:ClientConfiguration effectiveConfig = {...httpConfig};
@@ -120,16 +99,10 @@ isolated class OpenSearchTransport {
         return mapErrorResponse(resp);
     }
 
-    # Reads the cluster's root document via `GET /`, whose `version.number` names the OpenSearch
-    # version the endpoint is running.
+    # Reads the cluster's OpenSearch version from `GET /`. Not available on Serverless.
     #
-    # Both Serverless generations reject this call — the AOSS proxy does not expose the root
-    # endpoint — so a caller must only reach this on a managed domain. A managed domain that
-    # answers with anything other than a parseable body yields `()` rather than an error, since
-    # the version is used to sharpen a diagnostic and never to gate a data-plane operation.
-    #
-    # + return - The reported version string (e.g. `2.19.1`), `()` if the response carried none,
-    # or an `ai:Error` if the request itself failed
+    # + return - The version, e.g. `2.19.1`, `()` if the body carries none, or an `ai:Error` if the
+    # request failed
     isolated function clusterVersion() returns string?|ai:Error {
         http:Response resp = check self.sendSigned("GET", "/", {}, {}, []);
         if resp.statusCode != 200 {
@@ -143,17 +116,13 @@ isolated class OpenSearchTransport {
         return number is string ? number : ();
     }
 
-    # Reads the target index's field mappings via `GET /<index>/_mapping`.
+    // The response is keyed by the concrete index name, which differs from the requested one for
+    // an alias, so the entry is taken by position.
+    # Reads the index's mapped `properties` from `GET /<index>/_mapping`.
     #
-    # The response is keyed by the concrete index name, which is not necessarily the name that was
-    # requested — an alias resolves to whatever index backs it, and a date-math name resolves to
-    # its expansion. The single entry is therefore taken by position rather than looked up by
-    # name.
-    #
-    # + indexName - The index to read
-    # + return - The `properties` object of the resolved index's mapping, `()` if the index exists
-    # but declares no properties at all, or an `ai:Error` on failure (including a `404`, which
-    # `mapErrorResponse` renders as `index_not_found_exception`)
+    # + indexName - The index or alias to read
+    # + return - The `properties` object, `()` if the index declares none, or an `ai:Error`
+    # (a `404` if the index does not exist)
     isolated function indexMappingProperties(string indexName) returns map<json>?|ai:Error {
         http:Response resp = check self.sendSigned("GET", "/" + indexName + "/_mapping", {}, {}, []);
         if resp.statusCode != 200 {
@@ -188,18 +157,12 @@ isolated class OpenSearchTransport {
         return mapErrorResponse(resp);
     }
 
-    # Issues a `POST /_bulk` request. Requests `?refresh=wait_for` when configured, and only on a
-    # managed domain — both Serverless generations have a fixed, unforceable refresh interval.
+    # Sends a `POST /_bulk`, adding `?refresh=wait_for` when `refreshOnWrite` is set.
     #
-    # + body - The exact NDJSON bytes to sign and send; an empty body is a no-op
-    # + isIndexingBatch - Whether this batch indexes documents rather than deleting them. On a
-    # deployment that cannot carry a custom `_id` such a batch is not retried after a `5xx` or a
-    # connection failure: the server may already have applied part of it, and a second attempt
-    # would append those documents again rather than replace them. Delete batches leave this
-    # `false` — a repeated delete is idempotent on every deployment type, and
-    # `extractDeleteFailures` already ignores `not_found`
-    # + return - The parsed bulk response (which may itself carry per-item failures — see
-    # `extractIndexFailures`/`extractDeleteFailures`), or an `ai:Error` on a transport/HTTP failure
+    # + body - The NDJSON bytes to sign and send; an empty body sends nothing
+    # + isIndexingBatch - Whether the batch indexes rather than deletes. Indexing batches are not
+    # retried where a custom `_id` cannot be written, since a replay would duplicate documents
+    # + return - The parsed response, which may carry per-item failures, or an `ai:Error`
     isolated function bulk(byte[] body, boolean isIndexingBatch = false) returns BulkResponse|ai:Error {
         if body.length() == 0 {
             return {errors: false, items: []};
@@ -229,11 +192,8 @@ isolated class OpenSearchTransport {
     #
     # + indexName - The index to search
     # + body - The search request body
-    # + searchPipeline - The name of a search pipeline already provisioned on the cluster, sent as
-    # `?search_pipeline=<name>`. Only a `HYBRID` store using `NamedSearchPipeline` supplies one;
-    # every other caller leaves it unset, and a store that sends its fusion configuration inline
-    # in `body` must never also send this — OpenSearch rejects a request carrying both with
-    # "Both named and inline search pipeline were specified"
+    # + searchPipeline - A named pipeline, sent as `?search_pipeline=`. Never set alongside an
+    # inline pipeline in `body`
     # + return - The parsed search response, or an `ai:Error` on failure
     isolated function search(string indexName, json body, string? searchPipeline = ())
             returns SearchResponse|ai:Error {
@@ -258,8 +218,7 @@ isolated class OpenSearchTransport {
         return parsed;
     }
 
-    # Releases the AWS credential provider's background refresh threads and STS/SSO HTTP
-    # connections. A no-op when the store was constructed with `BasicAuth`.
+    # Releases the AWS credential provider's threads and connections. A no-op under `BasicAuth`.
     #
     # + return - An `ai:Error` if releasing the resources fails, otherwise `()`
     isolated function close() returns ai:Error? {
@@ -273,19 +232,15 @@ isolated class OpenSearchTransport {
         }
     }
 
-    # Signs and sends a single request, retrying on transport failures and retryable HTTP status
-    # codes. The NDJSON/JSON body is built once by the caller and its exact bytes are passed to
-    # both the signer and the request — never re-serialized in between.
+    # Signs and sends a request, retrying transport failures and retryable statuses.
     #
     # + method - The HTTP method, upper case
     # + path - The request path, unencoded, starting with `/`
     # + queryParams - Query parameters, unencoded
     # + extraHeaders - Extra headers to sign and send, e.g. `content-type`
-    # + payload - The exact request body bytes
-    # + retryable - Whether this request may be re-sent after a retryable status or a connection
-    # failure. `false` for a batch whose replay could duplicate data
-    # + return - The HTTP response (any status code), or an `ai:Error` if signing or the transport
-    # itself fails after exhausting retries
+    # + payload - The request body, signed and sent as is
+    # + retryable - Whether the request may be re-sent; `false` where a replay could duplicate data
+    # + return - The response (any status), or an `ai:Error` if signing or every attempt failed
     private isolated function sendSigned(string method, string path, map<string> queryParams,
             map<string> extraHeaders, byte[] payload, boolean retryable = true)
             returns http:Response|ai:Error {
@@ -352,10 +307,8 @@ isolated class OpenSearchTransport {
                 return result;
             }
             attempt += 1;
-            // A `Retry-After` is the server stating when it will have capacity again, which is
-            // better information than the backoff curve's guess. It is still clamped to
-            // `maxDelay`, so a server (or a proxy in front of it) naming an implausible interval
-            // cannot park the calling thread for it.
+            // Prefer the server's `Retry-After`, capped at `maxDelay` so a bad value cannot park
+            // the thread.
             decimal sleepFor = delay;
             if result is http:Response {
                 decimal? retryAfter = retryAfterSeconds(result);
@@ -370,11 +323,7 @@ isolated class OpenSearchTransport {
     }
 }
 
-# Builds the signed headers that identify the target collection on a Serverless NextGen endpoint.
-#
-# The NextGen endpoint is per-account rather than per-collection, so the hostname alone does not
-# say which collection a request is for. Every other deployment type needs no such header, and a
-# per-collection NextGen endpoint does not either — hence both fields being optional.
+# The signed headers that name the target collection on a per-account NextGen endpoint.
 #
 # + deployment - The target deployment
 # + return - The headers to sign and send on every request, empty when none apply
@@ -393,12 +342,9 @@ isolated function buildCollectionHeaders(Deployment deployment) returns map<stri
     return {};
 }
 
-# Reads a `Retry-After` header as a whole number of seconds.
-#
-# Only the delay-seconds form is honored. RFC 9110 also permits an HTTP-date, but neither
-# OpenSearch nor the AOSS proxy sends one, and misreading a date as a duration would produce a
-# sleep far longer than any backoff this module would otherwise choose. An unparseable or negative
-# value falls back to the computed delay.
+// Only the seconds form is read: neither OpenSearch nor AOSS sends an HTTP-date, and misreading one
+// would sleep far too long.
+# Reads `Retry-After` as a number of seconds.
 #
 # + response - The HTTP response to read
 # + return - The delay in seconds, or `()` when the header is absent or not a usable duration
@@ -414,11 +360,8 @@ isolated function retryAfterSeconds(http:Response response) returns decimal? {
     return <decimal>seconds;
 }
 
-# Extracts the AWS request id from a response, for correlating a failure with AWS support.
-#
-# The header name differs by endpoint: AOSS returns `x-amzn-RequestId`, while managed domains and
-# the S3-style edge return `x-amz-request-id`. HTTP header lookup is case-insensitive, so the
-# lower-case spellings here match either casing on the wire.
+// AOSS sends `x-amzn-RequestId`, managed domains `x-amz-request-id`. Header lookup ignores case.
+# The AWS request id from a response, which AWS support asks for.
 #
 # + response - The HTTP response to read
 # + return - The request id, or `()` when the response carries none
@@ -475,14 +418,9 @@ isolated function buildQueryString(map<string> queryParams) returns string|ai:Er
     return string:'join("&", ...parts);
 }
 
-# Percent-encodes a string per RFC 3986, the encoding AWS Signature Version 4 canonicalization
-# requires for query parameters — leaving only unreserved characters (`A-Z a-z 0-9 - . _ ~`)
-# unescaped. Deliberately not `ballerina/url:encode`, whose `application/x-www-form-urlencoded`
-# behavior differs (e.g. a space becomes `+`, not `%20`): the query string sent over the wire must
-# byte-for-byte match what the signer canonicalized, or AWS rejects the request with an opaque
-# 403. The two query parameters this module sends today need no encoding either way
-# (`refresh=wait_for`, and `search_pipeline` with a caller-supplied pipeline name), but a correct
-# encoder here removes the landmine for a name carrying anything unusual, and for later additions.
+// Not `url:encode`, which writes a space as `+`: the sent query must match what was signed byte
+// for byte, or AWS answers with an opaque 403.
+# Percent-encodes a string per RFC 3986, as SigV4 query canonicalization requires.
 #
 # + value - The raw (unencoded) value
 # + return - The percent-encoded value, or an `ai:Error` if `value` contains an invalid code point
@@ -515,23 +453,9 @@ isolated function isUnreservedCodepoint(int codepoint) returns boolean {
             codepoint == 45 || codepoint == 46 || codepoint == 95 || codepoint == 126;
 }
 
-# Maps a non-2xx OpenSearch HTTP response to an `ai:Error`, extracting `error.type`/`error.reason`
-# from the response body when present (AOSS edge 403s are sometimes not JSON), and attaching an
-# actionable hint per status code.
-#
-# The reason is taken from `describeErrorDetail` rather than from `error.reason` directly. On a
-# shard-level failure `error.reason` is the wrapper's — a query vector of the wrong dimension
-# surfaces as `all shards failed`, and the sentence naming the expected dimension is nested a
-# level down. Reporting only the wrapper leaves the caller with a message that says something went
-# wrong and nothing about what.
-#
-# `openSearchErrorType` stays the response's own `error.type`, so an existing check against it
-# keeps working; `openSearchRootCauseType` carries the nested classification, and is present only
-# when the response actually wraps a different one.
-#
-# `requestId` carries the AWS request id from the response headers when the endpoint sent one. It
-# is the identifier AWS support asks for, and it exists nowhere else in the response body, so a
-# failure that has to be escalated is otherwise unattributable after the fact.
+// `openSearchErrorType` is the response's own type and `openSearchRootCauseType` the nested one
+// when it differs. `requestId` is what AWS support needs and appears nowhere in the body.
+# Maps a non-2xx response to an `ai:Error` with OpenSearch's reason and a hint for the status.
 #
 # + response - The non-2xx HTTP response
 # + return - The mapped error, carrying `status`, `requestId`, `openSearchErrorType` and
@@ -558,14 +482,12 @@ isolated function mapErrorResponse(http:Response response) returns ai:Error {
         : string `OpenSearch request failed with status ${status}`;
     message += hintForStatus(status);
 
-    // Every field is attached unconditionally, absent ones as nil. An absent key and a nil-valued
-    // key read the same way through `detail()[...]`, and one construction site is easier to keep
-    // correct than the eight branches the combinations would otherwise need.
+    // Absent values are attached as nil, which reads the same as a missing key.
     return error ai:Error(message, status = status, requestId = extractRequestId(response),
             openSearchErrorType = errorType, openSearchRootCauseType = rootCauseType);
 }
 
-# Builds the actionable, status-specific hint appended to a mapped error message.
+# The hint appended to an error message for a given status.
 #
 # + status - The HTTP status code
 # + return - The hint text (including leading space), or `""` for a status with no specific hint

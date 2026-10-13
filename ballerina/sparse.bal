@@ -16,27 +16,13 @@
 
 import ballerina/ai;
 
-// Conversion between `ai:SparseVector` and the `{"<token>": <weight>}` map that OpenSearch uses
-// for both a `rank_features` document value and a `neural_sparse` `query_tokens` object. Pure, so
-// every constraint below is unit-testable without a server.
-//
-// The constraints are Lucene's, not this module's. They are enforced here so a violation names
-// the offending entry rather than failing an entire `_bulk` request, or arriving at query time as
-// an opaque shard exception with no indication of which term caused it.
+// Conversion between `ai:SparseVector` and OpenSearch's `{"<token>": <weight>}` map. The bounds are
+// Lucene's, checked here so a violation names the entry instead of failing the whole request.
 
-# The smallest weight Lucene's `FeatureField` will index — Java's `Float.MIN_NORMAL`.
-#
-# A `rank_features` value below this is not stored as zero; it throws
-# `featureValue must be a positive normal float`. Since `0.0` and every negative value are below
-# it, this one bound rejects all three cases. A term whose weight is zero carries no information
-# anyway and belongs out of the sparse vector entirely.
+// Lucene `FeatureField` rejects anything below `Float.MIN_NORMAL`, including zero and negatives.
 const float MIN_RANK_FEATURE_VALUE = 1.17549435e-38;
 
-# The largest weight `FeatureField.newLinearQuery` accepts, which is Lucene's `Long.SIZE`.
-#
-# Applies to `neural_sparse` `query_tokens` only — there is no equivalent ceiling at index time.
-# `NeuralSparseQueryBuilder` passes the values straight through with no filtering or clamping, so
-# a weight above this fails the query outright.
+// Lucene `FeatureField.newLinearQuery` caps a query weight at 64; stored weights have no ceiling.
 const float MAX_QUERY_TOKEN_WEIGHT = 64.0;
 
 # One term of a sparse vector, used to sort a stored token map back into index order.
@@ -47,18 +33,13 @@ type SparseToken record {|
     float weight;
 |};
 
-# Converts an `ai:SparseVector` to the `{"<token>": <weight>}` map OpenSearch takes, validating
-# every constraint Lucene enforces on the way.
-#
-# Weights are rejected rather than clamped. Clamping an out-of-range weight would silently rewrite
-# the relevance ranking the caller's encoder produced, making results irreproducible and the cause
-# invisible; this matches `validateEmbedding`, which rejects a zero dense vector rather than
-# substituting an epsilon.
+// Out-of-range weights are rejected rather than clamped, which would silently change the ranking.
+# Converts an `ai:SparseVector` to OpenSearch's token map, checking Lucene's constraints.
 #
 # + sparse - The sparse vector to convert
 # + subject - What to name in an error message, e.g. `Entry 'abc'` or `The query`
-# + maxWeight - The inclusive upper bound on a weight: `float:Inf` at index time, where Lucene
-# imposes none, and `MAX_QUERY_TOKEN_WEIGHT` at query time, where it does
+# + maxWeight - Inclusive weight ceiling: `float:Infinity` when indexing, `MAX_QUERY_TOKEN_WEIGHT`
+# for a query
 # + return - The token map, or an `ai:Error` naming the first violation and the index it is at
 isolated function toSparseTokenMap(ai:SparseVector sparse, string subject, float maxWeight)
         returns map<float>|ai:Error {
@@ -74,15 +55,12 @@ isolated function toSparseTokenMap(ai:SparseVector sparse, string subject, float
     foreach int position in 0 ..< indices.length() {
         int index = indices[position];
         float weight = values[position];
-        // A negative index stringifies to a perfectly legal feature name, so without this it
-        // would be stored rather than rejected, and would never match a query built from a
-        // non-negative index.
+        // A negative index is a valid feature name but would never match a query.
         if index < 0 {
             return error(string `${subject} has a negative sparse index (${index}); ` +
                     "'ai:SparseVector.indices' must be non-negative");
         }
-        // Checked before any comparison below: every ordering comparison against NaN is false, so
-        // a NaN weight would slip past the range checks and reach the server.
+        // First, since every comparison with NaN is false and it would pass the range checks.
         if !weight.isFinite() {
             return error(string `${subject} has a non-finite sparse weight (${weight}) at index ` +
                     string `${index}; a 'rank_features' weight must be a finite number`);
@@ -108,22 +86,9 @@ isolated function toSparseTokenMap(ai:SparseVector sparse, string subject, float
     return tokens;
 }
 
-# Reconstructs an `ai:SparseVector` from a stored `rank_features` token map.
-#
-# The result is sorted by integer index ascending. Map key order is not guaranteed — `_source`
-# echoes the document as it was written, which may be a document this module did not write — so
-# some deterministic order has to be imposed, and ascending index is the one canonical choice. The
-# sort is numeric rather than lexicographic, so `"10"` follows `"2"` rather than preceding it.
-#
-# A stored weight is not a byte-exact echo of what was written: `rank_features` keeps roughly nine
-# significant bits, giving about 0.4% relative error. Never compare a round-tripped weight to a
-# locally-held one with exact float equality.
-#
-# A token that is not an integer is an error rather than a skipped term. `ai:SparseVector.indices`
-# is `int[]`, so a text-token sparse field — which a real encoder may well produce, and which this
-# module never writes — cannot be represented at all; dropping those terms silently would make the
-# returned vector a quiet lie about what is stored. This mirrors how a malformed stored *dense*
-# embedding is reported rather than swallowed.
+// A non-integer token is an error rather than skipped: `indices` is `int[]`, and dropping terms
+// would misreport what is stored.
+# Rebuilds an `ai:SparseVector` from a stored token map, sorted by index.
 #
 # + features - The stored token map
 # + id - The entry id, used to name the offending entry in an error message
@@ -139,8 +104,7 @@ isolated function sparseFromRankFeatures(map<json> features, string id) returns 
                     "represented; set 'Configuration.includeEmbeddingsInResults' to false to skip " +
                     "reading it");
         }
-        // A whole-numbered weight can come back as a JSON integer rather than a float, so all
-        // three numeric types are accepted here.
+        // A whole-numbered weight can come back as a JSON integer.
         float weight;
         if rawWeight is float {
             weight = rawWeight;

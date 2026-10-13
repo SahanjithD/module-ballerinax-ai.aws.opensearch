@@ -14,14 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// `Deployment` builders for the offline unit tests. Credentials are a required field on every
-// variant -- deliberately, so a store can never quietly fall back to the ambient AWS credential
-// chain -- but most of these tests exercise mapping and bulk-body construction, where the
-// credentials never leave the record. These builders supply a fixed fake so that requirement does
-// not clutter every call site.
-//
-// `container_commons.bal` has its own builders for the Docker suite, which needs credentials the
-// container actually accepts.
+// `Deployment` builders for the offline unit tests, with fake credentials that never leave the
+// record. `container_commons.bal` has the Docker suite's builders.
 
 import ballerinax/aws.auth;
 

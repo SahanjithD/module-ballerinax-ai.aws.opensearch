@@ -14,20 +14,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Live tests against real AWS OpenSearch resources. Disabled by default (`isLiveServer = false`)
-// so CI never needs AWS credentials — set it and the relevant *Url configurable in a Config.toml,
-// or via `-Cisliveserver=true -C<...>Url=...`, then run:
+// Live tests against real AWS resources, disabled unless `isLiveServer` is set. Set it and the
+// service URL for each deployment you have (in Config.toml or with `-C`), then run:
 //
 //   bal test --groups live
 //
-// or, through the gradle wrapper:
-//
-//   ./gradlew clean test -Pgroups=live
-//
-// Each deployment type is independently gated on its own service URL being non-empty, so you can
-// exercise just the one you have access to. Visibility waits poll with a timeout rather than
-// sleep a fixed duration: a managed domain uses `refreshOnWrite` and needs no poll, while
-// Serverless Classic (~60s refresh) and NextGen (~10s refresh) do.
+// or `./gradlew clean test -Pgroups=live`. Serverless is polled, since its refresh interval cannot
+// be forced.
 
 import ballerina/ai;
 import ballerina/lang.runtime;

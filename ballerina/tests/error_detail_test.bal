@@ -14,18 +14,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// `describeErrorDetail` and `specificErrorType` against error bodies captured verbatim from
-// OpenSearch 2.19.1 -- the same engine version a managed domain runs.
-//
-// Every body below was produced by issuing the named request against a real server and pasting
-// back what came out, because the nesting is the whole point: where OpenSearch puts the sentence
-// that actually explains a failure varies by failure, and a hand-invented body would simply
-// encode the guess being tested. Two shapes matter and differ, and both are pinned here:
-// an error *response* nests its explanation in `root_cause[0]`, while a `_bulk` item error has no
-// `root_cause` at all and nests it in `caused_by`.
-//
-// These also cover the decode itself. `ErrorDetail` is recursive through `caused_by`, so these
-// assert that `cloneWithType` reconstructs the nesting from real JSON rather than flattening it.
+// `describeErrorDetail` and `specificErrorType` against real OpenSearch error bodies. Error
+// responses nest the explanation in `root_cause[0]`; `_bulk` item errors only in `caused_by`.
 
 import ballerina/test;
 
@@ -42,9 +32,7 @@ isolated function errorDetailOf(json body) returns ErrorDetail|error {
     return detail;
 }
 
-// `POST /<index>/_search` with `{"knn": {"embedding": {"vector": [4 floats], "k": 3}}}` against a
-// field of dimension 8. This is the case that reads as `all shards failed` and nothing else: the
-// only statement of what the caller did wrong is two levels down.
+// A 4-dimensional `knn` query against a dimension-8 field.
 final readonly & json DIMENSION_MISMATCH_SEARCH_BODY = {
     "error": {
         "root_cause": [
@@ -96,14 +84,11 @@ isolated function testDescribeErrorDetailRecoversShardFailureReason() returns er
 @test:Config
 isolated function testSpecificErrorTypeUnwrapsSearchPhaseException() returns error? {
     ErrorDetail detail = check errorDetailOf(DIMENSION_MISMATCH_SEARCH_BODY);
-    // The wrapper's own type names the phase that failed, which is not something a caller can
-    // branch on; `openSearchErrorType` keeps reporting it, and this is the useful one alongside.
     test:assertEquals(detail.'type, "search_phase_execution_exception");
     test:assertEquals(specificErrorType(detail), "query_shard_exception");
 }
 
-// `GET /no-such-index/_search`. A non-wrapper error repeats itself in `root_cause[0]`, so there is
-// nothing to append and the message must not say the same thing twice.
+// `GET /no-such-index/_search`, whose `root_cause[0]` repeats the outer reason.
 @test:Config
 isolated function testDescribeErrorDetailDoesNotDuplicateSelfReferentialRootCause() returns error? {
     ErrorDetail detail = check errorDetailOf({
@@ -133,9 +118,8 @@ isolated function testDescribeErrorDetailDoesNotDuplicateSelfReferentialRootCaus
             "a self-referential root cause adds no classification worth carrying");
 }
 
-// A failed `_bulk` item from `POST /_bulk` indexing a 2-dimensional vector into a dimension-8
-// field. Note the absence of `root_cause`: the outer reason is a parse-failure summary whose
-// preview of the offending value is the useless string `null`, and `caused_by` holds the numbers.
+// A 2-dimensional vector indexed into a dimension-8 field. No `root_cause`; the detail is in
+// `caused_by`.
 @test:Config
 isolated function testDescribeErrorDetailRecoversBulkItemCause() returns error? {
     BulkResponse response = check {
