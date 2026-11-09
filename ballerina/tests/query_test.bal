@@ -180,6 +180,7 @@ isolated function testCosineScoreNormalizedWhenEnabled() {
     // score = (1 + cos) / 2  =>  cos = 2 * score - 1
     test:assertEquals(normalizeScore(1.0, ai:COSINE, true), 1.0);
     test:assertEquals(normalizeScore(0.5, ai:COSINE, true), 0.0);
+    test:assertEquals(normalizeScore(0.0, ai:COSINE, true), -1.0);
     float oneThird = 1.0 / 3.0;
     test:assertEquals(normalizeScore(oneThird, ai:COSINE, true), 2.0 * oneThird - 1.0);
 }

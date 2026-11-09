@@ -35,9 +35,15 @@ type VersionRequirement record {|
 # The OpenSearch version floors a search mode implies, highest first.
 #
 # + searchMode - The store's search mode
+# + creatingWith - The engine of a `knn_vector` field this module is about to create, if any
 # + return - The requirements, highest floor first
-isolated function versionRequirements(SearchMode searchMode) returns VersionRequirement[] {
+isolated function versionRequirements(SearchMode searchMode, Engine? creatingWith = ())
+        returns VersionRequirement[] {
     VersionRequirement[] requirements = [];
+    IndexConfig? indexConfig = indexConfigOf(searchMode);
+    if creatingWith is Engine && indexConfig is IndexConfig {
+        requirements.push(...indexCreationRequirements(creatingWith, indexConfig.similarityMetric));
+    }
     if searchMode is SparseSearch {
         requirements.push({
             floor: [2, 14],
@@ -91,16 +97,54 @@ isolated function versionRequirements(SearchMode searchMode) returns VersionRequ
             r.floor[0] * 1000 + r.floor[1]);
 }
 
+// Floors from the k-NN plugin's supported spaces per engine: Faiss `cosinesimil` and Lucene
+// `innerproduct` per docs.opensearch.org/latest/mappings/supported-field-types/knn-methods-engines/,
+// the Lucene engine itself from k-NN 2.2.0.0 (`Lucene.java` is absent in 2.1.0.0).
+# The OpenSearch version floors for creating a `knn_vector` field with this engine and metric.
+#
+# + engine - The engine of the field about to be created
+# + metric - The configured similarity metric
+# + return - The requirements, in no particular order
+isolated function indexCreationRequirements(Engine engine, ai:SimilarityMetric metric)
+        returns VersionRequirement[] {
+    if engine == LUCENE {
+        VersionRequirement[] requirements = [{
+            floor: [2, 2],
+            feature: "the 'lucene' k-NN engine",
+            remedy: "set 'ManagedDomainDeployment.engine' to 'FAISS'"
+        }];
+        if metric == ai:DOT_PRODUCT {
+            requirements.push({
+                floor: [2, 13],
+                feature: "the 'innerproduct' space type with the 'lucene' engine",
+                remedy: "set 'ManagedDomainDeployment.engine' to 'FAISS'"
+            });
+        }
+        return requirements;
+    }
+    if metric == ai:COSINE {
+        return [{
+            floor: [2, 19],
+            feature: "the 'cosinesimil' space type with the 'faiss' engine",
+            remedy: "set 'ManagedDomainDeployment.engine' to 'LUCENE'"
+        }];
+    }
+    return [];
+}
+
 // Serverless rejects `GET /`, so the check is skipped there rather than warning every time.
 # Checks the cluster's OpenSearch version against the floors the search mode implies.
 #
 # + transport - The transport to read `GET /` through
 # + searchMode - The store's search mode, supplying the floors
 # + deployment - The deployment, which decides whether the version is readable at all
+# + creatingIndex - Whether this module is about to create the index, adding the mapping's floors
 # + return - An `ai:Error` if the cluster is definitively too old, otherwise `()`
 isolated function verifyClusterVersion(OpenSearchTransport transport, SearchMode searchMode,
-        Deployment deployment) returns ai:Error? {
-    VersionRequirement[] requirements = versionRequirements(searchMode);
+        Deployment deployment, boolean creatingIndex = false) returns ai:Error? {
+    Engine? creatingWith = creatingIndex && deployment is ManagedDomainDeployment
+        ? deployment.engine : ();
+    VersionRequirement[] requirements = versionRequirements(searchMode, creatingWith);
     if requirements.length() == 0 || deployment !is ManagedDomainDeployment {
         return;
     }
@@ -130,7 +174,7 @@ isolated function verifyClusterVersion(OpenSearchTransport transport, SearchMode
                 string `${requirement.feature}. That needs ` +
                 string `${requirement.floor[0]}.${requirement.floor[1]} or later. Upgrade the ` +
                 string `domain, ${requirement.remedy}, or set 'Configuration.verifyOnInit' to ` +
-                "false to send the query anyway and let the server reject it");
+                "false to skip this check and let the server decide");
     }
 }
 

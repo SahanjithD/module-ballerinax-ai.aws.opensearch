@@ -113,6 +113,47 @@ isolated function testHybridReportsTheHighestFloorFirst() {
 }
 
 @test:Config
+isolated function testCreatingAFaissCosineIndexImpliesItsFloor() {
+    VersionRequirement[] requirements = versionRequirements(denseMode(), FAISS);
+    test:assertEquals(requirements.length(), 1);
+    test:assertEquals(requirements[0].floor, [2, 19]);
+    test:assertTrue(requirements[0].feature.includes("cosinesimil"));
+}
+
+@test:Config
+isolated function testCreatingAFaissNonCosineIndexImpliesNoFloor() {
+    test:assertEquals(versionRequirements(denseMode(similarityMetric = ai:EUCLIDEAN), FAISS).length(), 0);
+    test:assertEquals(versionRequirements(denseMode(similarityMetric = ai:DOT_PRODUCT), FAISS).length(), 0);
+}
+
+@test:Config
+isolated function testCreatingALuceneIndexImpliesTheEngineFloor() {
+    VersionRequirement[] requirements = versionRequirements(denseMode(), LUCENE);
+    test:assertEquals(requirements.length(), 1);
+    test:assertEquals(requirements[0].floor, [2, 2]);
+}
+
+@test:Config
+isolated function testCreatingALuceneDotProductIndexImpliesItsFloor() {
+    VersionRequirement[] requirements = versionRequirements(denseMode(similarityMetric = ai:DOT_PRODUCT), LUCENE);
+    test:assertEquals(requirements[0].floor, [2, 13]);
+    test:assertTrue(requirements[0].feature.includes("innerproduct"));
+}
+
+@test:Config
+isolated function testCreatingAHybridFaissCosineIndexReportsItsFloorFirst() {
+    VersionRequirement[] requirements = versionRequirements(hybridMode(), FAISS);
+    test:assertEquals(requirements[0].floor, [2, 19],
+            "Faiss cosinesimil's 2.19 outranks raw query_tokens' 2.14 and the hybrid query's 2.11");
+}
+
+@test:Config
+isolated function testCreatingASparseIndexAddsNoMappingFloor() {
+    test:assertEquals(versionRequirements(sparseMode(), FAISS), versionRequirements(sparseMode()),
+            "a sparse store has no knn_vector field, so the engine must not matter");
+}
+
+@test:Config
 isolated function testHybridWithInlineNormalizationFloorsAtRawQueryTokens() {
     VersionRequirement[] requirements = versionRequirements(hybridMode());
     test:assertEquals(requirements[0].floor, [2, 14]);

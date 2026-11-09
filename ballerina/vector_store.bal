@@ -210,7 +210,9 @@ public isolated class VectorStore {
 }
 
 // The version is checked before the index is created, so a cluster too old for the search mode
-// fails as such instead of leaving an unusable index. A just-created mapping needs no check.
+// fails as such instead of leaving an unusable index. The mapping's own floors apply only when
+// this call creates the index, since an existing one may use another engine than configured.
+// A just-created mapping needs no check.
 # Runs the construction steps that talk to the cluster.
 #
 # + transport - The transport to issue requests through
@@ -221,10 +223,14 @@ public isolated class VectorStore {
 # + return - An `ai:Error` if the cluster or index cannot serve this store, otherwise `()`
 isolated function prepareIndex(OpenSearchTransport transport, string indexName, SearchMode searchMode,
         Configuration config, Deployment deployment) returns ai:Error? {
-    if config.verifyOnInit {
-        check verifyClusterVersion(transport, searchMode, deployment);
+    boolean missing = false;
+    if config.createIndexIfNotExists {
+        missing = !check transport.indexExists(indexName);
     }
-    boolean created = check ensureIndex(transport, indexName, searchMode, config, deployment);
+    if config.verifyOnInit {
+        check verifyClusterVersion(transport, searchMode, deployment, missing);
+    }
+    boolean created = missing && check createMissingIndex(transport, indexName, searchMode, config, deployment);
     if config.verifyOnInit && !created {
         check verifyIndexMapping(transport, indexName, searchMode);
     }

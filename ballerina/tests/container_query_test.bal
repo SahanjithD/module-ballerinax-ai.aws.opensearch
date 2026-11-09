@@ -121,13 +121,15 @@ isolated function testContainerQueryRawCosineScore() returns error? {
         normalizeCosineScore: false
     };
     VectorStore store = check newContainerStore(indexName, configMode);
-    check store.add([entry("same", vec(1.0)), entry("orthogonal", vec(0.0, 1.0))]);
+    check store.add([entry("same", vec(1.0)), entry("orthogonal", vec(0.0, 1.0)),
+        entry("opposite", vec(-1.0))]);
 
-    ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 2});
-    // `cosinesimil` scores as `(1 + cos) / 2`: 1.0 for identical, 0.5 for orthogonal.
+    ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 3});
+    // `cosinesimil` scores as `(1 + cos) / 2`: 1.0 for identical, 0.5 for orthogonal, 0.0 for opposite.
     test:assertEquals(matches[0].id, "same");
     assertScoreCloseTo(matches[0].similarityScore, 1.0, "an identical vector should score 1.0 raw");
     assertScoreCloseTo(matches[1].similarityScore, 0.5, "an orthogonal vector should score 0.5 raw");
+    assertScoreCloseTo(matches[2].similarityScore, 0.0, "an opposite vector should score 0.0 raw");
     check store.close();
 }
 
@@ -140,12 +142,32 @@ isolated function testContainerQueryNormalizedCosineScore() returns error? {
         normalizeCosineScore: true
     };
     VectorStore store = check newContainerStore(indexName, configMode);
-    check store.add([entry("same", vec(1.0)), entry("orthogonal", vec(0.0, 1.0))]);
+    check store.add([entry("same", vec(1.0)), entry("orthogonal", vec(0.0, 1.0)),
+        entry("opposite", vec(-1.0))]);
 
-    ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 2});
-    // `cos = 2 * score - 1` maps those back to 1.0 and 0.0.
+    ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 3});
+    // `cos = 2 * score - 1` maps those back to 1.0, 0.0 and -1.0.
     assertScoreCloseTo(matches[0].similarityScore, 1.0, "an identical vector normalizes to 1.0");
     assertScoreCloseTo(matches[1].similarityScore, 0.0, "an orthogonal vector normalizes to 0.0");
+    assertScoreCloseTo(matches[2].similarityScore, -1.0, "an opposite vector normalizes to -1.0");
+    check store.close();
+}
+
+@test:Config {groups: ["docker"]}
+isolated function testContainerQueryNormalizedCosineScoreOnLucene() returns error? {
+    string indexName = containerIndexName("q-normscore-lucene");
+    DenseSearch configMode = {
+        queryMode: ai:DENSE,
+        indexConfig: {dimension: CONTAINER_DIMENSION},
+        normalizeCosineScore: true
+    };
+    VectorStore store = check newContainerStore(indexName, configMode,
+            deployment = containerDeployment(LUCENE));
+    check store.add([entry("same", vec(1.0)), entry("opposite", vec(-1.0))]);
+
+    ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 2});
+    assertScoreCloseTo(matches[0].similarityScore, 1.0, "an identical vector normalizes to 1.0");
+    assertScoreCloseTo(matches[1].similarityScore, -1.0, "an opposite vector normalizes to -1.0");
     check store.close();
 }
 

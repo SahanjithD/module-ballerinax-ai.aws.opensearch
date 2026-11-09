@@ -131,24 +131,17 @@ isolated function toSpaceType(ai:SimilarityMetric metric) returns string {
 
 // On Serverless Classic a new index can briefly fail searches with `index_not_found_exception`.
 // That is not waited out here, so callers that write before they query do not pay for it.
-# Creates the index when it is missing and `createIndexIfNotExists` allows it.
+# Creates an index the caller has found missing.
 #
-# + transport - The transport to issue `HEAD`/`PUT` requests through
-# + indexName - The index to ensure
+# + transport - The transport to issue the `PUT` request through
+# + indexName - The index to create
 # + searchMode - The kind of search, passed through to the mapping builder
 # + config - The vector store configuration
 # + deployment - The deployment, passed through to the mapping builder
-# + return - `true` if this call created the index, `false` if it existed or creation is off, or an
-# `ai:Error`
-isolated function ensureIndex(OpenSearchTransport transport, string indexName, SearchMode searchMode,
+# + return - `true` if this call created the index, `false` if another caller created it first, or
+# an `ai:Error`
+isolated function createMissingIndex(OpenSearchTransport transport, string indexName, SearchMode searchMode,
         Configuration config, Deployment deployment) returns boolean|ai:Error {
-    if !config.createIndexIfNotExists {
-        return false;
-    }
-    boolean exists = check transport.indexExists(indexName);
-    if exists {
-        return false;
-    }
     json mapping = buildIndexMapping(searchMode, config, deployment);
     ai:Error? result = transport.createIndex(indexName, mapping);
     if result is ai:Error {

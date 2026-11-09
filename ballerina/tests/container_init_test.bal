@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// `ensureIndex` and `buildIndexMapping` against a real cluster, which shows whether OpenSearch
+// `createMissingIndex` and `buildIndexMapping` against a real cluster, which shows whether OpenSearch
 // accepts the mapping and keeps the field types the module relies on.
 
 import ballerina/ai;
