@@ -251,7 +251,49 @@ isolated class OpenSearchTransport {
         foreach [string, string] [name, value] in extraHeaders.entries() {
             headersToSign[name] = value;
         }
+        string fullPath = queryParams.length() == 0 ? path : path + "?" + check buildQueryString(queryParams);
 
+        int attempt = 0;
+        decimal delay = self.retryConfig.initialDelay;
+        while true {
+            // Signed per attempt, after any backoff, so a retry never resends a stale `x-amz-date`
+            // or credentials that rotated in the meantime.
+            http:Request request = check self.buildRequest(method, path, queryParams, headersToSign, payload);
+            http:Response|http:ClientError result = self.httpClient->execute(method, fullPath, request);
+            boolean shouldRetry = retryable && attempt < self.retryConfig.maxRetries &&
+                    (result is http:ClientError || isRetryableStatus(result.statusCode));
+            if !shouldRetry {
+                if result is http:ClientError {
+                    return error(string `Request to OpenSearch failed after ${attempt + 1} attempt(s)`, result);
+                }
+                return result;
+            }
+            attempt += 1;
+            // Prefer the server's `Retry-After`, capped at `maxDelay` so a bad value cannot park
+            // the thread.
+            decimal sleepFor = delay;
+            if result is http:Response {
+                decimal? retryAfter = retryAfterSeconds(result);
+                if retryAfter is decimal {
+                    sleepFor = retryAfter < self.retryConfig.maxDelay ? retryAfter : self.retryConfig.maxDelay;
+                }
+            }
+            runtime:sleep(sleepFor);
+            decimal nextDelay = delay * self.retryConfig.backoffFactor;
+            delay = nextDelay < self.retryConfig.maxDelay ? nextDelay : self.retryConfig.maxDelay;
+        }
+    }
+
+    # Builds one attempt's request, with basic auth or a fresh SigV4 signature.
+    #
+    # + method - The HTTP method, upper case
+    # + path - The request path, unencoded, starting with `/`
+    # + queryParams - Query parameters, unencoded
+    # + headersToSign - The headers to sign and send
+    # + payload - The request body, signed and sent as is
+    # + return - The request, or an `ai:Error` if credentials cannot be resolved or signing fails
+    private isolated function buildRequest(string method, string path, map<string> queryParams,
+            map<string> headersToSign, byte[] payload) returns http:Request|ai:Error {
         map<string> signedHeaders;
         string? basicAuthHeader = self.basicAuthHeader;
         if basicAuthHeader is string {
@@ -287,39 +329,7 @@ isolated class OpenSearchTransport {
         if payload.length() > 0 {
             request.setBinaryPayload(payload);
         }
-
-        string fullPath = queryParams.length() == 0 ? path : path + "?" + check buildQueryString(queryParams);
-        return self.executeWithRetry(method, fullPath, request, retryable);
-    }
-
-    private isolated function executeWithRetry(string method, string path, http:Request request,
-            boolean retryable) returns http:Response|ai:Error {
-        int attempt = 0;
-        decimal delay = self.retryConfig.initialDelay;
-        while true {
-            http:Response|http:ClientError result = self.httpClient->execute(method, path, request);
-            boolean shouldRetry = retryable && attempt < self.retryConfig.maxRetries &&
-                    (result is http:ClientError || isRetryableStatus(result.statusCode));
-            if !shouldRetry {
-                if result is http:ClientError {
-                    return error(string `Request to OpenSearch failed after ${attempt + 1} attempt(s)`, result);
-                }
-                return result;
-            }
-            attempt += 1;
-            // Prefer the server's `Retry-After`, capped at `maxDelay` so a bad value cannot park
-            // the thread.
-            decimal sleepFor = delay;
-            if result is http:Response {
-                decimal? retryAfter = retryAfterSeconds(result);
-                if retryAfter is decimal {
-                    sleepFor = retryAfter < self.retryConfig.maxDelay ? retryAfter : self.retryConfig.maxDelay;
-                }
-            }
-            runtime:sleep(sleepFor);
-            decimal nextDelay = delay * self.retryConfig.backoffFactor;
-            delay = nextDelay < self.retryConfig.maxDelay ? nextDelay : self.retryConfig.maxDelay;
-        }
+        return request;
     }
 }
 
