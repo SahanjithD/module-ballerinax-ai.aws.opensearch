@@ -112,8 +112,8 @@ public type ServerlessNextGenDeployment record {|
     CompressionLevel? compressionLevel = ();
 |};
 
-// Applied only by the `PUT /<index>` that `init` sends when the index is missing. Changing these
-// later has no effect on an existing index and raises no error; reindex to change them.
+// Applied only by the `PUT /<index>` that `init` sends when the index is missing; reindex to
+// change them. `verifyOnInit` catches a changed `dimension`, but none of the other fields.
 # Shape of the `knn_vector` field, applied when the index is created.
 public type IndexConfig record {|
     // No client-side ceiling: AWS documents both 10,000 and 16,000, so the server decides.
@@ -272,7 +272,8 @@ public type Configuration record {|
     // handle on an entry's identity.
     # Field holding the entry's logical id.
     string idFieldName = "doc_id";
-    # Field metadata is nested under. `""` stores metadata at the top level of the document.
+    # Field metadata is nested under. `""` stores it at the top level, where an index this module
+    # creates maps every string field it does not map itself as an exact-match `keyword`.
     string metadataFieldName = "metadata";
     # Whether `query` results carry the stored vectors. `false` saves bandwidth.
     boolean includeEmbeddingsInResults = true;

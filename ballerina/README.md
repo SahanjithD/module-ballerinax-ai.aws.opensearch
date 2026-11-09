@@ -373,8 +373,9 @@ naming one against a deployment that ignores it does not compile.
 
 
 > [!WARNING]
-> **`createIndexIfNotExists = false` against an index that does not exist corrupts silently.**
-> `init` does no existence check, and a missing index does not make `add` fail — OpenSearch ships
+> **`createIndexIfNotExists = false` against an index that does not exist corrupts silently when
+> `verifyOnInit` is off.** With `verifyOnInit` on (the default), `init` fails on a missing index.
+> With it off, `init` does no existence check, and a missing index does not make `add` fail — OpenSearch ships
 > with `action.auto_create_index: true`, so the first `_bulk` write creates an index from the
 > document's inferred shape. That index carries none of the mapping this module would have built:
 > under `DENSE`/`HYBRID` it has no `index.knn` setting and maps the vector as a plain `float`
@@ -404,19 +405,20 @@ naming one against a deployment that ignores it does not compile.
 > **Index-shape settings apply only when the index is created.** `dimension`, `similarityMetric`,
 > `efConstruction`, `m`, `engine` and `compressionLevel` are sent in exactly one
 > request — the `PUT /<index>` that `init` issues when the index does not yet exist. After that,
-> `init` sees the index and returns without building a mapping, so **editing any of them has no
-> effect and produces no error.**
+> `init` sees the index and returns without building a mapping, so editing them changes nothing on
+> the index.
 >
-> Nothing in a later request restates them: a `_bulk` document carries a vector, and a `knn` query
-> carries a vector and `k`. Neither mentions `space_type`, `engine` or `compression_level`, so the
-> server has nothing to disagree with. A changed `similarityMetric` keeps returning scores computed
-> under the original metric; a `compressionLevel` set to opt out of NextGen's default quantization
-> leaves the vectors quantized.
+> With `verifyOnInit` on (the default), `init` compares `dimension` against the stored mapping and
+> fails on a mismatch, unless the mapping cannot be read. **None of the other settings is checked,
+> so editing them has no effect and produces no error.** Nothing in a later request restates them:
+> a `_bulk` document carries a vector, and a `knn` query carries a vector and `k`. Neither mentions
+> `space_type`, `engine` or `compression_level`, so the server has nothing to disagree with. A
+> changed `similarityMetric` keeps returning scores computed under the original metric; a
+> `compressionLevel` set to opt out of NextGen's default quantization leaves the vectors quantized.
 >
-> `dimension` is not an exception — it is never checked against the embeddings this module sends. A
-> mismatched `dimension` beside unchanged embeddings simply works and stays wrong silently. An error
-> appears only when the *embeddings themselves* change length, at the first `add` rather than at
-> `init`.
+> With `verifyOnInit` off, `dimension` is not checked either. A mismatched `dimension` beside
+> unchanged embeddings simply works and stays wrong silently. An error appears only when the
+> *embeddings themselves* change length, at the first `add` rather than at `init`.
 >
 > To change the shape of an existing index, reindex into a new one. This module does not update
 > mappings.
@@ -430,7 +432,7 @@ naming one against a deployment that ignores it does not compile.
 |---|---|---|
 | `contentFieldName` | `"content"` | |
 | `idFieldName` | `"doc_id"` | The field carrying the logical entry id; always written, and the only identity handle on `SERVERLESS_CLASSIC` |
-| `metadataFieldName` | `"metadata"` | Set to `""` to address bare `<key>` paths — for pointing this module at a pre-existing index with a flat schema. A metadata key that would then collide with a reserved field name (`embedding`, `sparse_embedding`, `content`, `doc_id`, `chunk_type`) is rejected with an `ai:Error` rather than silently overwriting that field |
+| `metadataFieldName` | `"metadata"` | Set to `""` to address bare `<key>` paths — for pointing this module at a pre-existing index with a flat schema. A metadata key that would then collide with a reserved field name (`embedding`, `sparse_embedding`, `content`, `doc_id`, `chunk_type`) is rejected with an `ai:Error` rather than silently overwriting that field. When this module creates the index, `""` also maps every string field it does not map itself as `keyword`: those fields match exactly only, and values over 8,191 characters are not indexed |
 | `includeEmbeddingsInResults` | `true` | Set `false` to exclude every vector field the mode declares from `_source` — a meaningful bandwidth saving at high dimensions and large `topK`, and a larger one under `SPARSE`/`HYBRID` |
 | `createIndexIfNotExists` | `true` | When `false`, `init` creates nothing. See the warning under `IndexConfig` before setting it |
 | `verifyOnInit` | `true` | Checks at construction that the cluster and index can serve this store — see below. Switch off together with `createIndexIfNotExists` for construction that performs **no network I/O at all** |
@@ -455,8 +457,11 @@ themselves change length. With `verifyOnInit` on, `init` makes two reads:
 
 1. **`GET /`** for the cluster's OpenSearch version, compared against the floors this store's
    configuration actually needs — 2.11 for `hybrid`, 2.14 for raw `query_tokens`, 2.15 for
-   `twoPhaseAcceleration`, 2.16 for `efSearch`, 2.19 for `RrfFusion`. Skipped on both Serverless
-   generations, which do not answer `GET /`.
+   `twoPhaseAcceleration`, 2.16 for `efSearch`, 2.19 for `RrfFusion`. When `init` is about to
+   create the index, it also checks the `knn_vector` mapping it will send: 2.19 for the `FAISS`
+   engine with `COSINE`, 2.13 for `LUCENE` with `DOT_PRODUCT`, and 2.2 for `LUCENE` at all. An
+   existing index is not held to these, since it may use a different engine. Skipped on both
+   Serverless generations, which do not answer `GET /`.
 2. **`GET /<index>/_mapping`** for the vector field(s) the mode declares — that each exists, is the
    expected type (`knn_vector` / `rank_features`), and carries the configured `dimension`. Skipped
    when `init` just created the index, which is correct by construction. Only the vector fields are

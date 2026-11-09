@@ -58,6 +58,11 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   which member of the union the caller had picked.
 
 ### Changed
+- When `init` is about to create the index on a managed domain, `verifyOnInit` also checks the
+  floors of the `knn_vector` mapping: 2.19 for `FAISS` with `COSINE`, 2.13 for `LUCENE` with
+  `DOT_PRODUCT`, 2.2 for `LUCENE`. The default `FAISS` + `COSINE` on an older domain now fails
+  `init` with an error naming the floor, where the server used to reject the mapping. An existing
+  index is not held to these floors.
 - `createIndexIfNotExists: false` alone no longer means "no network I/O at all", because
   `verifyOnInit` now performs its own reads independently. Set both to `false` for fully offline
   construction.
@@ -218,11 +223,13 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
 ### Documentation
 - `IndexConfig` and the README now state that index-shape settings apply only at index creation.
   `dimension`, `similarityMetric`, `efConstruction`, `m`, `engine` and `compressionLevel` are
-  sent in the single `PUT /<index>` that `init` issues when the index does not
-  exist; afterwards `init` returns early and editing them has no effect and raises no error,
-  because no later request restates them. `dimension` is not an exception — it is never compared
-  against the embeddings this module sends, so a mismatched value beside unchanged embeddings stays
-  wrong silently, and an error appears only when the embeddings themselves change length.
+  sent in the single `PUT /<index>` that `init` issues when the index does not exist, and no later
+  request restates them. With `verifyOnInit` on, a changed `dimension` fails `init`; the other
+  settings are not checked, so editing them has no effect and raises no error. With it off,
+  `dimension` is unchecked too and stays wrong silently until the embeddings themselves change
+  length.
+- `Configuration.metadataFieldName` and the README now state that `""` makes an index this module
+  creates map every string field it does not map itself as an exact-match `keyword`.
 - The note claiming OpenSearch accepts `compression_level` beside a `method` block while silently
   emptying the block's `parameters` is withdrawn: tested against OpenSearch 2.19.1, the combination
   is accepted with `ef_construction`/`m` stored intact, and an incompatible pairing is rejected
