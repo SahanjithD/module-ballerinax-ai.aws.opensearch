@@ -74,7 +74,16 @@ collections) and is disabled by default. To run it, provide a `Config.toml` unde
 ```
 
 Each deployment type's tests are independently gated on its own URL being non-empty, so you can
-exercise just the one you have access to.
+exercise just the one you have access to. Two optional groups need more settings:
+
+- `managedDomainUsername` / `managedDomainPassword`: a fine-grained access control internal user,
+  for the basic auth test.
+- `serverlessNextGenAccountUrl` / `serverlessNextGenCollectionName`: a per-account NextGen endpoint
+  and the collection to reach through it.
+
+The tests sign with the default AWS credential chain. Every index they create is deleted after the
+suite; on Serverless that needs `aoss:DeleteIndex` in the data access policy, otherwise the
+leftover indexes are only logged.
 
 ## How you can contribute
 
