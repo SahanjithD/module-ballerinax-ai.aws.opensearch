@@ -40,26 +40,20 @@ isolated function testContainerClusterVersionIsReadable() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerVerificationAcceptsTheModulesOwnIndex() returns error? {
     string denseIndex = containerIndexName("verify-dense");
-    VectorStore dense = check newContainerStore(denseIndex, containerDenseMode());
-    check dense.close();
+    _ = check newContainerStore(denseIndex, containerDenseMode());
     // A second store over the same index skips creation, so verification runs.
-    VectorStore denseAgain = check newContainerStore(denseIndex, containerDenseMode(),
+    _ = check newContainerStore(denseIndex, containerDenseMode(),
             {createIndexIfNotExists: false});
-    check denseAgain.close();
 
     string sparseIndex = containerIndexName("verify-sparse");
-    VectorStore sparse = check newSparseContainerStore(sparseIndex);
-    check sparse.close();
-    VectorStore sparseAgain = check newContainerStore(sparseIndex, containerSparseMode(),
+    _ = check newSparseContainerStore(sparseIndex);
+    _ = check newContainerStore(sparseIndex, containerSparseMode(),
             {createIndexIfNotExists: false});
-    check sparseAgain.close();
 
     string hybridIndex = containerIndexName("verify-hybrid");
-    VectorStore hybrid = check newContainerStore(hybridIndex, containerHybridMode());
-    check hybrid.close();
-    VectorStore hybridAgain = check newContainerStore(hybridIndex, containerHybridMode(),
+    _ = check newContainerStore(hybridIndex, containerHybridMode());
+    _ = check newContainerStore(hybridIndex, containerHybridMode(),
             {createIndexIfNotExists: false});
-    check hybridAgain.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -77,8 +71,7 @@ isolated function testContainerVerificationRejectsAMissingIndex() {
 @test:Config {groups: ["docker"]}
 isolated function testContainerVerificationRejectsAModeMismatch() returns error? {
     string indexName = containerIndexName("verify-mismatch");
-    VectorStore dense = check newContainerStore(indexName, containerDenseMode());
-    check dense.close();
+    _ = check newContainerStore(indexName, containerDenseMode());
 
     VectorStore|ai:Error result = newContainerStore(indexName, containerSparseMode(),
             {createIndexIfNotExists: false});
@@ -92,8 +85,7 @@ isolated function testContainerVerificationRejectsAModeMismatch() returns error?
 @test:Config {groups: ["docker"]}
 isolated function testContainerVerificationRejectsADriftedDimension() returns error? {
     string indexName = containerIndexName("verify-dimension");
-    VectorStore store = check newContainerStore(indexName, containerDenseMode());
-    check store.close();
+    _ = check newContainerStore(indexName, containerDenseMode());
 
     DenseSearch widened = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION + 1}};
     VectorStore|ai:Error result = newContainerStore(indexName, widened, {createIndexIfNotExists: false});
@@ -107,8 +99,7 @@ isolated function testContainerVerificationRejectsADriftedDimension() returns er
 @test:Config {groups: ["docker"]}
 isolated function testContainerVerificationRejectsARenamedVectorField() returns error? {
     string indexName = containerIndexName("verify-renamed");
-    VectorStore store = check newContainerStore(indexName, containerDenseMode());
-    check store.close();
+    _ = check newContainerStore(indexName, containerDenseMode());
 
     DenseSearch renamed = {
         queryMode: ai:DENSE,
@@ -123,10 +114,3 @@ isolated function testContainerVerificationRejectsARenamedVectorField() returns 
             string `the error should name the missing field, got: ${result.message()}`);
 }
 
-@test:Config {groups: ["docker"]}
-isolated function testContainerVerificationCanBeSwitchedOff() returns error? {
-    string indexName = containerIndexName("verify-off");
-    VectorStore store = check newContainerStore(indexName, containerSparseMode(),
-            {createIndexIfNotExists: false, verifyOnInit: false});
-    check store.close();
-}

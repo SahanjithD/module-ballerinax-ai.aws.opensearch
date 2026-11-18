@@ -42,7 +42,6 @@ isolated function testContainerQueryOrdersByProximity() returns error? {
     test:assertEquals(matches.length(), 4);
     test:assertEquals(matches[0].id, "nearest", "results should come back most-similar first");
     test:assertEquals(matches[3].id, "orthogonal", "the least similar entry should come back last");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -54,41 +53,38 @@ isolated function testContainerQueryTopKLimitsResults() returns error? {
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 2});
     test:assertEquals(matches.length(), 2, "'topK' should reach the server as both 'k' and 'size'");
     assertIdsEqual(matches, ["nearest", "near"], "the two nearest entries should be returned");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryNegativeTopKReturnsEverything() returns error? {
     string indexName = containerIndexName("q-all");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    Configuration config = {maxResultWindow: 100};
+    StoreConfiguration config = {maxResultWindow: 100};
     VectorStore store = check newContainerStore(indexName, configMode, config);
     check seedProximityEntries(store);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: -1});
     test:assertEquals(matches.length(), 4, "a negative 'topK' means 'return everything'");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryMaxResultWindowCapsReturnAll() returns error? {
     string indexName = containerIndexName("q-window");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    Configuration config = {maxResultWindow: 2};
+    StoreConfiguration config = {maxResultWindow: 2};
     VectorStore store = check newContainerStore(indexName, configMode, config);
     check seedProximityEntries(store);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: -1});
     test:assertEquals(matches.length(), 2,
             "'return everything' should be capped at 'maxResultWindow', not the index size");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryExcludesEmbeddingsWhenConfigured() returns error? {
     string indexName = containerIndexName("q-noembed");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    Configuration config = {includeEmbeddingsInResults: false};
+    StoreConfiguration config = {includeEmbeddingsInResults: false};
     VectorStore store = check newContainerStore(indexName, configMode, config);
     check store.add([entry("e", queryVector(), "content survives")]);
 
@@ -98,7 +94,6 @@ isolated function testContainerQueryExcludesEmbeddingsWhenConfigured() returns e
             "the '_source' exclusion should leave the returned embedding empty");
     test:assertEquals(matches[0].chunk.content, "content survives",
             "excluding the vector must not affect the rest of the document");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -109,7 +104,6 @@ isolated function testContainerQueryIncludesEmbeddingsByDefault() returns error?
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 1});
     test:assertEquals(matches[0].embedding, vec(0.6, 0.8));
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -130,7 +124,6 @@ isolated function testContainerQueryRawCosineScore() returns error? {
     assertScoreCloseTo(matches[0].similarityScore, 1.0, "an identical vector should score 1.0 raw");
     assertScoreCloseTo(matches[1].similarityScore, 0.5, "an orthogonal vector should score 0.5 raw");
     assertScoreCloseTo(matches[2].similarityScore, 0.0, "an opposite vector should score 0.0 raw");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -150,7 +143,6 @@ isolated function testContainerQueryNormalizedCosineScore() returns error? {
     assertScoreCloseTo(matches[0].similarityScore, 1.0, "an identical vector normalizes to 1.0");
     assertScoreCloseTo(matches[1].similarityScore, 0.0, "an orthogonal vector normalizes to 0.0");
     assertScoreCloseTo(matches[2].similarityScore, -1.0, "an opposite vector normalizes to -1.0");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -168,7 +160,6 @@ isolated function testContainerQueryNormalizedCosineScoreOnLucene() returns erro
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 2});
     assertScoreCloseTo(matches[0].similarityScore, 1.0, "an identical vector normalizes to 1.0");
     assertScoreCloseTo(matches[1].similarityScore, -1.0, "an opposite vector normalizes to -1.0");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -188,7 +179,6 @@ isolated function testContainerQueryWithoutEmbeddingHasZeroScore() returns error
     ai:VectorMatch[] all = check store.query({topK: 10});
     test:assertEquals(all.length(), 1);
     test:assertEquals(all[0].similarityScore, 0.0, "a 'match_all' match has no meaningful score");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -200,7 +190,6 @@ isolated function testContainerQueryNeitherEmbeddingNorFiltersReturnsAll() retur
     ai:VectorMatch[] matches = check store.query({topK: 10});
     assertIdsEqual(matches, ["nearest", "near", "far", "orthogonal"],
             "with neither embedding nor filters, every entry should be returned");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -212,19 +201,17 @@ isolated function testContainerQueryOnEmptyIndexReturnsNoMatches() returns error
     test:assertEquals(byVector.length(), 0);
     ai:VectorMatch[] all = check store.query({topK: 10});
     test:assertEquals(all.length(), 0);
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryRejectsTopKAboveMaxResultWindow() returns error? {
     string indexName = containerIndexName("q-overwindow");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    Configuration config = {maxResultWindow: 5};
+    StoreConfiguration config = {maxResultWindow: 5};
     VectorStore store = check newContainerStore(indexName, configMode, config);
 
     ai:VectorMatch[]|ai:Error result = store.query({embedding: queryVector(), topK: 6});
     test:assertTrue(result is ai:Error, "'topK' above 'maxResultWindow' should be rejected client-side");
-    check store.close();
 }
 
 # Asserts a similarity score matches an expected value, allowing for float arithmetic on the

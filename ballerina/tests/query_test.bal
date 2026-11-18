@@ -133,7 +133,7 @@ isolated function testTopKAboveMaxResultWindowIsError() {
 @test:Config
 isolated function testCustomMaxResultWindowRaisesTheCeiling() returns error? {
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 3}};
-    Configuration config = {maxResultWindow: 50000};
+    StoreConfiguration config = {maxResultWindow: 50000};
     ai:VectorStoreQuery query = {topK: 20000};
     json body = check buildSearchBody(query, configMode, config);
     map<json> bodyMap = check asJsonMap(body);
@@ -152,7 +152,7 @@ isolated function testSourceIncludesEmbeddingsByDefault() returns error? {
 @test:Config
 isolated function testSourceExcludesEmbeddingsWhenConfigured() returns error? {
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 3}};
-    Configuration config = {includeEmbeddingsInResults: false};
+    StoreConfiguration config = {includeEmbeddingsInResults: false};
     json body = check buildSearchBody({}, configMode, config);
     map<json> bodyMap = check asJsonMap(body);
     map<json> sourceDirective = check asJsonMap(bodyMap["_source"]);
@@ -239,7 +239,7 @@ isolated function testHitToVectorMatchMissingEmbeddingIsEmptyVector() returns er
 @test:Config
 isolated function testHitToVectorMatchFlatMetadata() returns error? {
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 3}};
-    Configuration config = {metadataFieldName: ""};
+    StoreConfiguration config = {metadataFieldName: ""};
     SearchHit hit = {
         _id: "1",
         _score: 1.0,

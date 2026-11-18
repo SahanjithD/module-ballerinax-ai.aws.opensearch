@@ -84,7 +84,6 @@ isolated function testContainerHybridInlinePipelineIsAcceptedAndScoresAreSane() 
         test:assertTrue(hybridMatch.similarityScore <= 1.0,
                 string `min_max + arithmetic_mean yields (0.0, 1.0], got: ${hybridMatch.similarityScore}`);
     }
-    check store.close();
 }
 
 // Negative control for the test above: without the pipeline, the sentinel scores leak through.
@@ -93,7 +92,6 @@ isolated function testContainerHybridWithoutPipelineLeaksSentinelScores() return
     string indexName = containerIndexName("hybrid-nopipe");
     VectorStore store = check newContainerStore(indexName, containerHybridMode());
     check store.add(hybridSeedEntries());
-    check store.close();
 
     // The module's own body with only the pipeline removed.
     map<json> body = check buildSearchBody(hybridContainerQuery(), containerHybridMode(), {}).ensureType();
@@ -125,17 +123,14 @@ isolated function testContainerHybridWeightsShiftRanking() returns error? {
     string indexName = containerIndexName("hybrid-weights");
     VectorStore store = check newContainerStore(indexName, containerHybridMode());
     check store.add(hybridSeedEntries());
-    check store.close();
 
     VectorStore denseHeavy = check newContainerStore(indexName,
             containerHybridMode({denseWeight: 0.9, sparseWeight: 0.1}), {createIndexIfNotExists: false});
     ai:VectorMatch[] denseFirst = check denseHeavy.query(hybridContainerQuery());
-    check denseHeavy.close();
 
     VectorStore sparseHeavy = check newContainerStore(indexName,
             containerHybridMode({denseWeight: 0.1, sparseWeight: 0.9}), {createIndexIfNotExists: false});
     ai:VectorMatch[] sparseFirst = check sparseHeavy.query(hybridContainerQuery());
-    check sparseHeavy.close();
 
     test:assertEquals(denseFirst[0].id, "dense-favoured",
             "weighting the dense sub-query at 0.9 should surface the vector-identical entry");
@@ -159,7 +154,6 @@ isolated function testContainerHybridFilterAppliesToBothSubQueries() returns err
     test:assertEquals(matches.length(), 1,
             string `the French entry must be filtered out of both sub-queries, got: ${matches.length()}`);
     test:assertEquals(matches[0].id, "dense-favoured");
-    check store.close();
 }
 
 // A named pipeline sent as `?search_pipeline=`.
@@ -188,7 +182,6 @@ isolated function testContainerHybridNamedPipelineViaQueryParameter() returns er
                 string `a named pipeline should normalize just as the inline one does, got: ` +
                 string `${hybridMatch.similarityScore}`);
     }
-    check store.close();
     json _ = check cl->delete(string `/_search/pipeline/${pipelineName}`);
 }
 
@@ -205,7 +198,6 @@ isolated function testContainerHybridWithoutEmbeddingReturnsEveryEntry() returns
     test:assertEquals(matches.length(), 1);
     test:assertEquals(matches[0].similarityScore, 0.0,
             "a query with no embedding scores nothing, so no pipeline is sent and the score is 0.0");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -221,7 +213,6 @@ isolated function testContainerHybridRoundTripsBothHalves() returns error? {
     }
     test:assertEquals(embedding.dense.length(), CONTAINER_DIMENSION);
     test:assertEquals(embedding.sparse.indices, [1055]);
-    check store.close();
 }
 
 // --- reciprocal rank fusion ----------------------------------------------------------------------
@@ -244,7 +235,6 @@ isolated function testContainerRrfFusionIsAcceptedAndScoresAreSane() returns err
                 string `two sub-queries at rank 1 cap the RRF score at 2/(60+1), got: ` +
                 string `${rrfMatch.similarityScore}`);
     }
-    check store.close();
 }
 
 // The technique alone is portable across neural-search 3.1; see `RrfFusion`.
@@ -276,5 +266,4 @@ isolated function testContainerEfSearchIsAcceptedByTheDenseSubQuery() returns er
 
     ai:VectorMatch[] matches = check store.query(hybridContainerQuery());
     test:assertEquals(matches.length(), 2, "raising ef_search must not change which documents match");
-    check store.close();
 }

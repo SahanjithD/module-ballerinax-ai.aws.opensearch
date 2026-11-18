@@ -63,6 +63,11 @@ isolated function optionalHeader(http:Request request, string name) returns stri
 listener http:Listener wireListener = new (WIRE_PORT);
 
 service / on wireListener {
+    // Answers the construction-time `_mapping` read.
+    isolated resource function get [string index]/_mapping() returns json => {
+        [index]: {"mappings": {"properties": {"embedding": {"type": "knn_vector", "dimension": WIRE_DIMENSION}}}}
+    };
+
     isolated resource function post [string... path](http:Request request) returns http:Ok {
         byte[]|http:ClientError body = request.getBinaryPayload();
         recordWireCapture({
@@ -79,8 +84,7 @@ service / on wireListener {
 isolated function wireStore() returns VectorStore|ai:Error =>
     new (string `http://localhost:${WIRE_PORT}`, CONTAINER_REGION, "wire-index", containerDeployment(),
     {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}},
-    // The listener only implements `_bulk`, so construction must not read the cluster.
-    {createIndexIfNotExists: false, verifyOnInit: false}
+    {createIndexIfNotExists: false}
 );
 
 isolated function wireEmbedding() returns ai:Vector {
@@ -113,7 +117,7 @@ isolated function testLargeBodyIsSentAsUnchunkedHttp11() returns error? {
 isolated function testCallerSuppliedHttpConfigCannotUnpinTheFraming() returns error? {
     VectorStore store = check new (string `http://localhost:${WIRE_PORT}`, CONTAINER_REGION, "wire-index",
         containerDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}},
-        {createIndexIfNotExists: false, verifyOnInit: false},
+        {createIndexIfNotExists: false},
         {httpVersion: http:HTTP_2_0, http1Settings: {chunking: http:CHUNKING_ALWAYS}}
     );
     check store.add([{id: "wire-2", embedding: wireEmbedding(), chunk: <ai:TextChunk>{content: "framing"}}]);

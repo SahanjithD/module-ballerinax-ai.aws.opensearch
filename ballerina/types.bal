@@ -113,7 +113,8 @@ public type ServerlessNextGenDeployment record {|
 |};
 
 // Applied only by the `PUT /<index>` that `init` sends when the index is missing; reindex to
-// change them. `verifyOnInit` catches a changed `dimension`, but none of the other fields.
+// change them. `init` catches a changed `dimension` on an existing index, but none of the other
+// fields.
 # Shape of the `knn_vector` field, applied when the index is created.
 public type IndexConfig record {|
     // No client-side ceiling: AWS documents both 10,000 and 16,000, so the server decides.
@@ -265,7 +266,7 @@ public type RetryConfig record {|
 |};
 
 # Settings honored the same way under every search mode and deployment.
-public type Configuration record {|
+public type StoreConfiguration record {|
     # Field holding the chunk content.
     string contentFieldName = "content";
     // Duplicates `_id` where a custom `_id` can be written; on Serverless Classic it is the only
@@ -283,14 +284,10 @@ public type Configuration record {|
     // 10,000 is OpenSearch's default `index.max_result_window`.
     # The `size` used when `topK < 1`, and the cap on an explicit `topK`.
     int maxResultWindow = 10000;
-    // With this off, a missing index is not caught on write: `action.auto_create_index` builds one
-    // without the vector mapping. `verifyOnInit` catches that at construction.
+    // With this off, `init` fails on a missing index rather than let the first write auto-create
+    // one without the vector mapping (`action.auto_create_index`).
     # Whether `init` creates the index when it does not exist.
     boolean createIndexIfNotExists = true;
-    // A check that runs and disagrees fails `init`. One that cannot run (e.g. no permission) only
-    // logs a warning, since refusing a store that would have worked is the worse outcome.
-    # Whether `init` checks the cluster version and the index's vector fields against this store.
-    boolean verifyOnInit = true;
     # Retry behavior for transient failures.
     RetryConfig retryConfig = {};
 |};

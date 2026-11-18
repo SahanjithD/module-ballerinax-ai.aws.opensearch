@@ -40,7 +40,7 @@ public isolated class VectorStore {
     private final string indexName;
     private final Deployment & readonly deployment;
     private final SearchMode & readonly searchMode;
-    private final Configuration & readonly config;
+    private final StoreConfiguration & readonly config;
 
     # Initializes the store and, by default, creates and checks the index.
     #
@@ -59,7 +59,7 @@ public isolated class VectorStore {
             @display {label: "Index Name"} string indexName,
             @display {label: "Deployment Configuration"} Deployment deploymentConfig,
             @display {label: "Search Mode"} SearchMode searchMode = DEFAULT_SEARCH_MODE,
-            @display {label: "Store Configuration"} Configuration storeConfig = {},
+            @display {label: "Store Configuration"} StoreConfiguration storeConfig = {},
             @display {label: "HTTP Configuration"} http:ClientConfiguration httpConfig = {})
             returns ai:Error? {
         check validateConfiguration(serviceUrl, deploymentConfig, searchMode, storeConfig);
@@ -158,14 +158,6 @@ public isolated class VectorStore {
         }
     }
 
-    # Releases the AWS credential provider's refresh threads and connections. Not called
-    # automatically, since `ai:VectorStore` has no lifecycle hook.
-    #
-    # + return - An `ai:Error` if releasing them fails
-    public isolated function close() returns ai:Error? {
-        return self.transport.close();
-    }
-
     // `_delete_by_query` is not available on AOSS, so internal `_id`s are looked up first.
     // Entries added within the last refresh interval are not found yet and survive.
     # Deletes on Serverless Classic: looks up the internal `_id`s, then bulk-deletes them.
@@ -186,7 +178,7 @@ public isolated class VectorStore {
                         string `returned ${hitCount} documents, meeting the configured 'maxResultWindow' ` +
                         string `(${self.config.maxResultWindow}) exactly. Because 'add' is append-only on ` +
                         "Serverless Classic, there may be more duplicate documents than this lookup could " +
-                        "see, which would be left undeleted. Raise 'Configuration.maxResultWindow' and retry");
+                        "see, which would be left undeleted. Raise 'StoreConfiguration.maxResultWindow' and retry");
             }
             foreach SearchHit hit in searchResponse.hits.hits {
                 internalIds.push(hit._id);
@@ -222,16 +214,14 @@ public isolated class VectorStore {
 # + deployment - The target deployment
 # + return - An `ai:Error` if the cluster or index cannot serve this store, otherwise `()`
 isolated function prepareIndex(OpenSearchTransport transport, string indexName, SearchMode searchMode,
-        Configuration config, Deployment deployment) returns ai:Error? {
+        StoreConfiguration config, Deployment deployment) returns ai:Error? {
     boolean missing = false;
     if config.createIndexIfNotExists {
         missing = !check transport.indexExists(indexName);
     }
-    if config.verifyOnInit {
-        check verifyClusterVersion(transport, searchMode, deployment, missing);
-    }
+    check verifyClusterVersion(transport, searchMode, deployment, missing);
     boolean created = missing && check createMissingIndex(transport, indexName, searchMode, config, deployment);
-    if config.verifyOnInit && !created {
+    if !created {
         check verifyIndexMapping(transport, indexName, searchMode);
     }
 }
@@ -244,7 +234,7 @@ isolated function prepareIndex(OpenSearchTransport transport, string indexName, 
 # + config - The vector store configuration
 # + return - An `ai:Error` naming the first failing rule, otherwise `()`
 isolated function validateConfiguration(string serviceUrl, Deployment deployment,
-        SearchMode searchMode, Configuration config) returns ai:Error? {
+        SearchMode searchMode, StoreConfiguration config) returns ai:Error? {
     if searchMode is SparseSearch {
         if searchMode.maxQueryTokens < 1 {
             return error(string `'SparseSearch.maxQueryTokens' must be a positive integer, got: ` +
@@ -271,10 +261,10 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
     check validateFieldNames(searchMode, config);
     string _ = check extractHost(serviceUrl);
     if config.maxBulkSize < 1 {
-        return error(string `'Configuration.maxBulkSize' must be a positive integer, got: ${config.maxBulkSize}`);
+        return error(string `'StoreConfiguration.maxBulkSize' must be a positive integer, got: ${config.maxBulkSize}`);
     }
     if config.maxResultWindow < 1 {
-        return error(string `'Configuration.maxResultWindow' must be a positive integer, got: ` +
+        return error(string `'StoreConfiguration.maxResultWindow' must be a positive integer, got: ` +
                 string `${config.maxResultWindow}`);
     }
     if deployment is ServerlessNextGenDeployment {
@@ -300,7 +290,7 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
 # + searchMode - The search mode, supplying whichever vector field names it declares
 # + config - The vector store configuration
 # + return - An `ai:Error` naming the colliding field, otherwise `()`
-isolated function validateFieldNames(SearchMode searchMode, Configuration config) returns ai:Error? {
+isolated function validateFieldNames(SearchMode searchMode, StoreConfiguration config) returns ai:Error? {
     string[] names = [config.contentFieldName, config.idFieldName, CHUNK_TYPE_FIELD];
     names.push(...vectorFieldNamesOf(searchMode));
     // `""` selects a flat schema with no metadata field; `buildEntrySource` checks keys instead.
@@ -312,7 +302,7 @@ isolated function validateFieldNames(SearchMode searchMode, Configuration config
     foreach string name in names {
         if name.trim() == "" {
             return error("Document field names must not be blank; only " +
-                    "'Configuration.metadataFieldName' may be \"\", which selects a flat schema");
+                    "'StoreConfiguration.metadataFieldName' may be \"\", which selects a flat schema");
         }
         if seen.indexOf(name) !is () {
             return error(string `The document field name '${name}' is used more than once. The ` +

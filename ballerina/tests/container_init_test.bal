@@ -25,9 +25,8 @@ isolated function testContainerInitCreatesIndex() returns error? {
     string indexName = containerIndexName("init-create");
     test:assertFalse(check rawIndexExists(indexName), "the index must not exist before 'init'");
 
-    VectorStore store = check newContainerStore(indexName);
+    _ = check newContainerStore(indexName);
     test:assertTrue(check rawIndexExists(indexName), "'init' should have created the index");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -41,39 +40,38 @@ isolated function testContainerInitOnExistingIndexIsANoOp() returns error? {
     ai:VectorMatch[] matches = check second.query({embedding: queryVector(), topK: 10});
     test:assertEquals(matches.length(), 1, "the second store should see the first store's data");
 
-    check first.close();
-    check second.close();
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerCreateIndexIfNotExistsFalseSkipsCreation() returns error? {
     string indexName = containerIndexName("init-nocreate");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    // `verifyOnInit` is off too, or its mapping read would fail on the missing index.
-    Configuration config = {createIndexIfNotExists: false, verifyOnInit: false};
-    VectorStore store = check newContainerStore(indexName, configMode, config);
+    VectorStore|ai:Error result = newContainerStore(indexName, configMode, {createIndexIfNotExists: false});
+    if result !is ai:Error {
+        test:assertFail("a missing index that may not be created should fail construction");
+    }
+    test:assertTrue(result.message().includes("createIndexIfNotExists"),
+            string `the error should name the setting, got: ${result.message()}`);
     test:assertFalse(check rawIndexExists(indexName),
             "'createIndexIfNotExists: false' must create nothing");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerMappingEnablesKnn() returns error? {
     string indexName = containerIndexName("init-knn");
-    VectorStore store = check newContainerStore(indexName);
+    _ = check newContainerStore(indexName);
 
     map<json> settings = check indexSettings(indexName);
     // OpenSearch returns settings as strings.
     test:assertEquals(settings["knn"].toString(), "true",
             "'index.knn' must be enabled, or a 'knn' query is rejected outright");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerMappingVectorFieldShape() returns error? {
     string indexName = containerIndexName("init-vecfield");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION, efConstruction: 200, m: 24}};
-    VectorStore store = check newContainerStore(indexName, configMode, {}, containerDeployment(FAISS));
+    _ = check newContainerStore(indexName, configMode, {}, containerDeployment(FAISS));
 
     map<json> mappings = check indexMapping(indexName);
     map<json> properties = check mapField(mappings, "properties");
@@ -88,7 +86,6 @@ isolated function testContainerMappingVectorFieldShape() returns error? {
     map<json> parameters = check mapField(method, "parameters");
     test:assertEquals(parameters["ef_construction"], 200);
     test:assertEquals(parameters["m"], 24);
-    check store.close();
 }
 
 @test:Config {groups: ["docker"], dataProvider: spaceTypeDataProvider}
@@ -96,7 +93,7 @@ isolated function testContainerMappingSpaceType(ai:SimilarityMetric metric, stri
         returns error? {
     string indexName = containerIndexName("init-space");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION, similarityMetric: metric}};
-    VectorStore store = check newContainerStore(indexName, configMode);
+    _ = check newContainerStore(indexName, configMode);
 
     map<json> mappings = check indexMapping(indexName);
     map<json> properties = check mapField(mappings, "properties");
@@ -104,7 +101,6 @@ isolated function testContainerMappingSpaceType(ai:SimilarityMetric metric, stri
     map<json> method = check mapField(vectorField, "method");
     test:assertEquals(method["space_type"], expectedSpaceType,
             string `'${metric}' should map to the '${expectedSpaceType}' space`);
-    check store.close();
 }
 
 isolated function spaceTypeDataProvider() returns [ai:SimilarityMetric, string][] => [
@@ -128,7 +124,6 @@ isolated function testContainerLuceneEngineIsAccepted() returns error? {
     check store.add([entry("a", queryVector())]);
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 1});
     test:assertEquals(matches.length(), 1);
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -139,7 +134,7 @@ isolated function testContainerMappingHonoursCustomFieldNames() returns error? {
         indexConfig: {dimension: CONTAINER_DIMENSION},
         vectorFieldName: "vec"
     };
-    Configuration config = {contentFieldName: "body", idFieldName: "entry_id", metadataFieldName: "props"};
+    StoreConfiguration config = {contentFieldName: "body", idFieldName: "entry_id", metadataFieldName: "props"};
     VectorStore store = check newContainerStore(indexName, configMode, config);
 
     map<json> mappings = check indexMapping(indexName);
@@ -158,7 +153,6 @@ isolated function testContainerMappingHonoursCustomFieldNames() returns error? {
     test:assertEquals(matches.length(), 1);
     test:assertEquals(matches[0].id, "custom");
     test:assertEquals((<ai:TextChunk>matches[0].chunk).content, "renamed fields");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -175,7 +169,6 @@ isolated function testContainerStringMetadataIsMappedAsKeyword() returns error? 
     // As analyzed `text`, every `term` filter on it would match nothing.
     test:assertEquals(language["type"], "keyword",
             "the dynamic template must map string metadata to 'keyword', not 'text'");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -197,8 +190,7 @@ isolated function testContainerConcurrentInitOnSameIndexSucceeds() returns error
 }
 
 isolated function initAndClose(string indexName) returns ai:Error? {
-    VectorStore store = check newContainerStore(indexName);
-    return store.close();
+    _ = check newContainerStore(indexName);
 }
 
 isolated function errorText(ai:Error? err) returns string => err is ai:Error ? err.message() : "";

@@ -27,7 +27,7 @@ const int BULK_CHUNK_SIZE = 100;
 isolated function testContainerBulkAddChunksLargeBatch() returns error? {
     string indexName = containerIndexName("bulk-large");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    Configuration config = {maxBulkSize: BULK_CHUNK_SIZE};
+    StoreConfiguration config = {maxBulkSize: BULK_CHUNK_SIZE};
     VectorStore store = check newContainerStore(indexName, configMode, config);
 
     ai:VectorEntry[] entries = [];
@@ -39,14 +39,13 @@ isolated function testContainerBulkAddChunksLargeBatch() returns error? {
     // Three `_bulk` calls.
     test:assertEquals(check documentCount(indexName), BULK_ENTRY_COUNT,
             "every entry across every chunk should have been indexed");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerBulkAddStopsAtTheFailingChunk() returns error? {
     string indexName = containerIndexName("bulk-stop");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    Configuration config = {maxBulkSize: 2};
+    StoreConfiguration config = {maxBulkSize: 2};
     VectorStore store = check newContainerStore(indexName, configMode, config);
 
     // Batches are [ok-1, bad] and [ok-3, ok-4]; failing on the first means the second is never
@@ -65,7 +64,6 @@ isolated function testContainerBulkAddStopsAtTheFailingChunk() returns error? {
     }
     test:assertEquals(check documentCount(indexName), 1,
             "only the first chunk's valid entry should have been indexed");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -85,7 +83,6 @@ isolated function testContainerBulkPartialFailureIsDetectedAtHttp200() returns e
                 string `the error should name the failing entry, got: ${result.message()}`);
     }
     test:assertEquals(check documentCount(indexName), 1, "the valid entry in the batch is still indexed");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -106,5 +103,4 @@ isolated function testContainerBulkDeleteChunkIsAtomicPerItem() returns error? {
     // The ghost ids come back `not_found`, which is not a failure.
     check store.delete([...ids, "ghost-1", "ghost-2"]);
     test:assertEquals(check documentCount(indexName), 0);
-    check store.close();
 }

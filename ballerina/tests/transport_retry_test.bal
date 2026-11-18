@@ -54,6 +54,11 @@ isolated function takeRetryCaptures() returns RetryCapture[] {
 listener http:Listener retryListener = new (RETRY_PORT);
 
 service / on retryListener {
+    // Answers the construction-time `_mapping` read, so only `_bulk` attempts are recorded.
+    isolated resource function get [string index]/_mapping() returns json => {
+        [index]: {"mappings": {"properties": {"embedding": {"type": "knn_vector", "dimension": CONTAINER_DIMENSION}}}}
+    };
+
     isolated resource function post [string... path](http:Request request)
             returns http:Ok|http:ServiceUnavailable {
         byte[]|http:ClientError body = request.getBinaryPayload();
@@ -76,7 +81,7 @@ isolated function testRetryIsSignedAfresh() returns error? {
     // attempts apart.
     VectorStore store = check new (string `http://localhost:${RETRY_PORT}`, CONTAINER_REGION, "retry-index",
         containerDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}},
-        {createIndexIfNotExists: false, verifyOnInit: false, retryConfig: {maxRetries: 1, initialDelay: 1.1}}
+        {createIndexIfNotExists: false, retryConfig: {maxRetries: 1, initialDelay: 1.1}}
     );
     check store.add([entry("retry-1", vec(1.0))]);
 

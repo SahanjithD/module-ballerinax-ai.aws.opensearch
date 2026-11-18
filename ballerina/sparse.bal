@@ -101,7 +101,7 @@ isolated function sparseFromRankFeatures(map<json> features, string id) returns 
             return error(string `Failed to parse the stored sparse embedding for entry '${id}': the ` +
                     string `token '${token}' is not an integer index. 'ai:SparseVector.indices' is ` +
                     "'int[]', so a text-token sparse field written outside this module cannot be " +
-                    "represented; set 'Configuration.includeEmbeddingsInResults' to false to skip " +
+                    "represented; set 'StoreConfiguration.includeEmbeddingsInResults' to false to skip " +
                     "reading it");
         }
         // A whole-numbered weight can come back as a JSON integer.

@@ -20,14 +20,16 @@
 import ballerina/ai;
 import ballerina/test;
 
-// Verification is off too, since it would refuse to construct the store over a missing index.
-# A store over an index that does not exist and will not be created.
+// `init` refuses a missing index, so the index is created and then deleted under the store.
+# A store whose index has been deleted after construction.
 #
-# + indexName - The index that will not exist
-# + return - The store, or an `ai:Error`
-isolated function storeOnMissingIndex(string indexName) returns VectorStore|ai:Error =>
-    newContainerStore(indexName, containerDenseMode(),
-            {createIndexIfNotExists: false, verifyOnInit: false});
+# + indexName - The index to create and then delete
+# + return - The store, or an error
+isolated function storeOnMissingIndex(string indexName) returns VectorStore|error {
+    VectorStore store = check newContainerStore(indexName, containerDenseMode());
+    check rawDeleteIndex(indexName);
+    return store;
+}
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryOnMissingIndexMapsTo404() returns error? {
@@ -43,7 +45,6 @@ isolated function testContainerQueryOnMissingIndexMapsTo404() returns error? {
             "OpenSearch's own error classification should be carried through");
     test:assertTrue(result.message().includes("createIndexIfNotExists"),
             string `the 404 hint should point at the relevant setting, got: ${result.message()}`);
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -59,7 +60,6 @@ isolated function testContainerDeleteOnMissingIndexIsReported() returns error? {
     // an `error` object and counts as a failure.
     test:assertTrue(result.message().includes("no such index"),
             string `the server's reason should be preserved, got: ${result.message()}`);
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -86,7 +86,6 @@ isolated function testContainerAddOnMissingIndexAutoCreatesAnUnusableIndex() ret
         test:assertFail("a k-NN query against an auto-created index should fail");
     }
     test:assertEquals(queryResult.detail()["status"], 400);
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -107,7 +106,6 @@ isolated function testContainerDimensionMismatchIsReported() returns error? {
     // The useful numbers are only in the item's nested `caused_by`.
     test:assertTrue(result.message().includes("Expected: 4") && result.message().includes("Given: 2"),
             string `the nested cause carries the only actionable detail, got: ${result.message()}`);
-    check store.close();
 }
 
 // A shard-level failure says only `all shards failed`; the explanation is in `root_cause[0]`.
@@ -130,7 +128,6 @@ isolated function testContainerQueryDimensionMismatchSurfacesRootCause() returns
     // The wrapper's type is kept, with the specific one beside it.
     test:assertEquals(result.detail()["openSearchErrorType"], "search_phase_execution_exception");
     test:assertEquals(result.detail()["openSearchRootCauseType"], "query_shard_exception");
-    check store.close();
 }
 
 // A 404's `root_cause` repeats the outer reason, which must not be appended twice.
@@ -149,7 +146,6 @@ isolated function testContainerNonWrapperErrorIsNotDuplicated() returns error? {
             string `a self-referential root cause should not be appended to itself, got: ${message}`);
     test:assertEquals(result.detail()["openSearchRootCauseType"], (),
             "there is no nested classification to carry on a non-wrapper error");
-    check store.close();
 }
 
 // The failing entry is named by the caller's id, and successful entries are left out.
@@ -173,7 +169,6 @@ isolated function testContainerBulkFailureNamesTheCallersEntry() returns error? 
             string `the failing entry should be named by the caller's own id, got: ${message}`);
     test:assertFalse(message.includes("good-0") || message.includes("good-2"),
             string `entries that succeeded should not appear, got: ${message}`);
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -184,7 +179,6 @@ isolated function testContainerCreateIndexOnBadMappingIsReported() returns error
     VectorStore|ai:Error result = newContainerStore(indexName, configMode);
 
     if result !is ai:Error {
-        check result.close();
         test:assertFail("an out-of-range dimension should fail index creation");
     }
     test:assertEquals(result.detail()["status"], 400);
@@ -195,13 +189,12 @@ isolated function testContainerCreateIndexOnBadMappingIsReported() returns error
 isolated function testContainerUnreachableEndpointFailsAfterRetries() returns error? {
     // Nothing listens on 9299, and with no retries there is no backoff to wait out.
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    Configuration config = {retryConfig: {maxRetries: 0}};
+    StoreConfiguration config = {retryConfig: {maxRetries: 0}};
     VectorStore|ai:Error result = new ("http://localhost:9299", CONTAINER_REGION, "unreachable",
         containerDeployment(), configMode, config
     );
 
     if result !is ai:Error {
-        check result.close();
         test:assertFail("construction against an unreachable endpoint should fail");
     }
     test:assertTrue(result.message().includes("attempt"),

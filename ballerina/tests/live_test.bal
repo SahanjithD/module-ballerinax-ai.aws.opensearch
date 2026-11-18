@@ -114,7 +114,6 @@ isolated function testManagedDomainAddQueryDeleteRoundTrip() returns error? {
     boolean gone = check pollUntilGone(store, id, 15);
     test:assertTrue(gone, "the entry should be gone immediately after delete on a managed domain");
 
-    check store.close();
 }
 
 @test:Config {groups: ["live"], enable: isLiveServer}
@@ -142,7 +141,6 @@ isolated function testManagedDomainSameIdTwiceUpserts() returns error? {
     test:assertEquals(occurrences, 1, "re-adding the same id on a managed domain must upsert, not duplicate");
 
     check store.delete(id);
-    check store.close();
 }
 
 @test:Config {groups: ["live"], enable: isLiveServer}
@@ -180,7 +178,6 @@ isolated function testManagedDomainFilteredQuery() returns error? {
     test:assertEquals(matches[0].id, matchingId);
 
     check store.delete([matchingId, otherId]);
-    check store.close();
 }
 
 @test:Config {groups: ["live"], enable: isLiveServer}
@@ -212,7 +209,6 @@ isolated function testServerlessClassicSameIdTwiceIsAppendOnly() returns error? 
             "re-adding the same id on Serverless Classic is append-only and must produce two hits");
 
     check store.delete(id);
-    check store.close();
 }
 
 @test:Config {groups: ["live"], enable: isLiveServer}
@@ -243,5 +239,4 @@ isolated function testServerlessNextGenSameIdTwiceUpserts() returns error? {
     test:assertEquals(occurrences, 1, "re-adding the same id on Serverless NextGen must upsert, not duplicate");
 
     check store.delete(id);
-    check store.close();
 }

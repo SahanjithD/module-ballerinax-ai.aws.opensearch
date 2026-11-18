@@ -211,7 +211,7 @@ granting at least:
 ]
 ```
 
-Drop `aoss:CreateIndex` if you set `Configuration.createIndexIfNotExists = false` and manage the
+Drop `aoss:CreateIndex` if you set `StoreConfiguration.createIndexIfNotExists = false` and manage the
 index yourself.
 
 ## Quickstart
@@ -280,7 +280,7 @@ search being performed. The index shape and the vector field names live on `sear
 field names, bulk sizing, retries — live on `storeConfig`. Switching deployments carries both
 across untouched.
 
-By default (`Configuration.createIndexIfNotExists = true`), `init` creates the index with the
+By default (`StoreConfiguration.createIndexIfNotExists = true`), `init` creates the index with the
 correct mapping if it does not already exist.
 
 ### Step 3: Add, query, and delete vector entries
@@ -373,16 +373,13 @@ naming one against a deployment that ignores it does not compile.
 
 
 > [!WARNING]
-> **`createIndexIfNotExists = false` against an index that does not exist corrupts silently when
-> `verifyOnInit` is off.** With `verifyOnInit` on (the default), `init` fails on a missing index.
-> With it off, `init` does no existence check, and a missing index does not make `add` fail — OpenSearch ships
-> with `action.auto_create_index: true`, so the first `_bulk` write creates an index from the
-> document's inferred shape. That index carries none of the mapping this module would have built:
-> under `DENSE`/`HYBRID` it has no `index.knn` setting and maps the vector as a plain `float`
-> array instead of a `knn_vector`, and under `SPARSE`/`HYBRID` it maps the token map as a nested
-> object instead of `rank_features`. Writes keep succeeding; every `query` then fails with a
-> `400`. Recovery means deleting the index and reindexing from source. Only set this to `false`
-> against an index you know was provisioned out of band with a compatible mapping.
+> **`createIndexIfNotExists = false` needs an index provisioned out of band.** `init` then fails
+> on a missing index rather than construct a store over it. Without that check, a missing index
+> would not make `add` fail — OpenSearch ships with `action.auto_create_index: true`, so the first
+> `_bulk` write would create an index from the document's inferred shape, with no `index.knn`
+> setting and the vector mapped as a plain `float` array, after which every `query` fails with a
+> `400`. If the calling principal may not read `/<index>/_mapping`, the check cannot run and
+> `init` only logs a warning, so grant that permission alongside this setting.
 
 > [!NOTE]
 > **Vectors are quantized by default on `SERVERLESS_NEXTGEN`.** NextGen auto-configures the
@@ -408,17 +405,13 @@ naming one against a deployment that ignores it does not compile.
 > `init` sees the index and returns without building a mapping, so editing them changes nothing on
 > the index.
 >
-> With `verifyOnInit` on (the default), `init` compares `dimension` against the stored mapping and
-> fails on a mismatch, unless the mapping cannot be read. **None of the other settings is checked,
+> On an existing index, `init` compares `dimension` against the stored mapping and fails on a
+> mismatch, unless the mapping cannot be read. **None of the other settings is checked,
 > so editing them has no effect and produces no error.** Nothing in a later request restates them:
 > a `_bulk` document carries a vector, and a `knn` query carries a vector and `k`. Neither mentions
 > `space_type`, `engine` or `compression_level`, so the server has nothing to disagree with. A
 > changed `similarityMetric` keeps returning scores computed under the original metric; a
 > `compressionLevel` set to opt out of NextGen's default quantization leaves the vectors quantized.
->
-> With `verifyOnInit` off, `dimension` is not checked either. A mismatched `dimension` beside
-> unchanged embeddings simply works and stays wrong silently. An error appears only when the
-> *embeddings themselves* change length, at the first `add` rather than at `init`.
 >
 > To change the shape of an existing index, reindex into a new one. This module does not update
 > mappings.
@@ -426,7 +419,7 @@ naming one against a deployment that ignores it does not compile.
 `IndexConfig` is reachable only from `DenseSearch` and `HybridSearch`. A `SparseSearch` maps no
 `knn_vector` field, so none of these settings exist there rather than being ignored.
 
-### Other configuration (`Configuration`)
+### Other configuration (`StoreConfiguration`)
 
 | Field | Default | Notes |
 |---|---|---|
@@ -435,7 +428,6 @@ naming one against a deployment that ignores it does not compile.
 | `metadataFieldName` | `"metadata"` | Set to `""` to address bare `<key>` paths — for pointing this module at a pre-existing index with a flat schema. A metadata key that would then collide with a reserved field name (`embedding`, `sparse_embedding`, `content`, `doc_id`, `chunk_type`) is rejected with an `ai:Error` rather than silently overwriting that field. When this module creates the index, `""` also maps every string field it does not map itself as `keyword`: those fields match exactly only, and values over 8,191 characters are not indexed |
 | `includeEmbeddingsInResults` | `true` | Set `false` to exclude every vector field the mode declares from `_source` — a meaningful bandwidth saving at high dimensions and large `topK`, and a larger one under `SPARSE`/`HYBRID` |
 | `createIndexIfNotExists` | `true` | When `false`, `init` creates nothing. See the warning under `IndexConfig` before setting it |
-| `verifyOnInit` | `true` | Checks at construction that the cluster and index can serve this store — see below. Switch off together with `createIndexIfNotExists` for construction that performs **no network I/O at all** |
 | `maxBulkSize` | `500` | Entries per `_bulk` request; `add` chunks larger batches automatically |
 | `maxResultWindow` | `10000` | The `size` used when `topK < 1` ("return all"), and the ceiling enforced on an explicit `topK` |
 | `retryConfig` | exponential backoff, 3 retries | Applied to `429`/`408`/`5xx` responses |
@@ -447,13 +439,13 @@ field names must be distinct from each other and from the fixed `chunk_type`; a 
 rejected at construction rather than silently producing an index where one field overwrites
 another.
 
-### Construction-time verification (`verifyOnInit`)
+### Construction-time verification
 
 Nothing else in this module connects a store's configuration to the index it is pointed at, and
 every way of being wrong is silent: a `SPARSE` store aimed at a dense index writes successfully
 forever and fails every query with a bare `400`; a renamed `vectorFieldName` reads a field that is
 not there and returns nothing; a `dimension` that drifted stays wrong until the embeddings
-themselves change length. With `verifyOnInit` on, `init` makes two reads:
+themselves change length. So `init` always makes two reads:
 
 1. **`GET /`** for the cluster's OpenSearch version, compared against the floors this store's
    configuration actually needs — 2.11 for `hybrid`, 2.14 for raw `query_tokens`, 2.15 for

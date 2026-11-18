@@ -509,10 +509,10 @@ isolated function hintForStatus(int status) returns string {
                     "IAM policy — and that the signing name is 'aoss')";
         }
         404 => {
-            return " (the index may not exist; see 'Configuration.createIndexIfNotExists')";
+            return " (the index may not exist; see 'StoreConfiguration.createIndexIfNotExists')";
         }
         413 => {
-            return " (the request payload was too large; see 'Configuration.maxBulkSize')";
+            return " (the request payload was too large; see 'StoreConfiguration.maxBulkSize')";
         }
         _ => {
             return "";

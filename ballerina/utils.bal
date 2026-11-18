@@ -228,7 +228,7 @@ isolated function validateEmbedding(ai:Vector embedding, ai:SimilarityMetric met
 # + searchMode - The store's search mode, which decides which vector field(s) are written
 # + config - The vector store configuration
 # + return - The document, or an `ai:Error` if a flat-schema metadata key is a reserved name
-isolated function buildEntrySource(PreparedEntry entry, SearchMode searchMode, Configuration config)
+isolated function buildEntrySource(PreparedEntry entry, SearchMode searchMode, StoreConfiguration config)
         returns map<json>|ai:Error {
     anydata content = entry.chunk.content;
     map<json> sourceDoc = {
@@ -253,7 +253,7 @@ isolated function buildEntrySource(PreparedEntry entry, SearchMode searchMode, C
             if sourceDoc.hasKey(metaKey) {
                 return error(string `Entry '${entry.id}' has a metadata key '${metaKey}' that collides ` +
                         "with a reserved document field under a flat schema " +
-                        "('Configuration.metadataFieldName' is \"\"); rename the metadata key, or nest " +
+                        "('StoreConfiguration.metadataFieldName' is \"\"); rename the metadata key, or nest " +
                         "metadata by setting a non-empty 'metadataFieldName'");
             }
             sourceDoc[metaKey] = metaValue;
@@ -276,7 +276,7 @@ isolated function buildEntrySource(PreparedEntry entry, SearchMode searchMode, C
 # + return - The bytes to sign and send (empty for no entries), or an `ai:Error` from
 # `buildEntrySource`
 isolated function buildAddBulkBody(PreparedEntry[] entries, string indexName, Deployment deployment,
-        SearchMode searchMode, Configuration config) returns byte[]|ai:Error {
+        SearchMode searchMode, StoreConfiguration config) returns byte[]|ai:Error {
     if entries.length() == 0 {
         return [];
     }
@@ -310,7 +310,7 @@ isolated function buildDeleteBulkBody(string indexName, string[] ids) returns by
 
 # Builds the search that finds the internal `_id`s for logical ids, for a Serverless Classic delete.
 #
-# + idFieldName - The document field carrying the logical id (`Configuration.idFieldName`)
+# + idFieldName - The document field carrying the logical id (`StoreConfiguration.idFieldName`)
 # + ids - The logical ids to look up. Must be chunked by the caller to at most 65,536 terms
 # + maxResultWindow - The `size`; one logical id may match several documents on Classic
 # + return - The search request body
@@ -334,7 +334,7 @@ isolated function buildDocIdLookupBody(string idFieldName, string[] ids, int max
 # + searchMode - The store's search mode, which decides the scoring clause
 # + config - The vector store configuration
 # + return - The search request body, or an `ai:Error` if `topK` or the filters are invalid
-isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMode, Configuration config)
+isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMode, StoreConfiguration config)
         returns json|ai:Error {
     int topK = query.topK;
     if topK > config.maxResultWindow {
@@ -539,7 +539,7 @@ isolated function buildSparseQueryClause(ai:SparseVector embedding, string spars
 # Translates metadata filters into an OpenSearch query clause. Empty groups add no clause.
 #
 # + node - A filter leaf or a nested filter group
-# + metadataFieldName - `Configuration.metadataFieldName`; `""` addresses bare `<key>` paths
+# + metadataFieldName - `StoreConfiguration.metadataFieldName`; `""` addresses bare `<key>` paths
 # + return - The translated clause, `()` if `node` (or every branch under it) is empty, or an
 # `ai:Error` if a leaf is malformed (e.g. `IN`/`NOT_IN` with a non-array value)
 isolated function convertFilters(ai:MetadataFilters|ai:MetadataFilter node, string metadataFieldName)
@@ -614,7 +614,7 @@ isolated function buildFilterClause(string path, ai:MetadataFilterOperator opera
 
 # The field path for a metadata key: bare under a flat schema, otherwise nested.
 #
-# + metadataFieldName - `Configuration.metadataFieldName`
+# + metadataFieldName - `StoreConfiguration.metadataFieldName`
 # + key - The metadata key
 # + return - `key` unchanged if `metadataFieldName` is `""`, else `<metadataFieldName>.<key>`
 isolated function fieldPath(string metadataFieldName, string key) returns string {
@@ -722,7 +722,7 @@ isolated function checkFusedScore(float score, HybridFusion fusion, string id) r
 # + scoreIsMeaningful - `false` for queries with no embedding, whose constant score is reported
 # as 0.0
 # + return - The match, or an `ai:Error` if stored data is malformed or a hybrid score is unfused
-isolated function hitToVectorMatch(SearchHit hit, SearchMode searchMode, Configuration config,
+isolated function hitToVectorMatch(SearchHit hit, SearchMode searchMode, StoreConfiguration config,
         boolean scoreIsMeaningful) returns ai:VectorMatch|ai:Error {
     map<json> src = hit?._source ?: {};
 
@@ -831,7 +831,7 @@ isolated function readStoredSparse(map<json> src, string sparseVectorFieldName, 
 # + searchMode - The store's search mode, which decides which vector field names are reserved
 # + config - The vector store configuration
 # + return - The metadata map, or `()` if there is none
-isolated function extractStoredMetadata(map<json> src, SearchMode searchMode, Configuration config)
+isolated function extractStoredMetadata(map<json> src, SearchMode searchMode, StoreConfiguration config)
         returns map<json>? {
     if config.metadataFieldName == "" {
         string[] vectorFieldNames = vectorFieldNamesOf(searchMode);

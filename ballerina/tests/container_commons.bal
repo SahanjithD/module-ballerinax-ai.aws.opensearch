@@ -86,7 +86,7 @@ isolated function trackedIndexNames() returns string[] {
 # The default store configuration.
 #
 # + return - The default container test configuration
-isolated function containerConfig() returns Configuration => {};
+isolated function containerConfig() returns StoreConfiguration => {};
 
 # The dense search mode most container tests use: an index sized to `CONTAINER_DIMENSION`.
 #
@@ -118,7 +118,7 @@ isolated function containerDeployment(Engine engine = FAISS) returns ManagedDoma
 isolated function newContainerStore(string indexName, SearchMode searchMode = {
             queryMode: ai:DENSE,
             indexConfig: {dimension: CONTAINER_DIMENSION}
-        }, Configuration config = {}, ManagedDomainDeployment deployment = {
+        }, StoreConfiguration config = {}, ManagedDomainDeployment deployment = {
             deploymentType: MANAGED_DOMAIN,
             auth: containerAuth,
             refreshOnWrite: true

@@ -50,7 +50,7 @@ isolated function sparseVectorEntry(string id, int[] indices, float[] values, st
 @test:Config {groups: ["docker"]}
 isolated function testContainerSparseIndexIsCreatedWithoutSettings() returns error? {
     string indexName = containerIndexName("sparse-init");
-    VectorStore store = check newSparseContainerStore(indexName);
+    _ = check newSparseContainerStore(indexName);
 
     map<json> mappings = check indexMapping(indexName);
     map<json> properties = check mapField(mappings, "properties");
@@ -60,7 +60,6 @@ isolated function testContainerSparseIndexIsCreatedWithoutSettings() returns err
     map<json> settings = check indexSettings(indexName);
     test:assertFalse(settings.hasKey("knn"),
             string `a SPARSE index must not request the k-NN codec, got: ${settings.toJsonString()}`);
-    check store.close();
 }
 
 // Lucene rejects a zero weight; a document count of zero shows the client caught it first.
@@ -72,7 +71,6 @@ isolated function testContainerSparseZeroWeightIsRejectedBeforeTheWire() returns
     ai:Error? result = store.add([sparseVectorEntry("zero", [7], [0.0])]);
     test:assertTrue(result is ai:Error, "a zero sparse weight must be rejected");
     test:assertEquals(check documentCount(indexName), 0, "nothing should have reached the server");
-    check store.close();
 }
 
 // Raw `query_tokens` scoring with no model: results rank by the plain dot product.
@@ -97,7 +95,6 @@ isolated function testContainerSparseQueryRanksByDotProduct() returns error? {
     test:assertEquals(matches[0].id, "alpha");
     test:assertEquals(matches[1].id, "gamma");
     test:assertEquals(matches[2].id, "beta");
-    check store.close();
 }
 
 // A sparse score is an unbounded dot product; 14.75 shows no cosine transform was applied.
@@ -114,7 +111,6 @@ isolated function testContainerSparseScoreIsUnboundedAndUntransformed() returns 
     test:assertTrue(matches[0].similarityScore > 1.0,
             string `a sparse dot product is unbounded above 1.0, got: ${matches[0].similarityScore}`);
     assertScoreCloseTo(matches[0].similarityScore, 14.75, "the score should be the raw dot product");
-    check store.close();
 }
 
 // The filter goes in a `bool` beside `neural_sparse`, which has no `filter` parameter.
@@ -134,7 +130,6 @@ isolated function testContainerSparseFilterAppliesAsBoolSibling() returns error?
     });
     test:assertEquals(matches.length(), 1, "the French entry should have been filtered out");
     test:assertEquals(matches[0].id, "english");
-    check store.close();
 }
 
 
@@ -158,7 +153,6 @@ isolated function testContainerSparseRoundTripIsLossy() returns error? {
         test:assertTrue(drift < 0.01 && drift > -0.01,
                 string `a stored weight should be within 1% of the original, got ${actual} for ${expected}`);
     }
-    check store.close();
 }
 
 // --- two-phase acceleration ------------------------------------------------------------------------
@@ -182,12 +176,10 @@ isolated function testContainerTwoPhaseAccelerationMatchesTheUnacceleratedResult
     VectorStore seed = check newSparseContainerStore(indexName);
     check seed.add(twoPhaseSeedEntries());
     ai:VectorMatch[] baseline = check seed.query(twoPhaseContainerQuery());
-    check seed.close();
 
     SparseSearch accelerated = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}};
     VectorStore store = check newContainerStore(indexName, accelerated, {createIndexIfNotExists: false});
     ai:VectorMatch[] matches = check store.query(twoPhaseContainerQuery());
-    check store.close();
 
     test:assertEquals(matches.length(), baseline.length(),
             "the two-phase pass must return the same matches as the single-phase one");
@@ -210,7 +202,6 @@ isolated function testContainerTwoPhaseAccelerationWorksWithAFilter() returns er
         sparseVectorEntry("english", [1055], [9.0], "en"),
         sparseVectorEntry("french", [1055], [9.5], "fr")
     ]);
-    check seed.close();
 
     SparseSearch accelerated = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}};
     VectorStore store = check newContainerStore(indexName, accelerated, {createIndexIfNotExists: false});
@@ -219,7 +210,6 @@ isolated function testContainerTwoPhaseAccelerationWorksWithAFilter() returns er
         filters: {filters: [{key: "language", value: "en"}]},
         topK: 10
     });
-    check store.close();
 
     test:assertEquals(matches.length(), 1, "the filter must still apply under the two-phase rewrite");
     test:assertEquals(matches[0].id, "english");

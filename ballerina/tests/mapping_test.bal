@@ -216,7 +216,7 @@ isolated function testDynamicTemplatesAlwaysPresentForNestedMetadata() returns e
 @test:Config
 isolated function testDynamicTemplatesPathMatchForFlatMetadata() returns error? {
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 8}};
-    Configuration config = {metadataFieldName: ""};
+    StoreConfiguration config = {metadataFieldName: ""};
     map<json> mapping = check asMap(buildIndexMapping(configMode, config, managedDeployment()));
     map<json> mappings = check asMap(mapping["mappings"]);
     json[] templates = check mappings["dynamic_templates"].ensureType();
@@ -228,7 +228,7 @@ isolated function testDynamicTemplatesPathMatchForFlatMetadata() returns error? 
 @test:Config
 isolated function testFlatMetadataOmitsMetadataObjectMapping() returns error? {
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 8}};
-    Configuration config = {metadataFieldName: ""};
+    StoreConfiguration config = {metadataFieldName: ""};
     map<json> mapping = check asMap(buildIndexMapping(configMode, config, managedDeployment()));
     map<json> mappings = check asMap(mapping["mappings"]);
     map<json> properties = check asMap(mappings["properties"]);
@@ -258,7 +258,7 @@ isolated function testFixedSchemaFieldsAlwaysPresent() returns error? {
 @test:Config
 isolated function testConfigurableFieldNamesHonored() returns error? {
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 8}, vectorFieldName: "vec"};
-    Configuration config = {contentFieldName: "text", idFieldName: "myId"};
+    StoreConfiguration config = {contentFieldName: "text", idFieldName: "myId"};
     map<json> mapping = check asMap(buildIndexMapping(configMode, config, managedDeployment()));
     map<json> mappings = check asMap(mapping["mappings"]);
     map<json> properties = check asMap(mappings["properties"]);

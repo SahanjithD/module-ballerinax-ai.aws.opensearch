@@ -5,8 +5,8 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
 ## [Unreleased]
 
 ### Added
-- `Configuration.verifyOnInit` (default `true`), which checks at construction that the cluster and
-  the target index can actually serve this store. It reads `GET /` for the cluster's OpenSearch
+- Construction-time verification: `init` checks that the cluster and the target index can actually
+  serve this store. It reads `GET /` for the cluster's OpenSearch
   version and compares it against the floors the configuration implies (2.11 `hybrid`, 2.14 raw
   `query_tokens`, 2.15 two-phase, 2.16 `ef_search`, 2.19 RRF), and reads `GET /<index>/_mapping` to
   confirm the vector field(s) the mode declares exist, are the right type, and carry the configured
@@ -58,14 +58,18 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   which member of the union the caller had picked.
 
 ### Changed
-- When `init` is about to create the index on a managed domain, `verifyOnInit` also checks the
+- `Configuration` is renamed to `StoreConfiguration`, to match its "Store Configuration" label.
+- `VectorStore.close()` is removed, leaving the three `ai:VectorStore` methods. `ai:VectorStore`
+  has no lifecycle hook, so nothing that consumes a store called it; it released only the AWS
+  credential provider, never the OpenSearch connections. A failed `init` still releases the
+  provider itself.
+- When `init` is about to create the index on a managed domain, construction-time verification also checks the
   floors of the `knn_vector` mapping: 2.19 for `FAISS` with `COSINE`, 2.13 for `LUCENE` with
   `DOT_PRODUCT`, 2.2 for `LUCENE`. The default `FAISS` + `COSINE` on an older domain now fails
   `init` with an error naming the floor, where the server used to reject the mapping. An existing
   index is not held to these floors.
-- `createIndexIfNotExists: false` alone no longer means "no network I/O at all", because
-  `verifyOnInit` now performs its own reads independently. Set both to `false` for fully offline
-  construction.
+- `createIndexIfNotExists: false` no longer means "no network I/O at all": `init` still reads the
+  index mapping, and fails on a missing index.
 
 - `ServerlessNextGenDeployment.collectionName` and `.collectionId`, which become the signed
   `x-amz-aoss-collection-name`/`x-amz-aoss-collection-id` headers a per-account NextGen endpoint
@@ -224,10 +228,8 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
 - `IndexConfig` and the README now state that index-shape settings apply only at index creation.
   `dimension`, `similarityMetric`, `efConstruction`, `m`, `engine` and `compressionLevel` are
   sent in the single `PUT /<index>` that `init` issues when the index does not exist, and no later
-  request restates them. With `verifyOnInit` on, a changed `dimension` fails `init`; the other
-  settings are not checked, so editing them has no effect and raises no error. With it off,
-  `dimension` is unchecked too and stays wrong silently until the embeddings themselves change
-  length.
+  request restates them. On an existing index, a changed `dimension` fails `init`; the other
+  settings are not checked, so editing them has no effect and raises no error.
 - `Configuration.metadataFieldName` and the README now state that `""` makes an index this module
   creates map every string field it does not map itself as an exact-match `keyword`.
 - The note claiming OpenSearch accepts `compression_level` beside a `method` block while silently

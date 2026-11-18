@@ -47,7 +47,6 @@ isolated function queryWithFilters(string prefix, ai:MetadataFilters filters) re
     VectorStore store = check newContainerStore(indexName);
     check seedFilterEntries(store);
     ai:VectorMatch[] matches = check store.query({filters, topK: 10});
-    check store.close();
     return matches;
 }
 
@@ -197,14 +196,13 @@ isolated function testContainerFilterPreFiltersKnnQuery() returns error? {
     });
     test:assertEquals(matches.length(), 1, "pre-filtering should still yield a full 'k' results");
     test:assertEquals(matches[0].id, "fr-2022");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerFilterUnderFlatSchema() returns error? {
     string indexName = containerIndexName("f-flat");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    Configuration config = {metadataFieldName: ""};
+    StoreConfiguration config = {metadataFieldName: ""};
     VectorStore store = check newContainerStore(indexName, configMode, config);
     check store.add([
         entry("flat-en", vec(1.0), "english", {"language": "en"}),
@@ -219,7 +217,6 @@ isolated function testContainerFilterUnderFlatSchema() returns error? {
     assertIdsEqual(matches, ["flat-en"], "a flat schema should filter on bare field paths");
     test:assertEquals(matches[0].chunk.metadata, <ai:Metadata>{"language": "en"},
             "flat metadata should be reassembled on read");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}

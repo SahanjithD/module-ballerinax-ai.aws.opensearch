@@ -47,7 +47,6 @@ isolated function testContainerMetadataKnownFieldsRoundTrip() returns error? {
     test:assertEquals(readBack.fileSize, 2048.0d);
     test:assertEquals(readBack.createdAt, created);
     test:assertEquals(readBack.modifiedAt, modified);
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -74,7 +73,6 @@ isolated function testContainerMetadataCustomKeysRoundTrip() returns error? {
     test:assertEquals(readBack["published"], true, "a boolean should pass through unchanged");
     test:assertEquals(readBack["attrs"], <json>{"nested": "value", "depth": 2},
             "a nested object should pass through unchanged");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -91,7 +89,6 @@ isolated function testContainerMetadataFractionalNumberIsReadBackAsDecimal() ret
     // Ballerina parses a non-integral JSON number as `decimal`; the value survives, the type does
     // not.
     test:assertEquals(readBack["rating"], 4.25d, "a fractional value is read back as 'decimal'");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -105,14 +102,13 @@ isolated function testContainerEntryWithoutMetadataRoundTrips() returns error? {
     // No metadata is stored as an empty object, which reads back as `{}` rather than `()`.
     test:assertEquals(readBack, <ai:Metadata>{}, "absent metadata should read back empty, not null");
     test:assertEquals(matches[0].chunk.content, "no metadata");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerMetadataUnderFlatSchemaRoundTrips() returns error? {
     string indexName = containerIndexName("md-flat");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    Configuration config = {metadataFieldName: ""};
+    StoreConfiguration config = {metadataFieldName: ""};
     VectorStore store = check newContainerStore(indexName, configMode, config);
     check store.add([entry("flat", queryVector(), "flat doc", {"language": "en", "year": 2024})]);
 
@@ -128,21 +124,19 @@ isolated function testContainerMetadataUnderFlatSchemaRoundTrips() returns error
     test:assertFalse(readBack.hasKey("embedding"), "the fixed schema fields must not leak into metadata");
     test:assertFalse(readBack.hasKey("doc_id"), "the fixed schema fields must not leak into metadata");
     test:assertFalse(readBack.hasKey("chunk_type"), "the fixed schema fields must not leak into metadata");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerFlatSchemaKeyCollisionIsRejectedBeforeWriting() returns error? {
     string indexName = containerIndexName("md-collide");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    Configuration config = {metadataFieldName: ""};
+    StoreConfiguration config = {metadataFieldName: ""};
     VectorStore store = check newContainerStore(indexName, configMode, config);
 
     // A `content` metadata key would overwrite the chunk content under a flat schema.
     ai:Error? result = store.add([entry("collide", queryVector(), "real content", {"content": "hijacked"})]);
     test:assertTrue(result is ai:Error, "a colliding metadata key should be rejected");
     test:assertEquals(check documentCount(indexName), 0, "nothing should have been written");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -162,5 +156,4 @@ isolated function testContainerMetadataSurvivesUpsert() returns error? {
     // An upsert replaces the whole document rather than merging.
     test:assertEquals(readBack["language"], "fr");
     test:assertFalse(readBack.hasKey("year"), "an upsert should replace metadata, not merge it");
-    check store.close();
 }

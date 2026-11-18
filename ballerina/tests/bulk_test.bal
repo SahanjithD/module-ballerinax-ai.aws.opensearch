@@ -86,7 +86,7 @@ isolated function testBuildEntrySourceNestedMetadata() returns error? {
 @test:Config
 isolated function testBuildEntrySourceFlatMetadata() returns error? {
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 2}};
-    Configuration config = {metadataFieldName: ""};
+    StoreConfiguration config = {metadataFieldName: ""};
     PreparedEntry entry = {
         id: "1",
         embedding: [0.1, 0.2],
@@ -100,7 +100,7 @@ isolated function testBuildEntrySourceFlatMetadata() returns error? {
 @test:Config
 isolated function testBuildEntrySourceFlatMetadataCollisionIsError() {
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 2}};
-    Configuration config = {metadataFieldName: ""};
+    StoreConfiguration config = {metadataFieldName: ""};
     PreparedEntry entry = {
         id: "1",
         embedding: [0.1, 0.2],
@@ -207,7 +207,7 @@ isolated function testDocIdLookupBodyFetchesConfiguredIdField() {
     json body = buildDocIdLookupBody("external_ref", ["a"], 500);
     map<json> asMap = <map<json>>body;
     test:assertEquals(asMap["_source"], ["external_ref"],
-            "the lookup should fetch whatever field 'Configuration.idFieldName' names");
+            "the lookup should fetch whatever field 'StoreConfiguration.idFieldName' names");
 }
 
 // --- chunking helpers -------------------------------------------------------------------------

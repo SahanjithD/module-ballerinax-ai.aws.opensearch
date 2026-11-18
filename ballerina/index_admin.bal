@@ -58,7 +58,7 @@ isolated function buildDenseVectorField(IndexConfig indexConfig, Deployment depl
 # + config - The vector store configuration
 # + deployment - The deployment, which gates `engine` and the quantization parameter
 # + return - The index-creation request body
-isolated function buildIndexMapping(SearchMode searchMode, Configuration config, Deployment deployment)
+isolated function buildIndexMapping(SearchMode searchMode, StoreConfiguration config, Deployment deployment)
         returns json {
     map<json> properties = {
         [config.contentFieldName]: {"type": "text"},
@@ -141,7 +141,7 @@ isolated function toSpaceType(ai:SimilarityMetric metric) returns string {
 # + return - `true` if this call created the index, `false` if another caller created it first, or
 # an `ai:Error`
 isolated function createMissingIndex(OpenSearchTransport transport, string indexName, SearchMode searchMode,
-        Configuration config, Deployment deployment) returns boolean|ai:Error {
+        StoreConfiguration config, Deployment deployment) returns boolean|ai:Error {
     json mapping = buildIndexMapping(searchMode, config, deployment);
     ai:Error? result = transport.createIndex(indexName, mapping);
     if result is ai:Error {

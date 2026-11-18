@@ -117,6 +117,4 @@ public function main() returns error? {
     foreach ai:VectorMatch item in matches {
         io:println(string `  ${item.similarityScore}  ${item.chunk.content.toString()}`);
     }
-
-    check vectorStore.close();
 }

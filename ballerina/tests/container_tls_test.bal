@@ -62,7 +62,6 @@ isolated function testSecureContainerBasicAuthRoundTrip() returns error? {
     check store.delete("secure-1");
     ai:VectorMatch[] afterDelete = check store.query({topK: 10});
     test:assertEquals(afterDelete.length(), 0);
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -71,7 +70,6 @@ isolated function testSecureContainerRejectsWrongPassword() returns error? {
     VectorStore|ai:Error result = newSecureContainerStore(indexName, "definitely-not-the-password");
 
     if result !is ai:Error {
-        check result.close();
         test:assertFail("a wrong password should fail construction");
     }
     test:assertEquals(result.detail()["status"], 401,
@@ -90,7 +88,6 @@ isolated function testSecureContainerRejectsSigV4Credentials() returns error? {
     );
 
     if result !is ai:Error {
-        check result.close();
         test:assertFail("SigV4 credentials should not authenticate against the internal user database");
     }
     test:assertEquals(result.detail()["status"], 401,

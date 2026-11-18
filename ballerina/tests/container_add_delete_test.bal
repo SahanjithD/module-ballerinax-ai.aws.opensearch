@@ -32,7 +32,6 @@ isolated function testContainerAddQueryRoundTrip() returns error? {
     test:assertEquals(first.id, "rt-1");
     test:assertEquals(first.chunk.content, "round trip content");
     test:assertEquals(first.embedding, queryVector(), "the stored embedding should come back intact");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -46,7 +45,6 @@ isolated function testContainerAddGeneratesIdWhenAbsent() returns error? {
     test:assertEquals(matches.length(), 1);
     test:assertTrue((matches[0].id ?: "").length() > 0, "a generated id should have been stored and returned");
     test:assertEquals(matches[0].chunk.content, "no id supplied");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -62,7 +60,6 @@ isolated function testContainerAddSameIdTwiceUpserts() returns error? {
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 10});
     test:assertEquals(matches.length(), 1);
     test:assertEquals(matches[0].chunk.content, "v2", "the second write should have replaced the first");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -86,7 +83,6 @@ isolated function testContainerAddPreservesChunkType() returns error? {
                     "a non-text chunk type should round-trip unchanged");
         }
     }
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -100,7 +96,6 @@ isolated function testContainerDeleteSingleId() returns error? {
     check store.delete("drop");
     ai:VectorMatch[] matches = check store.query({topK: 10});
     assertIdsEqual(matches, ["keep"], "only the deleted entry should be gone");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -118,7 +113,6 @@ isolated function testContainerDeleteMultipleIds() returns error? {
     check store.delete(["b", "d"]);
     ai:VectorMatch[] matches = check store.query({topK: 10});
     assertIdsEqual(matches, ["a", "c"], "exactly the requested ids should have been deleted");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -132,7 +126,6 @@ isolated function testContainerDeleteMissingIdIsNotAnError() returns error? {
     check store.delete(["present", "also-never-existed"]);
 
     test:assertEquals(check documentCount(indexName), 0);
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -147,7 +140,6 @@ isolated function testContainerEmptyAddAndDeleteAreNoOps() returns error? {
     check store.add([entry("x", queryVector())]);
     check store.add([]);
     test:assertEquals(check documentCount(indexName), 1, "an empty 'add' must not disturb existing data");
-    check store.close();
 }
 
 @test:Config {groups: ["docker"]}
@@ -159,5 +151,4 @@ isolated function testContainerAddRejectsZeroVectorUnderCosine() returns error? 
     ai:Error? result = store.add([entry("zero", vec(0.0, 0.0, 0.0, 0.0))]);
     test:assertTrue(result is ai:Error, "a zero vector under COSINE should be rejected");
     test:assertEquals(check documentCount(indexName), 0, "nothing should have been written");
-    check store.close();
 }

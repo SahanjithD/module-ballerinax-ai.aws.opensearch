@@ -17,8 +17,9 @@
 import ballerina/ai;
 import ballerina/log;
 
-// Construction-time checks for `Configuration.verifyOnInit`. A check that disagrees fails `init`;
-// one that cannot run (e.g. no permission) only warns, since refusing a working store is worse.
+// Construction-time checks that the cluster and index can serve the store. A check that disagrees
+// fails `init`; one that cannot run (e.g. no permission) only warns, since refusing a working
+// store is worse.
 
 # A feature the store's configuration uses, with the first OpenSearch version that supports it.
 type VersionRequirement record {|
@@ -152,8 +153,7 @@ isolated function verifyClusterVersion(OpenSearchTransport transport, SearchMode
     if reported is ai:Error {
         log:printWarn("Could not read the OpenSearch version from 'GET /', so this store's search " +
                 "mode was not checked against the cluster's capabilities. Grant the calling " +
-                "principal read access to '/', or set 'Configuration.verifyOnInit' to false to " +
-                "stop attempting this", 'error = reported);
+                "principal read access to '/' to enable this check", 'error = reported);
         return;
     }
     if reported is () {
@@ -173,8 +173,7 @@ isolated function verifyClusterVersion(OpenSearchTransport transport, SearchMode
         return error(string `This cluster reports OpenSearch ${reported}, which does not support ` +
                 string `${requirement.feature}. That needs ` +
                 string `${requirement.floor[0]}.${requirement.floor[1]} or later. Upgrade the ` +
-                string `domain, ${requirement.remedy}, or set 'Configuration.verifyOnInit' to ` +
-                "false to skip this check and let the server decide");
+                string `domain, or ${requirement.remedy}`);
     }
 }
 
@@ -191,7 +190,7 @@ isolated function verifyIndexMapping(OpenSearchTransport transport, string index
     if properties is ai:Error {
         if properties.detail()["status"] == 404 {
             return error(string `The index '${indexName}' does not exist, and ` +
-                    "'Configuration.createIndexIfNotExists' is false so this module did not " +
+                    "'StoreConfiguration.createIndexIfNotExists' is false so this module did not " +
                     "create it. Writing to it anyway would not fail: OpenSearch's " +
                     "'action.auto_create_index' default would build an index from the first " +
                     "document's inferred shape, with no 'index.knn' setting and the vector mapped " +
@@ -201,8 +200,7 @@ isolated function verifyIndexMapping(OpenSearchTransport transport, string index
         }
         log:printWarn(string `Could not read the mapping of index '${indexName}', so this store's ` +
                 "search mode was not checked against it. Grant the calling principal " +
-                "'indices:admin/mappings/get' on the index, or set 'Configuration.verifyOnInit' " +
-                "to false to stop attempting this", 'error = properties);
+                "'indices:admin/mappings/get' on the index to enable this check", 'error = properties);
         return;
     }
     if properties is () {

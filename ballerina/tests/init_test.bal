@@ -246,7 +246,7 @@ isolated function testBuildQueryStringSingleParam() returns error? {
 @test:Config
 isolated function testZeroMaxBulkSizeRejected() {
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 8}};
-    Configuration config = {maxBulkSize: 0};
+    StoreConfiguration config = {maxBulkSize: 0};
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), configMode, config);
     test:assertTrue(result is ai:Error);
 }
@@ -254,7 +254,7 @@ isolated function testZeroMaxBulkSizeRejected() {
 @test:Config
 isolated function testZeroMaxResultWindowRejected() {
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 8}};
-    Configuration config = {maxResultWindow: 0};
+    StoreConfiguration config = {maxResultWindow: 0};
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), configMode, config);
     test:assertTrue(result is ai:Error);
 }
@@ -267,37 +267,20 @@ isolated function testFullyValidConfigurationPasses() {
     test:assertTrue(result is ());
 }
 
-// --- fully offline construction ----------------------------------------------------------------
-
-@test:Config
-isolated function testOfflineConstructionWithCreateIndexAndVerifyDisabled() returns error? {
-    // With both switches off, `init` sends no request, so an unreachable URL is fine.
-    VectorStore store = check new (
-        VALID_URL,
-        "us-east-1",
-        "test-index",
-        managedDeployment(),
-        {queryMode: ai:DENSE, indexConfig: {dimension: 8}},
-        {createIndexIfNotExists: false, verifyOnInit: false}
-    );
-    ai:Error? closeResult = store.close();
-    test:assertTrue(closeResult is (), "closing a fully offline store should not fail");
-}
+// --- construction-time checks ------------------------------------------------------------------
 
 // Verification that cannot run (here, an unreachable endpoint) must warn, not fail construction.
 @test:Config
-isolated function testVerifyOnInitDoesNotFailConstructionWhenItCannotRun() returns error? {
-    VectorStore store = check new (
+isolated function testVerificationDoesNotFailConstructionWhenItCannotRun() returns error? {
+    _ = check new VectorStore(
         UNREACHABLE_URL,
         "us-east-1",
         "test-index",
         managedDeployment(),
         {queryMode: ai:DENSE, indexConfig: {dimension: 8}},
         // No retries, to skip the backoff.
-        {createIndexIfNotExists: false, verifyOnInit: true, retryConfig: {maxRetries: 0}}
+        {createIndexIfNotExists: false, retryConfig: {maxRetries: 0}}
     );
-    ai:Error? closeResult = store.close();
-    test:assertTrue(closeResult is ());
 }
 
 // --- rule 5: every quantization ratio is one the deployment can store --------------------------
