@@ -25,8 +25,8 @@ import ballerina/test;
 #
 # + indexName - The index to create and then delete
 # + return - The store, or an error
-isolated function storeOnMissingIndex(string indexName) returns VectorStore|error {
-    VectorStore store = check newContainerStore(indexName, containerDenseMode());
+isolated function storeOnMissingIndex(string indexName) returns VectorStoreCore|error {
+    VectorStoreCore store = check newContainerStore(indexName, containerDenseMode());
     check rawDeleteIndex(indexName);
     return store;
 }
@@ -34,7 +34,7 @@ isolated function storeOnMissingIndex(string indexName) returns VectorStore|erro
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryOnMissingIndexMapsTo404() returns error? {
     string indexName = containerIndexName("err-404");
-    VectorStore store = check storeOnMissingIndex(indexName);
+    VectorStoreCore store = check storeOnMissingIndex(indexName);
 
     ai:VectorMatch[]|ai:Error result = store.query({embedding: queryVector(), topK: 1});
     if result !is ai:Error {
@@ -50,7 +50,7 @@ isolated function testContainerQueryOnMissingIndexMapsTo404() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerDeleteOnMissingIndexIsReported() returns error? {
     string indexName = containerIndexName("err-del404");
-    VectorStore store = check storeOnMissingIndex(indexName);
+    VectorStoreCore store = check storeOnMissingIndex(indexName);
 
     ai:Error? result = store.delete("anything");
     if result !is ai:Error {
@@ -65,7 +65,7 @@ isolated function testContainerDeleteOnMissingIndexIsReported() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerAddOnMissingIndexAutoCreatesAnUnusableIndex() returns error? {
     string indexName = containerIndexName("err-autocreate");
-    VectorStore store = check storeOnMissingIndex(indexName);
+    VectorStoreCore store = check storeOnMissingIndex(indexName);
 
     // `action.auto_create_index` creates an index from the document's shape: no `index.knn` and
     // a plain `float` vector, so writes succeed and every k-NN query fails.
@@ -91,7 +91,7 @@ isolated function testContainerAddOnMissingIndexAutoCreatesAnUnusableIndex() ret
 @test:Config {groups: ["docker"]}
 isolated function testContainerDimensionMismatchIsReported() returns error? {
     string indexName = containerIndexName("err-dim");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     ai:Error? result = store.add([
         {id: "short", embedding: [0.1, 0.2], chunk: <ai:TextChunk>{content: "two dimensions"}}
@@ -112,7 +112,7 @@ isolated function testContainerDimensionMismatchIsReported() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerQueryDimensionMismatchSurfacesRootCause() returns error? {
     string indexName = containerIndexName("err-qdim");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
     check store.add([entry("only", queryVector())]);
 
     ai:Vector wrongDimension = [0.1, 0.2];
@@ -134,7 +134,7 @@ isolated function testContainerQueryDimensionMismatchSurfacesRootCause() returns
 @test:Config {groups: ["docker"]}
 isolated function testContainerNonWrapperErrorIsNotDuplicated() returns error? {
     string indexName = containerIndexName("err-nodup");
-    VectorStore store = check storeOnMissingIndex(indexName);
+    VectorStoreCore store = check storeOnMissingIndex(indexName);
 
     ai:VectorMatch[]|ai:Error result = store.query({embedding: queryVector(), topK: 1});
     if result !is ai:Error {
@@ -152,7 +152,7 @@ isolated function testContainerNonWrapperErrorIsNotDuplicated() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerBulkFailureNamesTheCallersEntry() returns error? {
     string indexName = containerIndexName("err-attrib");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     ai:Error? result = store.add([
         entry("good-0", queryVector()),
@@ -176,7 +176,7 @@ isolated function testContainerCreateIndexOnBadMappingIsReported() returns error
     string indexName = containerIndexName("err-mapping");
     // The module sets no dimension ceiling, so the server's rejection must fail construction.
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 99999}};
-    VectorStore|ai:Error result = newContainerStore(indexName, configMode);
+    VectorStoreCore|ai:Error result = newContainerStore(indexName, configMode);
 
     if result !is ai:Error {
         test:assertFail("an out-of-range dimension should fail index creation");
@@ -190,7 +190,7 @@ isolated function testContainerUnreachableEndpointFailsAfterRetries() returns er
     // Nothing listens on 9299, and with no retries there is no backoff to wait out.
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
     StoreConfiguration config = {retryConfig: {maxRetries: 0}};
-    VectorStore|ai:Error result = new ("http://localhost:9299", CONTAINER_REGION, "unreachable",
+    VectorStoreCore|ai:Error result = new ("http://localhost:9299", CONTAINER_REGION, "unreachable",
         containerDeployment(), configMode, config
     );
 

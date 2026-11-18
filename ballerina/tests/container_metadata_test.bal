@@ -23,7 +23,7 @@ import ballerina/time;
 @test:Config {groups: ["docker"]}
 isolated function testContainerMetadataKnownFieldsRoundTrip() returns error? {
     string indexName = containerIndexName("md-known");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     time:Utc created = check time:utcFromString("2023-11-14T22:13:20Z");
     time:Utc modified = check time:utcFromString("2024-02-29T08:00:00Z");
@@ -52,7 +52,7 @@ isolated function testContainerMetadataKnownFieldsRoundTrip() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerMetadataCustomKeysRoundTrip() returns error? {
     string indexName = containerIndexName("md-custom");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     check store.add([
         entry("md", queryVector(), "doc", {
@@ -78,7 +78,7 @@ isolated function testContainerMetadataCustomKeysRoundTrip() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerMetadataFractionalNumberIsReadBackAsDecimal() returns error? {
     string indexName = containerIndexName("md-frac");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
     check store.add([entry("md", queryVector(), "doc", {"rating": 4.25})]);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 1});
@@ -94,7 +94,7 @@ isolated function testContainerMetadataFractionalNumberIsReadBackAsDecimal() ret
 @test:Config {groups: ["docker"]}
 isolated function testContainerEntryWithoutMetadataRoundTrips() returns error? {
     string indexName = containerIndexName("md-none");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
     check store.add([entry("plain", queryVector(), "no metadata")]);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 1});
@@ -109,7 +109,7 @@ isolated function testContainerMetadataUnderFlatSchemaRoundTrips() returns error
     string indexName = containerIndexName("md-flat");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
     StoreConfiguration config = {metadataFieldName: ""};
-    VectorStore store = check newContainerStore(indexName, configMode, config);
+    VectorStoreCore store = check newContainerStore(indexName, configMode, config);
     check store.add([entry("flat", queryVector(), "flat doc", {"language": "en", "year": 2024})]);
 
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 1});
@@ -131,7 +131,7 @@ isolated function testContainerFlatSchemaKeyCollisionIsRejectedBeforeWriting() r
     string indexName = containerIndexName("md-collide");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
     StoreConfiguration config = {metadataFieldName: ""};
-    VectorStore store = check newContainerStore(indexName, configMode, config);
+    VectorStoreCore store = check newContainerStore(indexName, configMode, config);
 
     // A `content` metadata key would overwrite the chunk content under a flat schema.
     ai:Error? result = store.add([entry("collide", queryVector(), "real content", {"content": "hijacked"})]);
@@ -142,7 +142,7 @@ isolated function testContainerFlatSchemaKeyCollisionIsRejectedBeforeWriting() r
 @test:Config {groups: ["docker"]}
 isolated function testContainerMetadataSurvivesUpsert() returns error? {
     string indexName = containerIndexName("md-upsert");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     check store.add([entry("m", queryVector(), "v1", {"language": "en", "year": 2020})]);
     check store.add([entry("m", queryVector(), "v2", {"language": "fr"})]);

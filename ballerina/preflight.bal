@@ -112,13 +112,13 @@ isolated function indexCreationRequirements(Engine engine, ai:SimilarityMetric m
         VersionRequirement[] requirements = [{
             floor: [2, 2],
             feature: "the 'lucene' k-NN engine",
-            remedy: "set 'ManagedDomainDeployment.engine' to 'FAISS'"
+            remedy: "set 'ManagedDomainStoreConfiguration.engine' to 'FAISS'"
         }];
         if metric == ai:DOT_PRODUCT {
             requirements.push({
                 floor: [2, 13],
                 feature: "the 'innerproduct' space type with the 'lucene' engine",
-                remedy: "set 'ManagedDomainDeployment.engine' to 'FAISS'"
+                remedy: "set 'ManagedDomainStoreConfiguration.engine' to 'FAISS'"
             });
         }
         return requirements;
@@ -127,7 +127,7 @@ isolated function indexCreationRequirements(Engine engine, ai:SimilarityMetric m
         return [{
             floor: [2, 19],
             feature: "the 'cosinesimil' space type with the 'faiss' engine",
-            remedy: "set 'ManagedDomainDeployment.engine' to 'LUCENE'"
+            remedy: "set 'ManagedDomainStoreConfiguration.engine' to 'LUCENE'"
         }];
     }
     return [];

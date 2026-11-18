@@ -23,7 +23,7 @@ import ballerina/test;
 @test:Config {groups: ["docker"]}
 isolated function testContainerClusterVersionIsReadable() returns error? {
     OpenSearchTransport transport = check new (containerUrl, CONTAINER_REGION,
-            {deploymentType: MANAGED_DOMAIN, auth: containerAuth}, {}, {});
+            {auth: containerAuth}, {}, {});
     string? reported = check transport.clusterVersion();
     if reported !is string {
         test:assertFail("'GET /' must report a version on a managed domain");
@@ -59,7 +59,7 @@ isolated function testContainerVerificationAcceptsTheModulesOwnIndex() returns e
 @test:Config {groups: ["docker"]}
 isolated function testContainerVerificationRejectsAMissingIndex() {
     string indexName = containerIndexName("verify-missing");
-    VectorStore|ai:Error result = newContainerStore(indexName, containerDenseMode(),
+    VectorStoreCore|ai:Error result = newContainerStore(indexName, containerDenseMode(),
             {createIndexIfNotExists: false});
     if result !is ai:Error {
         test:assertFail("a store pointed at an index that does not exist must not construct");
@@ -73,7 +73,7 @@ isolated function testContainerVerificationRejectsAModeMismatch() returns error?
     string indexName = containerIndexName("verify-mismatch");
     _ = check newContainerStore(indexName, containerDenseMode());
 
-    VectorStore|ai:Error result = newContainerStore(indexName, containerSparseMode(),
+    VectorStoreCore|ai:Error result = newContainerStore(indexName, containerSparseMode(),
             {createIndexIfNotExists: false});
     if result !is ai:Error {
         test:assertFail("a SPARSE store aimed at a dense index must not construct");
@@ -88,7 +88,7 @@ isolated function testContainerVerificationRejectsADriftedDimension() returns er
     _ = check newContainerStore(indexName, containerDenseMode());
 
     DenseSearch widened = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION + 1}};
-    VectorStore|ai:Error result = newContainerStore(indexName, widened, {createIndexIfNotExists: false});
+    VectorStoreCore|ai:Error result = newContainerStore(indexName, widened, {createIndexIfNotExists: false});
     if result !is ai:Error {
         test:assertFail("a dimension that disagrees with the index must not construct");
     }
@@ -106,7 +106,7 @@ isolated function testContainerVerificationRejectsARenamedVectorField() returns 
         indexConfig: {dimension: CONTAINER_DIMENSION},
         vectorFieldName: "vector"
     };
-    VectorStore|ai:Error result = newContainerStore(indexName, renamed, {createIndexIfNotExists: false});
+    VectorStoreCore|ai:Error result = newContainerStore(indexName, renamed, {createIndexIfNotExists: false});
     if result !is ai:Error {
         test:assertFail("a vector field name the index does not declare must not construct");
     }

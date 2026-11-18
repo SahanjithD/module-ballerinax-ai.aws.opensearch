@@ -105,9 +105,9 @@ isolated function testHnswParametersHonoredOnEveryDeploymentType() returns error
         map<json> method = check asMap(vectorField["method"]);
         map<json> parameters = check asMap(method["parameters"]);
         test:assertEquals(parameters["ef_construction"], 256,
-                string `'ef_construction' should reach ${deployment.deploymentType}`);
+                string `'ef_construction' should reach ${deploymentLabel(deployment)}`);
         test:assertEquals(parameters["m"], 32,
-                string `'m' should reach ${deployment.deploymentType}`);
+                string `'m' should reach ${deploymentLabel(deployment)}`);
     }
 }
 
@@ -123,7 +123,7 @@ isolated function testSpaceTypePropagatesPerDeploymentType() returns error? {
             spaceType = method["space_type"];
         }
         test:assertEquals(spaceType, "l2",
-                string `unexpected space_type for ${deployment.deploymentType}`);
+                string `unexpected space_type for ${deploymentLabel(deployment)}`);
     }
 }
 
@@ -176,7 +176,7 @@ isolated function testVectorModeIsNeverEmitted() returns error? {
     foreach Deployment deployment in deployments {
         map<json> vectorField = check vectorFieldOf(buildIndexMapping(baseMode(), {}, deployment));
         test:assertFalse(vectorField.hasKey("mode"),
-                string `${deployment.deploymentType} must not carry 'mode'; the AOSS proxy rejects ` +
+                string `${deploymentLabel(deployment)} must not carry 'mode'; the AOSS proxy rejects ` +
                 "every value of it and no other deployment ever declared the field");
     }
 }
@@ -191,9 +191,9 @@ isolated function testQuantizationNeverAppearsOffNextGen() returns error? {
     foreach Deployment deployment in methodBlockDeployments {
         map<json> vectorField = check vectorFieldOf(buildIndexMapping(baseMode(), {}, deployment));
         test:assertFalse(vectorField.hasKey("compression_level"),
-                string `${deployment.deploymentType} must not carry 'compression_level'`);
+                string `${deploymentLabel(deployment)} must not carry 'compression_level'`);
         test:assertFalse(vectorField.hasKey("mode"),
-                string `${deployment.deploymentType} must not carry 'mode'`);
+                string `${deploymentLabel(deployment)} must not carry 'mode'`);
     }
 }
 

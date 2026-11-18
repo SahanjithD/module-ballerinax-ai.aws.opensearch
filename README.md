@@ -4,10 +4,10 @@
 [![codecov](https://codecov.io/gh/ballerina-platform/module-ballerinax-ai.aws.opensearch/branch/main/graph/badge.svg)](https://codecov.io/gh/ballerina-platform/module-ballerinax-ai.aws.opensearch)
 [![GitHub Last Commit](https://img.shields.io/github/last-commit/ballerina-platform/module-ballerinax-ai.aws.opensearch.svg)](https://github.com/ballerina-platform/module-ballerinax-ai.aws.opensearch/commits/main)
 
-An [`ai:VectorStore`](https://central.ballerina.io/ballerina/ai/latest) implementation for
-[Amazon OpenSearch Service](https://aws.amazon.com/opensearch-service/), covering managed
-domains and both OpenSearch Serverless generations (Classic and NextGen). See the
-[module README](ballerina/README.md) for usage.
+[`ai:VectorStore`](https://central.ballerina.io/ballerina/ai/latest) implementations for
+[Amazon OpenSearch Service](https://aws.amazon.com/opensearch-service/): `ManagedDomainVectorStore`
+for managed domains, and `ServerlessVectorStore` for both OpenSearch Serverless generations (Classic
+and NextGen). See the [module README](ballerina/README.md) for usage.
 
 ## Build options
 

@@ -32,11 +32,11 @@ isolated function testContainerInitCreatesIndex() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerInitOnExistingIndexIsANoOp() returns error? {
     string indexName = containerIndexName("init-existing");
-    VectorStore first = check newContainerStore(indexName);
+    VectorStoreCore first = check newContainerStore(indexName);
     check first.add([entry("seed", queryVector())]);
 
     // Must see the existing index rather than send `PUT /<index>` again, which would 400.
-    VectorStore second = check newContainerStore(indexName);
+    VectorStoreCore second = check newContainerStore(indexName);
     ai:VectorMatch[] matches = check second.query({embedding: queryVector(), topK: 10});
     test:assertEquals(matches.length(), 1, "the second store should see the first store's data");
 
@@ -46,7 +46,7 @@ isolated function testContainerInitOnExistingIndexIsANoOp() returns error? {
 isolated function testContainerCreateIndexIfNotExistsFalseSkipsCreation() returns error? {
     string indexName = containerIndexName("init-nocreate");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    VectorStore|ai:Error result = newContainerStore(indexName, configMode, {createIndexIfNotExists: false});
+    VectorStoreCore|ai:Error result = newContainerStore(indexName, configMode, {createIndexIfNotExists: false});
     if result !is ai:Error {
         test:assertFail("a missing index that may not be created should fail construction");
     }
@@ -113,7 +113,7 @@ isolated function spaceTypeDataProvider() returns [ai:SimilarityMetric, string][
 isolated function testContainerLuceneEngineIsAccepted() returns error? {
     string indexName = containerIndexName("init-lucene");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    VectorStore store = check newContainerStore(indexName, configMode, {}, containerDeployment(LUCENE));
+    VectorStoreCore store = check newContainerStore(indexName, configMode, {}, containerDeployment(LUCENE));
 
     map<json> mappings = check indexMapping(indexName);
     map<json> properties = check mapField(mappings, "properties");
@@ -135,7 +135,7 @@ isolated function testContainerMappingHonoursCustomFieldNames() returns error? {
         vectorFieldName: "vec"
     };
     StoreConfiguration config = {contentFieldName: "body", idFieldName: "entry_id", metadataFieldName: "props"};
-    VectorStore store = check newContainerStore(indexName, configMode, config);
+    VectorStoreCore store = check newContainerStore(indexName, configMode, config);
 
     map<json> mappings = check indexMapping(indexName);
     map<json> properties = check mapField(mappings, "properties");
@@ -158,7 +158,7 @@ isolated function testContainerMappingHonoursCustomFieldNames() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerStringMetadataIsMappedAsKeyword() returns error? {
     string indexName = containerIndexName("init-dyntpl");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
     check store.add([entry("k", queryVector(), "doc", {"language": "en"})]);
 
     map<json> mappings = check indexMapping(indexName);

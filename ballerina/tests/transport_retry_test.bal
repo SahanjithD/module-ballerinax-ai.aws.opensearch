@@ -79,7 +79,7 @@ service / on retryListener {
 isolated function testRetryIsSignedAfresh() returns error? {
     // `x-amz-date` has one-second resolution, so the backoff must exceed a second to tell the
     // attempts apart.
-    VectorStore store = check new (string `http://localhost:${RETRY_PORT}`, CONTAINER_REGION, "retry-index",
+    VectorStoreCore store = check new (string `http://localhost:${RETRY_PORT}`, CONTAINER_REGION, "retry-index",
         containerDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}},
         {createIndexIfNotExists: false, retryConfig: {maxRetries: 1, initialDelay: 1.1}}
     );

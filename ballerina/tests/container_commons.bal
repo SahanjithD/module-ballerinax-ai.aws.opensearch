@@ -102,7 +102,6 @@ isolated function containerDenseMode(ai:SimilarityMetric similarityMetric = ai:C
 # + engine - The ANN engine to configure, which only a managed domain lets a caller choose
 # + return - The default container test deployment
 isolated function containerDeployment(Engine engine = FAISS) returns ManagedDomainDeployment => {
-    deploymentType: MANAGED_DOMAIN,
     auth: containerAuth,
     engine,
     refreshOnWrite: true
@@ -119,10 +118,9 @@ isolated function newContainerStore(string indexName, SearchMode searchMode = {
             queryMode: ai:DENSE,
             indexConfig: {dimension: CONTAINER_DIMENSION}
         }, StoreConfiguration config = {}, ManagedDomainDeployment deployment = {
-            deploymentType: MANAGED_DOMAIN,
             auth: containerAuth,
             refreshOnWrite: true
-        }) returns VectorStore|ai:Error =>
+        }) returns VectorStoreCore|ai:Error =>
     new (containerUrl, CONTAINER_REGION, indexName, deployment, searchMode, config);
 
 # Builds a dense test vector of `CONTAINER_DIMENSION` components.

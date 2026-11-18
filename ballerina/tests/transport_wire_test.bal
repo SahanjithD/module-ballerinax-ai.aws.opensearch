@@ -81,7 +81,7 @@ service / on wireListener {
     }
 }
 
-isolated function wireStore() returns VectorStore|ai:Error =>
+isolated function wireStore() returns VectorStoreCore|ai:Error =>
     new (string `http://localhost:${WIRE_PORT}`, CONTAINER_REGION, "wire-index", containerDeployment(),
     {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}},
     {createIndexIfNotExists: false}
@@ -97,7 +97,7 @@ isolated function wireEmbedding() returns ai:Vector {
 
 @test:Config
 isolated function testLargeBodyIsSentAsUnchunkedHttp11() returns error? {
-    VectorStore store = check wireStore();
+    VectorStoreCore store = check wireStore();
     check store.add([{id: "wire-1", embedding: wireEmbedding(), chunk: <ai:TextChunk>{content: "framing"}}]);
 
     WireCapture capture = check takeWireCapture().ensureType();
@@ -115,7 +115,7 @@ isolated function testLargeBodyIsSentAsUnchunkedHttp11() returns error? {
 
 @test:Config
 isolated function testCallerSuppliedHttpConfigCannotUnpinTheFraming() returns error? {
-    VectorStore store = check new (string `http://localhost:${WIRE_PORT}`, CONTAINER_REGION, "wire-index",
+    VectorStoreCore store = check new (string `http://localhost:${WIRE_PORT}`, CONTAINER_REGION, "wire-index",
         containerDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}},
         {createIndexIfNotExists: false},
         {httpVersion: http:HTTP_2_0, http1Settings: {chunking: http:CHUNKING_ALWAYS}}

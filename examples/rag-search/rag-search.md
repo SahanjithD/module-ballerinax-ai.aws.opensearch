@@ -13,10 +13,9 @@ deployment and obtain AWS credentials, then create a `Config.toml` in this direc
 serviceUrl = "https://my-domain.us-east-1.es.amazonaws.com"
 region = "us-east-1"
 indexName = "rag-search-example"
-
-[deployment]
-deploymentType = "MANAGED_DOMAIN"
 ```
+
+The example uses the default AWS credential chain.
 
 ## Run
 

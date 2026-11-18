@@ -24,7 +24,7 @@ import ballerina/test;
 #
 # + store - The store to seed
 # + return - An error if seeding fails
-isolated function seedFilterEntries(VectorStore store) returns error? {
+isolated function seedFilterEntries(VectorStoreCore store) returns error? {
     check store.add([
         entry("en-2020", vec(1.0), "english 2020",
                 {"language": "en", "year": 2020, "rating": 4.5, "published": true, "tags": ["a", "b"]}),
@@ -44,7 +44,7 @@ isolated function seedFilterEntries(VectorStore store) returns error? {
 # + return - The matching entries, or an error
 isolated function queryWithFilters(string prefix, ai:MetadataFilters filters) returns ai:VectorMatch[]|error {
     string indexName = containerIndexName(prefix);
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
     check seedFilterEntries(store);
     ai:VectorMatch[] matches = check store.query({filters, topK: 10});
     return matches;
@@ -184,7 +184,7 @@ isolated function testContainerEmptyFilterListMatchesEverything() returns error?
 @test:Config {groups: ["docker"]}
 isolated function testContainerFilterPreFiltersKnnQuery() returns error? {
     string indexName = containerIndexName("f-knn");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
     check seedFilterEntries(store);
 
     // `fr-2022` is the least similar entry, so getting it with `topK: 1` means the filter ran
@@ -203,7 +203,7 @@ isolated function testContainerFilterUnderFlatSchema() returns error? {
     string indexName = containerIndexName("f-flat");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
     StoreConfiguration config = {metadataFieldName: ""};
-    VectorStore store = check newContainerStore(indexName, configMode, config);
+    VectorStoreCore store = check newContainerStore(indexName, configMode, config);
     check store.add([
         entry("flat-en", vec(1.0), "english", {"language": "en"}),
         entry("flat-fr", vec(0.0, 1.0), "french", {"language": "fr"})

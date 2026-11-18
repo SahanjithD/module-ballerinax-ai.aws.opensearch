@@ -32,7 +32,7 @@ isolated function validMode() returns DenseSearch => {queryMode: ai:DENSE, index
 @test:Config
 isolated function testManagedDomainWithBasicAuthPasses() {
     BasicAuth basicAuth = {username: "u", password: "p"};
-    ManagedDomainDeployment deployment = {deploymentType: MANAGED_DOMAIN, auth: basicAuth};
+    ManagedDomainDeployment deployment = {auth: basicAuth};
     ai:Error? result = validateConfiguration(VALID_URL, deployment, validMode(), {});
     test:assertTrue(result is ());
 }
@@ -60,17 +60,15 @@ isolated function testEveryDeploymentTypePassesWithDefaults() {
     foreach Deployment deployment in deployments {
         ai:Error? result = validateConfiguration(VALID_URL, deployment, validMode(), {});
         test:assertTrue(result is (),
-                string `a default ${deployment.deploymentType} deployment should validate`);
+                string `a default ${deploymentLabel(deployment)} deployment should validate`);
     }
 }
 
-// `deploymentType` is required on every variant so a literal resolves to exactly one of them.
+// `generation` is required on both Serverless variants so a literal resolves to exactly one.
 @test:Config
-isolated function testDiscriminatorSelectsTheVariant() {
-    Deployment managed = managedDeployment();
-    Deployment classic = classicDeployment();
-    Deployment nextGen = nextGenDeployment();
-    test:assertTrue(managed is ManagedDomainDeployment);
+isolated function testGenerationSelectsTheServerlessVariant() {
+    ServerlessDeployment classic = {generation: CLASSIC, auth: TEST_CREDENTIALS};
+    ServerlessDeployment nextGen = {generation: NEXTGEN, auth: TEST_CREDENTIALS};
     test:assertTrue(classic is ServerlessClassicDeployment);
     test:assertTrue(nextGen is ServerlessNextGenDeployment);
 }
@@ -272,7 +270,7 @@ isolated function testFullyValidConfigurationPasses() {
 // Verification that cannot run (here, an unreachable endpoint) must warn, not fail construction.
 @test:Config
 isolated function testVerificationDoesNotFailConstructionWhenItCannotRun() returns error? {
-    _ = check new VectorStore(
+    _ = check new VectorStoreCore(
         UNREACHABLE_URL,
         "us-east-1",
         "test-index",
@@ -307,7 +305,7 @@ isolated function testUnsetQuantizationIsAllowedOnNextGen() {
 @test:Config
 isolated function testBothCollectionIdentifiersRejected() {
     ServerlessNextGenDeployment deployment = {
-        deploymentType: SERVERLESS_NEXTGEN,
+        generation: NEXTGEN,
         auth: TEST_CREDENTIALS,
         collectionName: "vectors",
         collectionId: "abc123"
@@ -323,12 +321,12 @@ isolated function testBothCollectionIdentifiersRejected() {
 @test:Config
 isolated function testEitherCollectionIdentifierAloneIsAccepted() {
     ServerlessNextGenDeployment byName = {
-        deploymentType: SERVERLESS_NEXTGEN,
+        generation: NEXTGEN,
         auth: TEST_CREDENTIALS,
         collectionName: "vectors"
     };
     ServerlessNextGenDeployment byId = {
-        deploymentType: SERVERLESS_NEXTGEN,
+        generation: NEXTGEN,
         auth: TEST_CREDENTIALS,
         collectionId: "abc123"
     };
@@ -351,12 +349,12 @@ isolated function testCollectionHeadersOnlyOnNextGen() {
 @test:Config
 isolated function testCollectionNameAndIdMapToTheirHeaders() {
     ServerlessNextGenDeployment byName = {
-        deploymentType: SERVERLESS_NEXTGEN,
+        generation: NEXTGEN,
         auth: TEST_CREDENTIALS,
         collectionName: "vectors"
     };
     ServerlessNextGenDeployment byId = {
-        deploymentType: SERVERLESS_NEXTGEN,
+        generation: NEXTGEN,
         auth: TEST_CREDENTIALS,
         collectionId: "abc123"
     };

@@ -30,12 +30,10 @@ const float WEIGHT_SUM_TOLERANCE = 1.0e-6;
 final DenseSearch & readonly DEFAULT_SEARCH_MODE = {queryMode: ai:DENSE, indexConfig: {dimension: 1536}};
 
 // Talks to the OpenSearch REST API directly, since there is no `ballerinax/opensearch` connector.
-// Per-deployment behavior, score ranges and hazards are documented in the README.
-# An `ai:VectorStore` backed by an Amazon OpenSearch Service domain or an OpenSearch Serverless
-# collection.
-public isolated class VectorStore {
-    *ai:VectorStore;
-
+// `ManagedDomainVectorStore` and `ServerlessVectorStore` are thin public fronts over this class;
+// per-deployment behavior, score ranges and hazards are documented in the README.
+# The store implementation shared by both public stores.
+isolated class VectorStoreCore {
     private final OpenSearchTransport transport;
     private final string indexName;
     private final Deployment & readonly deployment;
@@ -44,23 +42,17 @@ public isolated class VectorStore {
 
     # Initializes the store and, by default, creates and checks the index.
     #
-    # + serviceUrl - The endpoint, e.g. `https://my-domain.us-east-1.es.amazonaws.com`
+    # + serviceUrl - The endpoint
     # + region - The AWS region of the endpoint
     # + indexName - The index this store reads and writes
-    # + deploymentConfig - The deployment type, its credentials and its deployment-specific settings
+    # + deploymentConfig - The target deployment and its deployment-specific settings
     # + searchMode - Dense, sparse or hybrid search, with the index shape and fields it uses
     # + storeConfig - Settings shared by every search mode and deployment
-    # + httpConfig - HTTP client settings. `httpVersion` and `http1Settings.chunking` are always set
-    # to `HTTP_1_1` and `CHUNKING_NEVER`, which SigV4 signing needs
+    # + httpConfig - HTTP client settings
     # + return - An `ai:Error` if validation, index creation or verification fails
-    public isolated function init(
-            @display {label: "Service URL"} string serviceUrl,
-            @display {label: "Region"} aws:Region|string region,
-            @display {label: "Index Name"} string indexName,
-            @display {label: "Deployment Configuration"} Deployment deploymentConfig,
-            @display {label: "Search Mode"} SearchMode searchMode = DEFAULT_SEARCH_MODE,
-            @display {label: "Store Configuration"} StoreConfiguration storeConfig = {},
-            @display {label: "HTTP Configuration"} http:ClientConfiguration httpConfig = {})
+    isolated function init(string serviceUrl, aws:Region|string region, string indexName,
+            Deployment deploymentConfig, SearchMode searchMode = DEFAULT_SEARCH_MODE,
+            StoreConfiguration storeConfig = {}, http:ClientConfiguration httpConfig = {})
             returns ai:Error? {
         check validateConfiguration(serviceUrl, deploymentConfig, searchMode, storeConfig);
 
@@ -90,7 +82,7 @@ public isolated class VectorStore {
     # + entries - Entries whose embeddings match this store's search mode (`ai:Vector` for `DENSE`,
     # `ai:SparseVector` for `SPARSE`, `ai:HybridVector` for `HYBRID`)
     # + return - An `ai:Error` naming the failing entries, if any
-    public isolated function add(ai:VectorEntry[] entries) returns ai:Error? {
+    isolated function add(ai:VectorEntry[] entries) returns ai:Error? {
         if entries.length() == 0 {
             return;
         }
@@ -100,7 +92,7 @@ public isolated class VectorStore {
             byte[] body = check buildAddBulkBody(batch, self.indexName, self.deployment, self.searchMode,
                     self.config);
             BulkResponse response = check self.transport.bulk(body, isIndexingBatch = true);
-            // Matched by position, because on `SERVERLESS_CLASSIC` the response `_id` is
+            // Matched by position, because on Serverless Classic the response `_id` is
             // server-generated.
             string[] submittedIds = from PreparedEntry entry in batch
                 select entry.id;
@@ -117,7 +109,7 @@ public isolated class VectorStore {
     #
     # + query - The query. Any `topK < 1` returns all entries, up to `maxResultWindow`
     # + return - The matches, or an `ai:Error`
-    public isolated function query(ai:VectorStoreQuery query) returns ai:VectorMatch[]|ai:Error {
+    isolated function query(ai:VectorStoreQuery query) returns ai:VectorMatch[]|ai:Error {
         json body = check buildSearchBody(query, self.searchMode, self.config);
         // `buildSearchBody` rejects a mismatched embedding, so one present here is being scored.
         boolean scoreIsMeaningful = query.embedding !is ();
@@ -136,7 +128,7 @@ public isolated class VectorStore {
     #
     # + ids - The id or ids to delete
     # + return - An `ai:Error` naming the ids that failed, if any
-    public isolated function delete(string|string[] ids) returns ai:Error? {
+    isolated function delete(string|string[] ids) returns ai:Error? {
         string[] idList;
         if ids is string {
             idList = [ids];
@@ -174,7 +166,7 @@ public isolated class VectorStore {
             int hitCount = searchResponse.hits.hits.length();
             // `add` is append-only here, so a full page may have missed duplicates.
             if hitCount >= self.config.maxResultWindow {
-                return error(string `A lookup for ${chunk.length()} id(s) to delete on SERVERLESS_CLASSIC ` +
+                return error(string `A lookup for ${chunk.length()} id(s) to delete on Serverless Classic ` +
                         string `returned ${hitCount} documents, meeting the configured 'maxResultWindow' ` +
                         string `(${self.config.maxResultWindow}) exactly. Because 'add' is append-only on ` +
                         "Serverless Classic, there may be more duplicate documents than this lookup could " +

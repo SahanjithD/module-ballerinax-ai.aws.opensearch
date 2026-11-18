@@ -72,7 +72,7 @@ isolated function hybridContainerQuery() returns ai:VectorStoreQuery => {
 @test:Config {groups: ["docker"]}
 isolated function testContainerHybridInlinePipelineIsAcceptedAndScoresAreSane() returns error? {
     string indexName = containerIndexName("hybrid-inline");
-    VectorStore store = check newContainerStore(indexName, containerHybridMode());
+    VectorStoreCore store = check newContainerStore(indexName, containerHybridMode());
     check store.add(hybridSeedEntries());
 
     ai:VectorMatch[] matches = check store.query(hybridContainerQuery());
@@ -90,7 +90,7 @@ isolated function testContainerHybridInlinePipelineIsAcceptedAndScoresAreSane() 
 @test:Config {groups: ["docker"]}
 isolated function testContainerHybridWithoutPipelineLeaksSentinelScores() returns error? {
     string indexName = containerIndexName("hybrid-nopipe");
-    VectorStore store = check newContainerStore(indexName, containerHybridMode());
+    VectorStoreCore store = check newContainerStore(indexName, containerHybridMode());
     check store.add(hybridSeedEntries());
 
     // The module's own body with only the pipeline removed.
@@ -121,14 +121,14 @@ isolated function testContainerHybridWithoutPipelineLeaksSentinelScores() return
 @test:Config {groups: ["docker"]}
 isolated function testContainerHybridWeightsShiftRanking() returns error? {
     string indexName = containerIndexName("hybrid-weights");
-    VectorStore store = check newContainerStore(indexName, containerHybridMode());
+    VectorStoreCore store = check newContainerStore(indexName, containerHybridMode());
     check store.add(hybridSeedEntries());
 
-    VectorStore denseHeavy = check newContainerStore(indexName,
+    VectorStoreCore denseHeavy = check newContainerStore(indexName,
             containerHybridMode({denseWeight: 0.9, sparseWeight: 0.1}), {createIndexIfNotExists: false});
     ai:VectorMatch[] denseFirst = check denseHeavy.query(hybridContainerQuery());
 
-    VectorStore sparseHeavy = check newContainerStore(indexName,
+    VectorStoreCore sparseHeavy = check newContainerStore(indexName,
             containerHybridMode({denseWeight: 0.1, sparseWeight: 0.9}), {createIndexIfNotExists: false});
     ai:VectorMatch[] sparseFirst = check sparseHeavy.query(hybridContainerQuery());
 
@@ -142,7 +142,7 @@ isolated function testContainerHybridWeightsShiftRanking() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerHybridFilterAppliesToBothSubQueries() returns error? {
     string indexName = containerIndexName("hybrid-filter");
-    VectorStore store = check newContainerStore(indexName, containerHybridMode());
+    VectorStoreCore store = check newContainerStore(indexName, containerHybridMode());
     // "sparse-favoured" is tagged `fr` and would otherwise win the sparse sub-query outright.
     check store.add(hybridSeedEntries());
 
@@ -173,7 +173,7 @@ isolated function testContainerHybridNamedPipelineViaQueryParameter() returns er
         ]
     });
 
-    VectorStore store = check newContainerStore(indexName, containerHybridMode({name: pipelineName}));
+    VectorStoreCore store = check newContainerStore(indexName, containerHybridMode({name: pipelineName}));
     check store.add(hybridSeedEntries());
     ai:VectorMatch[] matches = check store.query(hybridContainerQuery());
     test:assertEquals(matches.length(), 2);
@@ -188,7 +188,7 @@ isolated function testContainerHybridNamedPipelineViaQueryParameter() returns er
 @test:Config {groups: ["docker"]}
 isolated function testContainerHybridWithoutEmbeddingReturnsEveryEntry() returns error? {
     string indexName = containerIndexName("hybrid-noembed");
-    VectorStore store = check newContainerStore(indexName, containerHybridMode());
+    VectorStoreCore store = check newContainerStore(indexName, containerHybridMode());
     check store.add(hybridSeedEntries());
 
     ai:VectorMatch[] matches = check store.query({
@@ -203,7 +203,7 @@ isolated function testContainerHybridWithoutEmbeddingReturnsEveryEntry() returns
 @test:Config {groups: ["docker"]}
 isolated function testContainerHybridRoundTripsBothHalves() returns error? {
     string indexName = containerIndexName("hybrid-roundtrip");
-    VectorStore store = check newContainerStore(indexName, containerHybridMode());
+    VectorStoreCore store = check newContainerStore(indexName, containerHybridMode(), {includeEmbeddingsInResults: true});
     check store.add(hybridSeedEntries());
 
     ai:VectorMatch[] matches = check store.query(hybridContainerQuery());
@@ -222,7 +222,7 @@ isolated function testContainerHybridRoundTripsBothHalves() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerRrfFusionIsAcceptedAndScoresAreSane() returns error? {
     string indexName = containerIndexName("hybrid-rrf");
-    VectorStore store = check newContainerStore(indexName, containerHybridMode({technique: RRF}));
+    VectorStoreCore store = check newContainerStore(indexName, containerHybridMode({technique: RRF}));
     check store.add(hybridSeedEntries());
 
     ai:VectorMatch[] matches = check store.query(hybridContainerQuery());
@@ -261,7 +261,7 @@ isolated function testContainerEfSearchIsAcceptedByTheDenseSubQuery() returns er
         indexConfig: {dimension: CONTAINER_DIMENSION},
         efSearch: 512
     };
-    VectorStore store = check newContainerStore(indexName, mode);
+    VectorStoreCore store = check newContainerStore(indexName, mode);
     check store.add(hybridSeedEntries());
 
     ai:VectorMatch[] matches = check store.query(hybridContainerQuery());

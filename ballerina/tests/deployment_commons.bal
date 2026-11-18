@@ -32,13 +32,13 @@ final readonly & auth:StaticAuthConfig TEST_CREDENTIALS = {
 # + return - The deployment
 isolated function managedDeployment(Engine engine = FAISS, boolean refreshOnWrite = false)
         returns ManagedDomainDeployment =>
-    {deploymentType: MANAGED_DOMAIN, auth: TEST_CREDENTIALS, engine, refreshOnWrite};
+    {auth: TEST_CREDENTIALS, engine, refreshOnWrite};
 
 # A Serverless Classic deployment with test credentials.
 #
 # + return - The deployment
 isolated function classicDeployment() returns ServerlessClassicDeployment =>
-    {deploymentType: SERVERLESS_CLASSIC, auth: TEST_CREDENTIALS};
+    {generation: CLASSIC, auth: TEST_CREDENTIALS};
 
 # A Serverless NextGen deployment with test credentials.
 #
@@ -46,7 +46,7 @@ isolated function classicDeployment() returns ServerlessClassicDeployment =>
 # + return - The deployment
 isolated function nextGenDeployment(CompressionLevel? compressionLevel = ())
         returns ServerlessNextGenDeployment =>
-    {deploymentType: SERVERLESS_NEXTGEN, auth: TEST_CREDENTIALS, compressionLevel};
+    {generation: NEXTGEN, auth: TEST_CREDENTIALS, compressionLevel};
 
 # All three deployment types with their defaults, for tests that assert behavior shared by every
 # flavour.
@@ -54,3 +54,14 @@ isolated function nextGenDeployment(CompressionLevel? compressionLevel = ())
 # + return - One deployment of each variant
 isolated function allDeployments() returns Deployment[] =>
     [managedDeployment(), classicDeployment(), nextGenDeployment()];
+
+# A readable name for a deployment, for assertion messages.
+#
+# + deployment - The deployment
+# + return - Its name
+isolated function deploymentLabel(Deployment deployment) returns string {
+    if deployment is ManagedDomainDeployment {
+        return "managed domain";
+    }
+    return deployment is ServerlessClassicDeployment ? "Serverless Classic" : "Serverless NextGen";
+}

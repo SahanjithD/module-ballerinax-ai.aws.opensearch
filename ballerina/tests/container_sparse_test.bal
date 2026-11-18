@@ -29,7 +29,7 @@ isolated function containerSparseMode() returns SparseSearch => {queryMode: ai:S
 #
 # + indexName - The target index
 # + return - The store, or an `ai:Error` if construction fails
-isolated function newSparseContainerStore(string indexName) returns VectorStore|ai:Error =>
+isolated function newSparseContainerStore(string indexName) returns VectorStoreCore|ai:Error =>
     newContainerStore(indexName, containerSparseMode());
 
 # Builds a sparse vector entry.
@@ -66,7 +66,7 @@ isolated function testContainerSparseIndexIsCreatedWithoutSettings() returns err
 @test:Config {groups: ["docker"]}
 isolated function testContainerSparseZeroWeightIsRejectedBeforeTheWire() returns error? {
     string indexName = containerIndexName("sparse-zero");
-    VectorStore store = check newSparseContainerStore(indexName);
+    VectorStoreCore store = check newSparseContainerStore(indexName);
 
     ai:Error? result = store.add([sparseVectorEntry("zero", [7], [0.0])]);
     test:assertTrue(result is ai:Error, "a zero sparse weight must be rejected");
@@ -77,7 +77,7 @@ isolated function testContainerSparseZeroWeightIsRejectedBeforeTheWire() returns
 @test:Config {groups: ["docker"]}
 isolated function testContainerSparseQueryRanksByDotProduct() returns error? {
     string indexName = containerIndexName("sparse-rank");
-    VectorStore store = check newSparseContainerStore(indexName);
+    VectorStoreCore store = check newSparseContainerStore(indexName);
     check store.add([
         // against query {1055: 2.0, 2048: 3.0}: 2*5.5 + 3*1.25 = 14.75
         sparseVectorEntry("alpha", [1055, 2048], [5.5, 1.25]),
@@ -101,7 +101,7 @@ isolated function testContainerSparseQueryRanksByDotProduct() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerSparseScoreIsUnboundedAndUntransformed() returns error? {
     string indexName = containerIndexName("sparse-score");
-    VectorStore store = check newSparseContainerStore(indexName);
+    VectorStoreCore store = check newSparseContainerStore(indexName);
     check store.add([sparseVectorEntry("alpha", [1055, 2048], [5.5, 1.25])]);
 
     ai:VectorMatch[] matches = check store.query({
@@ -117,7 +117,7 @@ isolated function testContainerSparseScoreIsUnboundedAndUntransformed() returns 
 @test:Config {groups: ["docker"]}
 isolated function testContainerSparseFilterAppliesAsBoolSibling() returns error? {
     string indexName = containerIndexName("sparse-filter");
-    VectorStore store = check newSparseContainerStore(indexName);
+    VectorStoreCore store = check newSparseContainerStore(indexName);
     check store.add([
         sparseVectorEntry("english", [1055], [5.0], "en"),
         sparseVectorEntry("french", [1055], [9.0], "fr")
@@ -137,7 +137,7 @@ isolated function testContainerSparseFilterAppliesAsBoolSibling() returns error?
 @test:Config {groups: ["docker"]}
 isolated function testContainerSparseRoundTripIsLossy() returns error? {
     string indexName = containerIndexName("sparse-roundtrip");
-    VectorStore store = check newSparseContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName, containerSparseMode(), {includeEmbeddingsInResults: true});
     check store.add([sparseVectorEntry("alpha", [7, 9], [0.3, 2.5])]);
 
     ai:VectorMatch[] matches = check store.query({embedding: {indices: [7], values: [1.0]}, topK: 1});
@@ -173,12 +173,12 @@ isolated function twoPhaseSeedEntries() returns ai:VectorEntry[] => [
 @test:Config {groups: ["docker"]}
 isolated function testContainerTwoPhaseAccelerationMatchesTheUnacceleratedResult() returns error? {
     string indexName = containerIndexName("sparse-twophase");
-    VectorStore seed = check newSparseContainerStore(indexName);
+    VectorStoreCore seed = check newSparseContainerStore(indexName);
     check seed.add(twoPhaseSeedEntries());
     ai:VectorMatch[] baseline = check seed.query(twoPhaseContainerQuery());
 
     SparseSearch accelerated = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}};
-    VectorStore store = check newContainerStore(indexName, accelerated, {createIndexIfNotExists: false});
+    VectorStoreCore store = check newContainerStore(indexName, accelerated, {createIndexIfNotExists: false});
     ai:VectorMatch[] matches = check store.query(twoPhaseContainerQuery());
 
     test:assertEquals(matches.length(), baseline.length(),
@@ -197,14 +197,14 @@ isolated function testContainerTwoPhaseAccelerationMatchesTheUnacceleratedResult
 @test:Config {groups: ["docker"]}
 isolated function testContainerTwoPhaseAccelerationWorksWithAFilter() returns error? {
     string indexName = containerIndexName("sparse-twophase-filter");
-    VectorStore seed = check newSparseContainerStore(indexName);
+    VectorStoreCore seed = check newSparseContainerStore(indexName);
     check seed.add([
         sparseVectorEntry("english", [1055], [9.0], "en"),
         sparseVectorEntry("french", [1055], [9.5], "fr")
     ]);
 
     SparseSearch accelerated = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}};
-    VectorStore store = check newContainerStore(indexName, accelerated, {createIndexIfNotExists: false});
+    VectorStoreCore store = check newContainerStore(indexName, accelerated, {createIndexIfNotExists: false});
     ai:VectorMatch[] matches = check store.query({
         embedding: {indices: [1055], values: [2.0]},
         filters: {filters: [{key: "language", value: "en"}]},

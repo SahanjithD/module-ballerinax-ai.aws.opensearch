@@ -22,10 +22,6 @@ import ballerinax/aws.auth;
 configurable string serviceUrl = ?;
 configurable string region = "us-east-1";
 configurable string indexName = "hybrid-search-example";
-configurable opensearch:ManagedDomainDeployment deployment = {
-    deploymentType: opensearch:MANAGED_DOMAIN,
-    auth: auth:DEFAULT_CREDENTIALS
-};
 
 type Article record {
     string title;
@@ -40,11 +36,12 @@ type Article record {
 // Toy vectors in place of model output. The dense and sparse halves favour different articles,
 // which is what fusion resolves.
 public function main() returns error? {
-    opensearch:VectorStore vectorStore = check new (
+    opensearch:ManagedDomainVectorStore vectorStore = check new (
         serviceUrl,
         region,
         indexName,
-        deployment,
+        // The default AWS credential chain.
+        auth:DEFAULT_CREDENTIALS,
         {
             queryMode: ai:HYBRID,
             indexConfig: {dimension: 4},

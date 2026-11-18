@@ -58,6 +58,16 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   which member of the union the caller had picked.
 
 ### Changed
+- `VectorStore` is split into `ManagedDomainVectorStore` and `ServerlessVectorStore`, one per AWS
+  product, so each `init` takes only what its deployment needs. `ManagedDomainVectorStore` takes
+  `auth` as a parameter, and its managed-only `engine` and `refreshOnWrite` move to
+  `ManagedDomainStoreConfiguration`, which extends `StoreConfiguration`. `ServerlessVectorStore`
+  takes a `ServerlessDeployment`, `ServerlessClassicDeployment|ServerlessNextGenDeployment`,
+  selected by a `generation` field of `CLASSIC` or `NEXTGEN`. `Deployment`,
+  `ManagedDomainDeployment` and the `DeploymentType` enum are removed.
+- `StoreConfiguration.includeEmbeddingsInResults` now defaults to `false`, so `query` results do
+  not carry the stored vectors unless asked. Most callers only read the chunk and score, and a
+  vector is the largest part of each hit.
 - `Configuration` is renamed to `StoreConfiguration`, to match its "Store Configuration" label.
 - `VectorStore.close()` is removed, leaving the three `ai:VectorStore` methods. `ai:VectorStore`
   has no lifecycle hook, so nothing that consumes a store called it; it released only the AWS

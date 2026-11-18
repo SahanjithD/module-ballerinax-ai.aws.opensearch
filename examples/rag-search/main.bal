@@ -22,11 +22,6 @@ import ballerinax/aws.auth;
 configurable string serviceUrl = ?;
 configurable string region = "us-east-1";
 configurable string indexName = "rag-search-example";
-// `auth` has no default, so the default AWS credential chain is chosen explicitly.
-configurable opensearch:ManagedDomainDeployment deployment = {
-    deploymentType: opensearch:MANAGED_DOMAIN,
-    auth: auth:DEFAULT_CREDENTIALS
-};
 
 type Article record {
     string title;
@@ -36,11 +31,12 @@ type Article record {
 
 // Toy embeddings in place of a real embedding model's output.
 public function main() returns error? {
-    opensearch:VectorStore vectorStore = check new (
+    opensearch:ManagedDomainVectorStore vectorStore = check new (
         serviceUrl,
         region,
         indexName,
-        deployment,
+        // The default AWS credential chain.
+        auth:DEFAULT_CREDENTIALS,
         {queryMode: ai:DENSE, indexConfig: {dimension: 4}}
     );
 

@@ -143,8 +143,16 @@ isolated function testCustomMaxResultWindowRaisesTheCeiling() returns error? {
 // --- _source directive -----------------------------------------------------------------------
 
 @test:Config
-isolated function testSourceIncludesEmbeddingsByDefault() returns error? {
+isolated function testSourceExcludesEmbeddingsByDefault() returns error? {
     json body = check buildSearchBody({}, queryMode(), {});
+    map<json> bodyMap = check asJsonMap(body);
+    map<json> sourceDirective = check asJsonMap(bodyMap["_source"]);
+    test:assertEquals(sourceDirective["excludes"], <json[]>["embedding"]);
+}
+
+@test:Config
+isolated function testSourceIncludesEmbeddingsWhenConfigured() returns error? {
+    json body = check buildSearchBody({}, queryMode(), {includeEmbeddingsInResults: true});
     map<json> bodyMap = check asJsonMap(body);
     test:assertEquals(bodyMap["_source"], true);
 }

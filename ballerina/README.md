@@ -2,9 +2,11 @@
 
 [Amazon OpenSearch Service](https://aws.amazon.com/opensearch-service/) is a managed search and
 analytics engine that also supports k-NN (approximate nearest-neighbor) vector search. This
-package provides an `ai:VectorStore` implementation backed by OpenSearch, so it can be used
-anywhere the `ballerina/ai` RAG APIs expect a vector store — including a managed OpenSearch
-Service domain and both generations of OpenSearch Serverless (Classic and NextGen).
+package provides two `ai:VectorStore` implementations backed by OpenSearch, so either can be used
+anywhere the `ballerina/ai` RAG APIs expect a vector store:
+
+- `ManagedDomainVectorStore` for a managed OpenSearch Service domain
+- `ServerlessVectorStore` for both generations of OpenSearch Serverless (Classic and NextGen)
 
 There is no `ballerinax/opensearch` connector this package wraps: it talks the OpenSearch REST
 API directly over `ballerina/http`, signing every request with AWS Signature Version 4 via
@@ -164,7 +166,7 @@ Choose one of:
 The two Serverless generations behave differently at the data-plane level (custom document `_id`
 support, refresh interval, and whether the search response includes the vector by default), and
 AWS does not expose a way to detect which generation a collection is from the data plane — you
-must tell this module which one you have via `DeploymentType`.
+must tell `ServerlessVectorStore` which one you have via `generation`.
 
 ### 2. Obtain credentials
 
@@ -224,52 +226,58 @@ import ballerinax/ai.aws.opensearch;
 
 ### Step 2: Initialize the vector store
 
+Pick the class for your deployment. For a managed domain:
+
 ```ballerina
 import ballerina/ai;
 import ballerinax/ai.aws.opensearch;
 import ballerinax/aws.auth;
 
-opensearch:VectorStore vectorStore = check new (
-    serviceUrl = "https://my-domain.us-east-1.es.amazonaws.com",
+opensearch:ManagedDomainVectorStore vectorStore = check new (
+    serviceUrl = "https://search-my-domain-abc123.us-east-1.es.amazonaws.com",
     region = "us-east-1",
     indexName = "my-knowledge-base",
-    deploymentConfig = {
-        deploymentType: opensearch:MANAGED_DOMAIN,
-        auth: auth:DEFAULT_CREDENTIALS
-    },
+    auth = auth:DEFAULT_CREDENTIALS,
     searchMode = {queryMode: ai:DENSE, indexConfig: {dimension: 1536}}
 );
 ```
 
-`deploymentConfig` is required, and selects one of three record types. Each exposes only the settings its
-flavour actually honors — so a setting that does not apply cannot be named at all:
+The managed-only settings, the engine and a forced refresh, go in `storeConfig` alongside the
+shared ones, and `auth` also accepts basic auth:
 
 ```ballerina
-// Managed domain: the only flavour with a selectable engine, basic auth, or a forced refresh.
-deploymentConfig = {
-    deploymentType: opensearch:MANAGED_DOMAIN,
-    auth: {username: "...", password: "..."},
-    engine: opensearch:LUCENE,
-    refreshOnWrite: true
-}
+opensearch:ManagedDomainVectorStore vectorStore = check new (
+    serviceUrl, region, indexName,
+    auth = {username: "...", password: "..."},
+    searchMode = {queryMode: ai:DENSE, indexConfig: {dimension: 1536}},
+    storeConfig = {engine: opensearch:LUCENE, refreshOnWrite: true}
+);
+```
 
+For a Serverless collection, `deployment` selects the generation, and each variant exposes only the
+settings that generation honors, so a setting that does not apply cannot be named at all:
+
+```ballerina
 // Serverless Classic: credentials only. Faiss is the sole engine it supports, and its refresh
 // interval is fixed, so neither is a choice.
-deploymentConfig = {
-    deploymentType: opensearch:SERVERLESS_CLASSIC,
-    auth: auth:DEFAULT_CREDENTIALS
-}
+opensearch:ServerlessVectorStore vectorStore = check new (
+    serviceUrl = "https://abc123.us-east-1.aoss.amazonaws.com",
+    region = "us-east-1",
+    indexName = "my-knowledge-base",
+    deployment = {generation: opensearch:CLASSIC, auth: auth:DEFAULT_CREDENTIALS},
+    searchMode = {queryMode: ai:DENSE, indexConfig: {dimension: 1536}}
+);
 
-// Serverless NextGen: the only flavour exposing vector quantization.
-deploymentConfig = {
-    deploymentType: opensearch:SERVERLESS_NEXTGEN,
+// Serverless NextGen: the only generation exposing vector quantization.
+deployment = {
+    generation: opensearch:NEXTGEN,
     auth: auth:DEFAULT_CREDENTIALS,
     collectionName: "my-collection",   // or collectionId; needed on a per-account endpoint
     compressionLevel: opensearch:COMPRESSION_1X
 }
 ```
 
-`auth` is required on every variant. It is deliberately not defaulted to
+`auth` is required on both stores. It is deliberately not defaulted to
 `auth:DEFAULT_CREDENTIALS`: a store that silently picks up the ambient AWS credential chain hides a
 misconfiguration until it surfaces as a 403 from a principal nobody intended to use. Pass
 `auth:DEFAULT_CREDENTIALS` to opt into that chain explicitly.
@@ -277,8 +285,8 @@ misconfiguration until it surfaces as a 403 from a principal nobody intended to 
 Settings honored identically on every deployment are split by whether they depend on the kind of
 search being performed. The index shape and the vector field names live on `searchMode`
 (`dimension`, `similarityMetric`, `efConstruction`, `m`, `vectorFieldName`); the rest — the other
-field names, bulk sizing, retries — live on `storeConfig`. Switching deployments carries both
-across untouched.
+field names, bulk sizing, retries — live on `storeConfig`. Switching between the two stores carries
+both across untouched.
 
 By default (`StoreConfiguration.createIndexIfNotExists = true`), `init` creates the index with the
 correct mapping if it does not already exist.
@@ -311,8 +319,9 @@ other `ballerina/ai` API that accepts a vector store.
 
 ### Deployment types and their behavioral differences
 
-| | `MANAGED_DOMAIN` | `SERVERLESS_CLASSIC` | `SERVERLESS_NEXTGEN` |
+| | Managed domain | Serverless Classic | Serverless NextGen |
 |---|---|---|---|
+| Class | `ManagedDomainVectorStore` | `ServerlessVectorStore` | `ServerlessVectorStore` |
 | SigV4 signing name | `es` | `aoss` | `aoss` |
 | `BasicAuth` allowed | yes | no | no |
 | `add` semantics | upsert | **append-only** | upsert |
@@ -322,7 +331,7 @@ other `ballerina/ai` API that accepts a vector store.
 | HNSW tuning (`efConstruction`/`m`) | yes | yes | yes |
 | Vector quantization | no | no | yes |
 
-On `SERVERLESS_CLASSIC`, a custom document `_id` cannot be written, so re-`add`ing the same
+On Serverless Classic, a custom document `_id` cannot be written, so re-`add`ing the same
 logical id creates a duplicate document rather than upserting, and `delete` must first search for
 the internal `_id`s carrying that logical id (via the `doc_id` field this module always writes)
 before it can delete them. A document added less than the collection's refresh interval ago will
@@ -330,7 +339,7 @@ not be found by that search and will survive the delete — this is a real limit
 platform, not a bug in this module.
 
 > [!NOTE]
-> **On `SERVERLESS_CLASSIC`, a successful `init` does not mean the index can be queried yet.**
+> **On Serverless Classic, a successful `init` does not mean the index can be queried yet.**
 > When `init` creates the index, `_mapping` and `_settings` report it as present immediately while
 > `_search`/`_count` against it still fail with `index_not_found_exception` for roughly ten
 > seconds. It is a propagation delay, not a missing shard: the index becomes searchable on its own
@@ -339,24 +348,24 @@ platform, not a bug in this module.
 > which would add up to ten seconds to every Classic construction including the callers who write
 > first; if you must query straight after constructing the store, retry an
 > `index_not_found_exception` for a few seconds before treating it as fatal.
-> `SERVERLESS_NEXTGEN` is searchable at once.
+> Serverless NextGen is searchable at once.
 
 ### Authentication
 
-Credentials are part of the `deploymentConfig` argument, since which mechanisms are available depends on
-the flavour.
-
 ```ballerina
 // Static keys
-deploymentConfig = {..., auth: {accessKeyId: "...", secretAccessKey: "..."}}
+auth = {accessKeyId: "...", secretAccessKey: "..."}
 
 // The standard AWS credential chain (recommended)
-deploymentConfig = {..., auth: auth:DEFAULT_CREDENTIALS}
+auth = auth:DEFAULT_CREDENTIALS
 
 // HTTP basic auth — requires FGAC + an internal user database, and is accepted only by
-// `ManagedDomainDeployment`. Neither Serverless variant's `auth` field admits this type.
-deploymentConfig = {deploymentType: opensearch:MANAGED_DOMAIN, auth: {username: "...", password: "..."}}
+// `ManagedDomainVectorStore`. The Serverless deployments' `auth` field does not admit this type.
+auth = {username: "...", password: "..."}
 ```
+
+On `ManagedDomainVectorStore`, `auth` is an `init` parameter of its own. On
+`ServerlessVectorStore`, it is a field of `deployment`.
 
 ### Index configuration (`IndexConfig`)
 
@@ -367,9 +376,10 @@ deploymentConfig = {deploymentType: opensearch:MANAGED_DOMAIN, auth: {username: 
 | `efConstruction` | `128` | HNSW build-time accuracy/speed trade-off. Honored on all three deployment types |
 | `m` | `16` | HNSW max bi-directional links per node. Honored on all three deployment types |
 
-`engine` and `compressionLevel` are not here: they live on the `Deployment` variant that honors
-them (`ManagedDomainDeployment.engine` and `ServerlessNextGenDeployment.compressionLevel`), so
-naming one against a deployment that ignores it does not compile.
+`engine` and `compressionLevel` are not here: they live where only the deployment that honors
+them can set them (`ManagedDomainStoreConfiguration.engine` and
+`ServerlessNextGenDeployment.compressionLevel`), so naming one against a deployment that ignores it
+does not compile.
 
 
 > [!WARNING]
@@ -382,7 +392,7 @@ naming one against a deployment that ignores it does not compile.
 > `init` only logs a warning, so grant that permission alongside this setting.
 
 > [!NOTE]
-> **Vectors are quantized by default on `SERVERLESS_NEXTGEN`.** NextGen auto-configures the
+> **Vectors are quantized by default on Serverless NextGen.** NextGen auto-configures the
 > `knn_vector` field, and what it configures is `on_disk` storage with `32x` compression — the
 > same index created on a managed domain stores full-precision vectors. Nothing in the request or
 > the response announces this; the stored mapping is the only place it shows up. To store vectors
@@ -424,9 +434,9 @@ naming one against a deployment that ignores it does not compile.
 | Field | Default | Notes |
 |---|---|---|
 | `contentFieldName` | `"content"` | |
-| `idFieldName` | `"doc_id"` | The field carrying the logical entry id; always written, and the only identity handle on `SERVERLESS_CLASSIC` |
+| `idFieldName` | `"doc_id"` | The field carrying the logical entry id; always written, and the only identity handle on Serverless Classic |
 | `metadataFieldName` | `"metadata"` | Set to `""` to address bare `<key>` paths — for pointing this module at a pre-existing index with a flat schema. A metadata key that would then collide with a reserved field name (`embedding`, `sparse_embedding`, `content`, `doc_id`, `chunk_type`) is rejected with an `ai:Error` rather than silently overwriting that field. When this module creates the index, `""` also maps every string field it does not map itself as `keyword`: those fields match exactly only, and values over 8,191 characters are not indexed |
-| `includeEmbeddingsInResults` | `true` | Set `false` to exclude every vector field the mode declares from `_source` — a meaningful bandwidth saving at high dimensions and large `topK`, and a larger one under `SPARSE`/`HYBRID` |
+| `includeEmbeddingsInResults` | `false` | Whether a `query` result carries the stored vector. Off by default, so every vector field the mode declares is excluded from `_source` — a meaningful bandwidth saving at high dimensions and large `topK`, and a larger one under `SPARSE`/`HYBRID`. Set `true` when the caller needs the vectors back |
 | `createIndexIfNotExists` | `true` | When `false`, `init` creates nothing. See the warning under `IndexConfig` before setting it |
 | `maxBulkSize` | `500` | Entries per `_bulk` request; `add` chunks larger batches automatically |
 | `maxResultWindow` | `10000` | The `size` used when `topK < 1` ("return all"), and the ceiling enforced on an explicit `topK` |
@@ -540,10 +550,10 @@ those matches regardless of this setting.
 - **A pre-existing index** this module did not create must map `metadata.*` (or, under a flat
   schema, every metadata field) as `keyword`, not the default analyzed `text` — otherwise `==`
   and `in` filters on string metadata will silently return zero hits.
-- **`SERVERLESS_CLASSIC` delete** can fail loudly (rather than silently under-deleting) if a
+- **Serverless Classic delete** can fail loudly (rather than silently under-deleting) if a
   single logical id has accumulated more duplicate documents than `maxResultWindow` can see in
   one lookup — raise `maxResultWindow` and retry.
-- **A `SERVERLESS_CLASSIC` index is not searchable for ~10 s after `init` creates it**, though it
+- **A Serverless Classic index is not searchable for ~10 s after `init` creates it**, though it
   is writable immediately — see the note under "Deployment types" above.
 - **Fractional metadata values change Ballerina type on a round trip.** A custom metadata key
   written as a `float` (`{"rating": 4.25}`) is read back as a `decimal`, because JSON has one

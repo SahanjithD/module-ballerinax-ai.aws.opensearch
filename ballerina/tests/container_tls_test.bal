@@ -34,10 +34,10 @@ isolated function secureContainerHttpConfig() returns http:ClientConfiguration =
 # + password - The internal-user-database password to present
 # + return - The store, or an `ai:Error`
 isolated function newSecureContainerStore(string indexName, string password = secureContainerPassword)
-        returns VectorStore|ai:Error {
+        returns VectorStoreCore|ai:Error {
     BasicAuth auth = {username: secureContainerUsername, password};
     return new (secureContainerUrl, CONTAINER_REGION, indexName,
-        {deploymentType: MANAGED_DOMAIN, auth, refreshOnWrite: true},
+        {auth, refreshOnWrite: true},
         containerDenseMode(), containerConfig(), secureContainerHttpConfig()
     );
 }
@@ -45,7 +45,7 @@ isolated function newSecureContainerStore(string indexName, string password = se
 @test:Config {groups: ["docker"]}
 isolated function testSecureContainerBasicAuthRoundTrip() returns error? {
     string indexName = containerIndexName("tls-rt");
-    VectorStore store = check newSecureContainerStore(indexName);
+    VectorStoreCore store = check newSecureContainerStore(indexName);
 
     check store.add([entry("secure-1", queryVector(), "over TLS", {"language": "en"})]);
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 10});
@@ -67,7 +67,7 @@ isolated function testSecureContainerBasicAuthRoundTrip() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testSecureContainerRejectsWrongPassword() returns error? {
     string indexName = containerIndexName("tls-badpw");
-    VectorStore|ai:Error result = newSecureContainerStore(indexName, "definitely-not-the-password");
+    VectorStoreCore|ai:Error result = newSecureContainerStore(indexName, "definitely-not-the-password");
 
     if result !is ai:Error {
         test:assertFail("a wrong password should fail construction");
@@ -83,7 +83,7 @@ isolated function testSecureContainerRejectsWrongPassword() returns error? {
 isolated function testSecureContainerRejectsSigV4Credentials() returns error? {
     string indexName = containerIndexName("tls-sigv4");
     // SigV4 credentials against an FGAC-only domain should fail as a clean 401.
-    VectorStore|ai:Error result = new (secureContainerUrl, CONTAINER_REGION, indexName,
+    VectorStoreCore|ai:Error result = new (secureContainerUrl, CONTAINER_REGION, indexName,
         containerDeployment(), containerDenseMode(), containerConfig(), secureContainerHttpConfig()
     );
 

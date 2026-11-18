@@ -28,7 +28,7 @@ isolated function testContainerBulkAddChunksLargeBatch() returns error? {
     string indexName = containerIndexName("bulk-large");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
     StoreConfiguration config = {maxBulkSize: BULK_CHUNK_SIZE};
-    VectorStore store = check newContainerStore(indexName, configMode, config);
+    VectorStoreCore store = check newContainerStore(indexName, configMode, config);
 
     ai:VectorEntry[] entries = [];
     foreach int i in 0 ..< BULK_ENTRY_COUNT {
@@ -46,7 +46,7 @@ isolated function testContainerBulkAddStopsAtTheFailingChunk() returns error? {
     string indexName = containerIndexName("bulk-stop");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
     StoreConfiguration config = {maxBulkSize: 2};
-    VectorStore store = check newContainerStore(indexName, configMode, config);
+    VectorStoreCore store = check newContainerStore(indexName, configMode, config);
 
     // Batches are [ok-1, bad] and [ok-3, ok-4]; failing on the first means the second is never
     // sent.
@@ -69,7 +69,7 @@ isolated function testContainerBulkAddStopsAtTheFailingChunk() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerBulkPartialFailureIsDetectedAtHttp200() returns error? {
     string indexName = containerIndexName("bulk-partial");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     // HTTP 200; only `errors: true` in the body shows the rejected item.
     ai:Error? result = store.add([
@@ -88,7 +88,7 @@ isolated function testContainerBulkPartialFailureIsDetectedAtHttp200() returns e
 @test:Config {groups: ["docker"]}
 isolated function testContainerBulkDeleteChunkIsAtomicPerItem() returns error? {
     string indexName = containerIndexName("bulk-del");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     ai:VectorEntry[] entries = [];
     string[] ids = [];

@@ -52,7 +52,7 @@ isolated function liveIndexName(string prefix) returns string => string `${prefi
 # + id - The logical id to wait for
 # + timeoutSeconds - The maximum time to wait
 # + return - `true` if found within the timeout
-isolated function pollUntilVisible(VectorStore store, string id, decimal timeoutSeconds) returns boolean|ai:Error {
+isolated function pollUntilVisible(ai:VectorStore store, string id, decimal timeoutSeconds) returns boolean|ai:Error {
     decimal waited = 0;
     while waited < timeoutSeconds {
         ai:VectorMatch[] matches = check store.query({embedding: liveTestVector(), topK: 10});
@@ -73,7 +73,7 @@ isolated function pollUntilVisible(VectorStore store, string id, decimal timeout
 # + id - The logical id to wait to disappear
 # + timeoutSeconds - The maximum time to wait
 # + return - `true` if the id is gone within the timeout
-isolated function pollUntilGone(VectorStore store, string id, decimal timeoutSeconds) returns boolean|ai:Error {
+isolated function pollUntilGone(ai:VectorStore store, string id, decimal timeoutSeconds) returns boolean|ai:Error {
     decimal waited = 0;
     while waited < timeoutSeconds {
         ai:VectorMatch[] matches = check store.query({embedding: liveTestVector(), topK: 10});
@@ -98,9 +98,9 @@ isolated function testManagedDomainAddQueryDeleteRoundTrip() returns error? {
         return;
     }
     string indexName = liveIndexName("md-roundtrip");
-    VectorStore store = check new (managedDomainUrl, managedDomainRegion, indexName,
-        {deploymentType: MANAGED_DOMAIN, auth: auth:DEFAULT_CREDENTIALS, refreshOnWrite: true},
-        {queryMode: ai:DENSE, indexConfig: {dimension: LIVE_TEST_DIMENSION}}
+    ManagedDomainVectorStore store = check new (managedDomainUrl, managedDomainRegion, indexName,
+        auth:DEFAULT_CREDENTIALS, {queryMode: ai:DENSE, indexConfig: {dimension: LIVE_TEST_DIMENSION}},
+        {refreshOnWrite: true}
     );
 
     string id = uuid:createRandomUuid();
@@ -122,9 +122,9 @@ isolated function testManagedDomainSameIdTwiceUpserts() returns error? {
         return;
     }
     string indexName = liveIndexName("md-upsert");
-    VectorStore store = check new (managedDomainUrl, managedDomainRegion, indexName,
-        {deploymentType: MANAGED_DOMAIN, auth: auth:DEFAULT_CREDENTIALS, refreshOnWrite: true},
-        {queryMode: ai:DENSE, indexConfig: {dimension: LIVE_TEST_DIMENSION}}
+    ManagedDomainVectorStore store = check new (managedDomainUrl, managedDomainRegion, indexName,
+        auth:DEFAULT_CREDENTIALS, {queryMode: ai:DENSE, indexConfig: {dimension: LIVE_TEST_DIMENSION}},
+        {refreshOnWrite: true}
     );
 
     string id = uuid:createRandomUuid();
@@ -149,9 +149,9 @@ isolated function testManagedDomainFilteredQuery() returns error? {
         return;
     }
     string indexName = liveIndexName("md-filter");
-    VectorStore store = check new (managedDomainUrl, managedDomainRegion, indexName,
-        {deploymentType: MANAGED_DOMAIN, auth: auth:DEFAULT_CREDENTIALS, refreshOnWrite: true},
-        {queryMode: ai:DENSE, indexConfig: {dimension: LIVE_TEST_DIMENSION}}
+    ManagedDomainVectorStore store = check new (managedDomainUrl, managedDomainRegion, indexName,
+        auth:DEFAULT_CREDENTIALS, {queryMode: ai:DENSE, indexConfig: {dimension: LIVE_TEST_DIMENSION}},
+        {refreshOnWrite: true}
     );
 
     string matchingId = uuid:createRandomUuid();
@@ -186,8 +186,8 @@ isolated function testServerlessClassicSameIdTwiceIsAppendOnly() returns error? 
         return;
     }
     string indexName = liveIndexName("sc-append");
-    VectorStore store = check new (serverlessClassicUrl, serverlessClassicRegion, indexName,
-        {deploymentType: SERVERLESS_CLASSIC, auth: auth:DEFAULT_CREDENTIALS}, {queryMode: ai:DENSE, indexConfig: {dimension: LIVE_TEST_DIMENSION}}
+    ServerlessVectorStore store = check new (serverlessClassicUrl, serverlessClassicRegion, indexName,
+        {generation: CLASSIC, auth: auth:DEFAULT_CREDENTIALS}, {queryMode: ai:DENSE, indexConfig: {dimension: LIVE_TEST_DIMENSION}}
     );
 
     string id = uuid:createRandomUuid();
@@ -217,8 +217,8 @@ isolated function testServerlessNextGenSameIdTwiceUpserts() returns error? {
         return;
     }
     string indexName = liveIndexName("ng-upsert");
-    VectorStore store = check new (serverlessNextGenUrl, serverlessNextGenRegion, indexName,
-        {deploymentType: SERVERLESS_NEXTGEN, auth: auth:DEFAULT_CREDENTIALS}, {queryMode: ai:DENSE, indexConfig: {dimension: LIVE_TEST_DIMENSION}}
+    ServerlessVectorStore store = check new (serverlessNextGenUrl, serverlessNextGenRegion, indexName,
+        {generation: NEXTGEN, auth: auth:DEFAULT_CREDENTIALS}, {queryMode: ai:DENSE, indexConfig: {dimension: LIVE_TEST_DIMENSION}}
     );
 
     string id = uuid:createRandomUuid();

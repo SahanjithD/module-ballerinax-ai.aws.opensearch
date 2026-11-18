@@ -22,7 +22,7 @@ import ballerina/test;
 @test:Config {groups: ["docker"]}
 isolated function testContainerAddQueryRoundTrip() returns error? {
     string indexName = containerIndexName("rt");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName, containerDenseMode(), {includeEmbeddingsInResults: true});
 
     check store.add([entry("rt-1", queryVector(), "round trip content")]);
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 10});
@@ -37,7 +37,7 @@ isolated function testContainerAddQueryRoundTrip() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerAddGeneratesIdWhenAbsent() returns error? {
     string indexName = containerIndexName("genid");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     check store.add([entry((), queryVector(), "no id supplied")]);
     ai:VectorMatch[] matches = check store.query({embedding: queryVector(), topK: 10});
@@ -50,7 +50,7 @@ isolated function testContainerAddGeneratesIdWhenAbsent() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerAddSameIdTwiceUpserts() returns error? {
     string indexName = containerIndexName("upsert");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     check store.add([entry("dup", queryVector(), "v1")]);
     check store.add([entry("dup", queryVector(), "v2")]);
@@ -65,7 +65,7 @@ isolated function testContainerAddSameIdTwiceUpserts() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerAddPreservesChunkType() returns error? {
     string indexName = containerIndexName("chunktype");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     check store.add([
         {id: "text", embedding: queryVector(), chunk: <ai:TextChunk>{content: "a text chunk"}},
@@ -88,7 +88,7 @@ isolated function testContainerAddPreservesChunkType() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerDeleteSingleId() returns error? {
     string indexName = containerIndexName("del-one");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     check store.add([entry("keep", queryVector()), entry("drop", vec(0.0, 1.0))]);
     test:assertEquals(check documentCount(indexName), 2);
@@ -101,7 +101,7 @@ isolated function testContainerDeleteSingleId() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerDeleteMultipleIds() returns error? {
     string indexName = containerIndexName("del-many");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     check store.add([
         entry("a", queryVector()),
@@ -118,7 +118,7 @@ isolated function testContainerDeleteMultipleIds() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerDeleteMissingIdIsNotAnError() returns error? {
     string indexName = containerIndexName("del-missing");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
     check store.add([entry("present", queryVector())]);
 
     // A per-item `not_found` is not a failure.
@@ -131,7 +131,7 @@ isolated function testContainerDeleteMissingIdIsNotAnError() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerEmptyAddAndDeleteAreNoOps() returns error? {
     string indexName = containerIndexName("empty");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     check store.add([]);
     check store.delete([]);
@@ -145,7 +145,7 @@ isolated function testContainerEmptyAddAndDeleteAreNoOps() returns error? {
 @test:Config {groups: ["docker"]}
 isolated function testContainerAddRejectsZeroVectorUnderCosine() returns error? {
     string indexName = containerIndexName("zerovec");
-    VectorStore store = check newContainerStore(indexName);
+    VectorStoreCore store = check newContainerStore(indexName);
 
     // Rejected before sending, so the index is untouched.
     ai:Error? result = store.add([entry("zero", vec(0.0, 0.0, 0.0, 0.0))]);

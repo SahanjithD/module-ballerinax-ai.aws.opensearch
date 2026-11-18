@@ -17,19 +17,15 @@
 import ballerina/ai;
 import ballerinax/aws.auth;
 
-// The two Serverless generations behave differently on the data plane and cannot be told apart
-// from it, so the caller declares which one they have.
-# The kind of OpenSearch deployment, which decides request signing, write semantics and the
-# `knn_vector` mapping.
-public enum DeploymentType {
-    # An OpenSearch Service domain, signed as `es` or using fine-grained access control basic auth.
-    MANAGED_DOMAIN,
-    # A Serverless Classic collection. No custom `_id`, so `add` appends and `delete` searches
-    # before deleting.
-    SERVERLESS_CLASSIC,
+// The two generations behave differently on the data plane and cannot be told apart from it, so
+// the caller declares which one they have.
+# The generation of an OpenSearch Serverless vector search collection.
+public enum ServerlessGeneration {
+    # A Classic collection. No custom `_id`, so `add` appends and `delete` searches before deleting.
+    CLASSIC,
     // Some AWS pages say vector collections reject a custom `_id`; that holds for Classic only.
-    # A Serverless NextGen collection. Custom `_id` is supported, so `add` upserts.
-    SERVERLESS_NEXTGEN
+    # A NextGen collection. Custom `_id` is supported, so `add` upserts.
+    NEXTGEN
 }
 
 // NMSLIB is left out: deprecated in OpenSearch 2.16 and removed in 3.0.
@@ -66,40 +62,28 @@ public type BasicAuth record {|
 # SigV4 credentials, or HTTP basic auth on a managed domain.
 public type Auth auth:AuthConfig|BasicAuth;
 
-// Each setting lives on the one variant that honors it, so a wrong combination (e.g. `BasicAuth`
-// on Serverless) is a type error rather than a runtime check.
-# The target deployment, with the settings only that deployment honors.
-public type Deployment ManagedDomainDeployment|ServerlessClassicDeployment|ServerlessNextGenDeployment;
-
-# An OpenSearch Service (managed) domain.
-public type ManagedDomainDeployment record {|
-    # Selects this variant.
-    MANAGED_DOMAIN deploymentType;
-    // Required rather than defaulted: silently falling back to the ambient credential chain hides a
-    // misconfiguration until it shows up as a 403 for the wrong principal.
-    # SigV4 credentials (`auth:DEFAULT_CREDENTIALS` for the default chain), or `BasicAuth`.
-    Auth auth;
-    # The engine backing the `knn_vector` field.
-    Engine engine = FAISS;
-    # Whether `add` waits for a refresh so new entries are queryable immediately.
-    boolean refreshOnWrite = false;
-|};
+// Each setting lives on the one variant that honors it, so a wrong combination (e.g. a NextGen
+// collection header on Classic) is a type error rather than a runtime check.
+# The target Serverless collection, with the settings only its generation honors.
+public type ServerlessDeployment ServerlessClassicDeployment|ServerlessNextGenDeployment;
 
 // Nothing to tune beyond credentials: Classic supports Faiss only, rejects custom `_id`s and has a
 // fixed refresh interval.
 # An OpenSearch Serverless Classic vector search collection.
 public type ServerlessClassicDeployment record {|
     # Selects this variant.
-    SERVERLESS_CLASSIC deploymentType;
-    # SigV4 credentials. Serverless has no basic auth.
+    CLASSIC generation;
+    # SigV4 credentials (`auth:DEFAULT_CREDENTIALS` for the default chain). Serverless has no basic
+    # auth.
     auth:AuthConfig auth;
 |};
 
 # An OpenSearch Serverless NextGen vector search collection.
 public type ServerlessNextGenDeployment record {|
     # Selects this variant.
-    SERVERLESS_NEXTGEN deploymentType;
-    # SigV4 credentials. Serverless has no basic auth.
+    NEXTGEN generation;
+    # SigV4 credentials (`auth:DEFAULT_CREDENTIALS` for the default chain). Serverless has no basic
+    # auth.
     auth:AuthConfig auth;
     // A per-account NextGen endpoint does not say which collection a request is for, so it needs
     // one of these two; a per-collection endpoint needs neither.
@@ -277,7 +261,7 @@ public type StoreConfiguration record {|
     # creates maps every string field it does not map itself as an exact-match `keyword`.
     string metadataFieldName = "metadata";
     # Whether `query` results carry the stored vectors. `false` saves bandwidth.
-    boolean includeEmbeddingsInResults = true;
+    boolean includeEmbeddingsInResults = false;
     // Keeps each request under the endpoint's HTTP payload limit.
     # Most entries per `_bulk` request; larger `add` calls are split.
     int maxBulkSize = 500;
@@ -290,6 +274,31 @@ public type StoreConfiguration record {|
     boolean createIndexIfNotExists = true;
     # Retry behavior for transient failures.
     RetryConfig retryConfig = {};
+|};
+
+// Managed-only settings sit here rather than on `init`, so the Serverless store cannot be given
+// them.
+# Settings for a managed domain store: the shared settings plus the ones only a domain honors.
+public type ManagedDomainStoreConfiguration record {|
+    *StoreConfiguration;
+    # The engine backing the `knn_vector` field. Applied only when `init` creates the index.
+    Engine engine = FAISS;
+    # Whether `add` waits for a refresh so new entries are queryable immediately.
+    boolean refreshOnWrite = false;
+|};
+
+// The internal view of the target, built by the two public stores; the shared code branches on it.
+# The target deployment, as the shared store code sees it.
+type Deployment ManagedDomainDeployment|ServerlessClassicDeployment|ServerlessNextGenDeployment;
+
+# A managed domain, assembled from `ManagedDomainVectorStore`'s `auth` and store configuration.
+type ManagedDomainDeployment record {|
+    # SigV4 credentials or `BasicAuth`.
+    Auth auth;
+    # The engine backing the `knn_vector` field.
+    Engine engine = FAISS;
+    # Whether `add` waits for a refresh.
+    boolean refreshOnWrite = false;
 |};
 
 // Wire types. Open records, so response fields this module never reads pass through
