@@ -54,7 +54,7 @@ isolated class OpenSearchTransport {
         // Elsewhere the `_id` makes a retry an idempotent upsert.
         self.retryWrites = deployment !is ServerlessClassicDeployment;
 
-        Auth authConfig = deployment.auth;
+        ManagedDomainAuthConfig authConfig = deployment.auth;
         if authConfig is BasicAuth {
             string credentials = string `${authConfig.username}:${authConfig.password}`;
             self.basicAuthHeader = string `Basic ${credentials.toBytes().toBase64()}`;

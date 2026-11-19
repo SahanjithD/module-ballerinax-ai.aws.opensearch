@@ -59,8 +59,8 @@ public type BasicAuth record {|
     string password;
 |};
 
-# SigV4 credentials, or HTTP basic auth on a managed domain.
-public type Auth auth:AuthConfig|BasicAuth;
+# Credentials for a managed domain: SigV4 credentials, or HTTP basic auth.
+public type ManagedDomainAuthConfig auth:AuthConfig|BasicAuth;
 
 // Each setting lives on the one variant that honors it, so a wrong combination (e.g. a NextGen
 // collection header on Classic) is a type error rather than a runtime check.
@@ -305,7 +305,7 @@ type Deployment ManagedDomainDeployment|ServerlessClassicDeployment|ServerlessNe
 # A managed domain, assembled from `ManagedDomainVectorStore`'s `auth` and store configuration.
 type ManagedDomainDeployment record {|
     # SigV4 credentials or `BasicAuth`.
-    Auth auth;
+    ManagedDomainAuthConfig auth;
     # The engine backing the `knn_vector` field.
     Engine engine = FAISS;
     # Whether `add` waits for a refresh.

@@ -60,8 +60,9 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
 ### Changed
 - `VectorStore` is split into `ManagedDomainVectorStore` and `ServerlessVectorStore`, one per AWS
   product, so each `init` takes only what its deployment needs. `ManagedDomainVectorStore` takes
-  `auth` as a parameter, and its managed-only `engine` and `refreshOnWrite` move to
-  `ManagedDomainStoreConfiguration`, which extends `StoreConfiguration`. `ServerlessVectorStore`
+  `auth` as a parameter, typed `ManagedDomainAuthConfig` (formerly `Auth`), and its managed-only
+  `engine` and `refreshOnWrite` move to `ManagedDomainStoreConfiguration`, which extends
+  `StoreConfiguration`. `ServerlessVectorStore`
   takes a `ServerlessDeployment`, `ServerlessClassicDeployment|ServerlessNextGenDeployment`,
   selected by a `generation` field of `CLASSIC` or `NEXTGEN`. `Deployment`,
   `ManagedDomainDeployment` and the `DeploymentType` enum are removed.

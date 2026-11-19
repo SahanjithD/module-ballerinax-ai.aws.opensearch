@@ -42,7 +42,7 @@ public isolated class ManagedDomainVectorStore {
             @display {label: "Service URL"} string serviceUrl,
             @display {label: "Region"} aws:Region|string region,
             @display {label: "Index Name"} string indexName,
-            @display {label: "Auth Configuration"} Auth auth,
+            @display {label: "Auth Configuration"} ManagedDomainAuthConfig auth,
             @display {label: "Search Mode"} SearchMode searchMode = DEFAULT_SEARCH_MODE,
             @display {label: "Store Configuration"} ManagedDomainStoreConfiguration storeConfig = {},
             @display {label: "HTTP Configuration"} http:ClientConfiguration httpConfig = {})
