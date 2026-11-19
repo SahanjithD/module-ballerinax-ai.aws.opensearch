@@ -49,17 +49,6 @@ isolated function testSharedStoreConfigurationCopiesEverySharedField() {
 
 // Validation runs before any request, so an unreachable URL is fine.
 @test:Config
-isolated function testServerlessStoreRejectsBothCollectionFields() {
-    ServerlessVectorStore|ai:Error result = new (UNREACHABLE_URL, "us-east-1", "idx",
-        {generation: NEXTGEN, auth: TEST_CREDENTIALS, collectionName: "c", collectionId: "id"}
-    );
-    if result !is ai:Error {
-        test:assertFail("setting both 'collectionName' and 'collectionId' should fail construction");
-    }
-    test:assertTrue(result.message().includes("collectionId"), result.message());
-}
-
-@test:Config
 isolated function testServerlessStoreRejectsCompressionWithSparse() {
     ServerlessVectorStore|ai:Error result = new (UNREACHABLE_URL, "us-east-1", "idx",
         {generation: NEXTGEN, auth: TEST_CREDENTIALS, compressionLevel: COMPRESSION_1X}, {queryMode: ai:SPARSE}

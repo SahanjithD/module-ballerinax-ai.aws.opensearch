@@ -272,7 +272,7 @@ opensearch:ServerlessVectorStore vectorStore = check new (
 deployment = {
     generation: opensearch:NEXTGEN,
     auth: auth:DEFAULT_CREDENTIALS,
-    collectionName: "my-collection",   // or collectionId; needed on a per-account endpoint
+    collection: {name: "my-collection"},   // or {id: "..."}; needed on a per-account endpoint
     compressionLevel: opensearch:COMPRESSION_1X
 }
 ```

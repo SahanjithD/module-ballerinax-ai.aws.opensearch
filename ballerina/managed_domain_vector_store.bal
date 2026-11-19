@@ -24,6 +24,8 @@ public isolated class ManagedDomainVectorStore {
 
     private final VectorStoreCore core;
 
+    // `auth` is required rather than defaulted: silently falling back to the ambient credential
+    // chain hides a misconfiguration until it shows up as a 403 for the wrong principal.
     # Initializes the store and, by default, creates and checks the index.
     #
     # + serviceUrl - The domain endpoint, e.g. `https://search-my-domain-abc123.us-east-1.es.amazonaws.com`
@@ -40,8 +42,6 @@ public isolated class ManagedDomainVectorStore {
             @display {label: "Service URL"} string serviceUrl,
             @display {label: "Region"} aws:Region|string region,
             @display {label: "Index Name"} string indexName,
-            // Required rather than defaulted: silently falling back to the ambient credential chain
-            // hides a misconfiguration until it shows up as a 403 for the wrong principal.
             @display {label: "Auth Configuration"} Auth auth,
             @display {label: "Search Mode"} SearchMode searchMode = DEFAULT_SEARCH_MODE,
             @display {label: "Store Configuration"} ManagedDomainStoreConfiguration storeConfig = {},

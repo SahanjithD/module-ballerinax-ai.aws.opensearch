@@ -267,11 +267,6 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
                     "field, which a 'SPARSE' index does not have; leave it unset, or use 'HYBRID' " +
                     "if the index should also hold dense vectors");
         }
-        if deployment?.collectionName is string && deployment?.collectionId is string {
-            return error("'ServerlessNextGenDeployment.collectionName' and '.collectionId' are " +
-                    "alternatives; set at most one. Sending both collection headers leaves it to " +
-                    "the AOSS proxy to decide which one identifies the target collection");
-        }
     }
 }
 

@@ -86,14 +86,25 @@ public type ServerlessNextGenDeployment record {|
     # auth.
     auth:AuthConfig auth;
     // A per-account NextGen endpoint does not say which collection a request is for, so it needs
-    // one of these two; a per-collection endpoint needs neither.
-    # Target collection name, sent as the signed `x-amz-aoss-collection-name` header.
-    string collectionName?;
-    # Target collection id, sent as `x-amz-aoss-collection-id`. Set this or `collectionName`.
-    string collectionId?;
+    // this; a per-collection endpoint does not. A union rather than two fields, so naming the
+    // collection both ways does not compile.
+    # The target collection, by name or by id. Needed only on a per-account endpoint.
+    CollectionName|CollectionId collection?;
     // `mode` is not offered: the AOSS proxy rejects every value of it.
     # Quantization ratio. Unset keeps NextGen's default of `32x`, which is lossy.
     CompressionLevel? compressionLevel = ();
+|};
+
+# A NextGen collection named by its name, sent as the signed `x-amz-aoss-collection-name` header.
+public type CollectionName record {|
+    # The collection name.
+    string name;
+|};
+
+# A NextGen collection named by its id, sent as the signed `x-amz-aoss-collection-id` header.
+public type CollectionId record {|
+    # The collection id.
+    string id;
 |};
 
 // Applied only by the `PUT /<index>` that `init` sends when the index is missing; reindex to

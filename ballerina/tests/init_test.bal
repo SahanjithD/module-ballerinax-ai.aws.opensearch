@@ -300,38 +300,29 @@ isolated function testUnsetQuantizationIsAllowedOnNextGen() {
     test:assertTrue(result is (), "leaving it unset reproduces the server's own default");
 }
 
-// --- rule 6: the two NextGen collection headers are alternatives -------------------------------
+// --- rule 6: the NextGen collection is named by name or by id ----------------------------------
 
 @test:Config
-isolated function testBothCollectionIdentifiersRejected() {
-    ServerlessNextGenDeployment deployment = {
-        generation: NEXTGEN,
-        auth: TEST_CREDENTIALS,
-        collectionName: "vectors",
-        collectionId: "abc123"
-    };
-    ai:Error? result = validateConfiguration(VALID_URL, deployment, validMode(), {});
-    if result !is ai:Error {
-        test:assertFail("naming a collection twice should be rejected, not silently resolved");
-    }
-    test:assertTrue(result.message().includes("alternatives"),
-            string `the message should say they are alternatives, got: ${result.message()}`);
-}
-
-@test:Config
-isolated function testEitherCollectionIdentifierAloneIsAccepted() {
+isolated function testEitherCollectionIdentifierIsAccepted() {
     ServerlessNextGenDeployment byName = {
         generation: NEXTGEN,
         auth: TEST_CREDENTIALS,
-        collectionName: "vectors"
+        collection: {name: "vectors"}
     };
     ServerlessNextGenDeployment byId = {
         generation: NEXTGEN,
         auth: TEST_CREDENTIALS,
-        collectionId: "abc123"
+        collection: {id: "abc123"}
     };
     test:assertTrue(validateConfiguration(VALID_URL, byName, validMode(), {}) is ());
     test:assertTrue(validateConfiguration(VALID_URL, byId, validMode(), {}) is ());
+}
+
+// Both records are closed, so a value naming the collection both ways is neither.
+@test:Config
+isolated function testCollectionCannotBeNamedBothWays() {
+    map<string> both = {name: "vectors", id: "abc123"};
+    test:assertFalse(both is CollectionName|CollectionId);
 }
 
 // --- the signed collection headers -------------------------------------------------------------
@@ -351,12 +342,12 @@ isolated function testCollectionNameAndIdMapToTheirHeaders() {
     ServerlessNextGenDeployment byName = {
         generation: NEXTGEN,
         auth: TEST_CREDENTIALS,
-        collectionName: "vectors"
+        collection: {name: "vectors"}
     };
     ServerlessNextGenDeployment byId = {
         generation: NEXTGEN,
         auth: TEST_CREDENTIALS,
-        collectionId: "abc123"
+        collection: {id: "abc123"}
     };
     test:assertEquals(buildCollectionHeaders(byName), {"x-amz-aoss-collection-name": "vectors"});
     test:assertEquals(buildCollectionHeaders(byId), {"x-amz-aoss-collection-id": "abc123"});

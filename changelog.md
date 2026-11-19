@@ -81,12 +81,12 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
 - `createIndexIfNotExists: false` no longer means "no network I/O at all": `init` still reads the
   index mapping, and fails on a missing index.
 
-- `ServerlessNextGenDeployment.collectionName` and `.collectionId`, which become the signed
-  `x-amz-aoss-collection-name`/`x-amz-aoss-collection-id` headers a per-account NextGen endpoint
-  needs to know which collection a request is for. They replace the free-form
-  `Configuration.additionalHeaders` map, which offered the same capability untyped and on every
-  deployment type, including the two where no such header means anything. Setting both is rejected
-  at construction.
+- `ServerlessNextGenDeployment.collection`, a `CollectionName` (`{name}`) or `CollectionId`
+  (`{id}`), which becomes the signed `x-amz-aoss-collection-name`/`x-amz-aoss-collection-id`
+  header a per-account NextGen endpoint needs to know which collection a request is for. It
+  replaces the free-form `Configuration.additionalHeaders` map, which offered the same capability
+  untyped and on every deployment type, including the two where no such header means anything. A
+  union, so naming the collection both ways does not compile.
 - The AWS request id is now carried on every mapped error as a `requestId` detail field, read from
   `x-amzn-RequestId` (AOSS) or `x-amz-request-id` (managed domains). It appears nowhere in the
   response body, so a failure that has to be escalated to AWS support was previously

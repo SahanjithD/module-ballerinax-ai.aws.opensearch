@@ -341,13 +341,12 @@ isolated function buildCollectionHeaders(Deployment deployment) returns map<stri
     if deployment !is ServerlessNextGenDeployment {
         return {};
     }
-    string? collectionName = deployment?.collectionName;
-    if collectionName is string {
-        return {"x-amz-aoss-collection-name": collectionName};
+    CollectionName|CollectionId? collection = deployment?.collection;
+    if collection is CollectionName {
+        return {"x-amz-aoss-collection-name": collection.name};
     }
-    string? collectionId = deployment?.collectionId;
-    if collectionId is string {
-        return {"x-amz-aoss-collection-id": collectionId};
+    if collection is CollectionId {
+        return {"x-amz-aoss-collection-id": collection.id};
     }
     return {};
 }

@@ -503,7 +503,7 @@ isolated function testServerlessNextGenPerAccountEndpoint() returns error? {
     }
     ServerlessVectorStore store = check new (serverlessNextGenAccountUrl, serverlessNextGenRegion,
         liveIndexName(nextGenAccountTarget(), "ng-account"),
-        {generation: NEXTGEN, auth: auth:DEFAULT_CREDENTIALS, collectionName: serverlessNextGenCollectionName},
+        {generation: NEXTGEN, auth: auth:DEFAULT_CREDENTIALS, collection: {name: serverlessNextGenCollectionName}},
         liveDenseMode()
     );
 
