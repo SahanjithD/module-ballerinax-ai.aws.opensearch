@@ -18,7 +18,8 @@ import ballerina/ai;
 import ballerina/http;
 import ballerinax/aws;
 
-# An `ai:VectorStore` backed by an Amazon OpenSearch Service (managed) domain.
+# Vector store for a managed Amazon OpenSearch Service domain.
+@display {label: "OpenSearch Managed Vector Store"}
 public isolated class ManagedDomainVectorStore {
     *ai:VectorStore;
 
@@ -31,9 +32,10 @@ public isolated class ManagedDomainVectorStore {
     # + serviceUrl - The domain endpoint, e.g. `https://search-my-domain-abc123.us-east-1.es.amazonaws.com`
     # + region - The AWS region of the domain
     # + indexName - The index this store reads and writes
-    # + auth - SigV4 credentials (`auth:DEFAULT_CREDENTIALS` for the default chain), or `BasicAuth`
-    # for a fine-grained access control internal user
-    # + searchMode - Dense, sparse or hybrid search, with the index shape and fields it uses
+    # + auth - AWS credentials or a fine-grained access control user (`BasicAuth`);
+    # `auth:DEFAULT_CREDENTIALS` uses the default chain
+    # + searchMode - Dense, sparse or hybrid search and the index shape it uses. Defaults to dense
+    # search over 1536-dimensional vectors
     # + storeConfig - Shared store settings plus the engine and refresh behavior
     # + httpConfig - HTTP client settings. `httpVersion` and `http1Settings.chunking` are always set
     # to `HTTP_1_1` and `CHUNKING_NEVER`, which SigV4 signing needs
@@ -42,7 +44,7 @@ public isolated class ManagedDomainVectorStore {
             @display {label: "Service URL"} string serviceUrl,
             @display {label: "Region"} aws:Region|string region,
             @display {label: "Index Name"} string indexName,
-            @display {label: "Auth Configuration"} ManagedDomainAuthConfig auth,
+            @display {label: "Authentication"} ManagedDomainAuthConfig auth,
             @display {label: "Search Mode"} SearchMode searchMode = DEFAULT_SEARCH_MODE,
             @display {label: "Store Configuration"} ManagedDomainStoreConfiguration storeConfig = {},
             @display {label: "HTTP Configuration"} http:ClientConfiguration httpConfig = {})

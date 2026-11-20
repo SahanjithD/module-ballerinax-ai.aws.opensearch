@@ -18,7 +18,8 @@ import ballerina/ai;
 import ballerina/http;
 import ballerinax/aws;
 
-# An `ai:VectorStore` backed by an Amazon OpenSearch Serverless vector search collection.
+# Vector store for an Amazon OpenSearch Serverless vector search collection.
+@display {label: "OpenSearch Serverless Vector Store"}
 public isolated class ServerlessVectorStore {
     *ai:VectorStore;
 
@@ -26,12 +27,14 @@ public isolated class ServerlessVectorStore {
 
     # Initializes the store and, by default, creates and checks the index.
     #
-    # + serviceUrl - The collection endpoint, e.g. `https://abc123.us-east-1.aoss.amazonaws.com`
+    # + serviceUrl - The collection endpoint: `https://abc123.us-east-1.aoss.amazonaws.com` (Classic) or
+    # `https://abc123.aoss.us-east-1.on.aws` (NextGen)
     # + region - The AWS region of the collection
     # + indexName - The index this store reads and writes
     # + deployment - The collection's generation, its credentials and its generation-specific
     # settings
-    # + searchMode - Dense, sparse or hybrid search, with the index shape and fields it uses
+    # + searchMode - Dense, sparse or hybrid search and the index shape it uses. Defaults to dense
+    # search over 1536-dimensional vectors
     # + storeConfig - Settings shared by every search mode
     # + httpConfig - HTTP client settings. `httpVersion` and `http1Settings.chunking` are always set
     # to `HTTP_1_1` and `CHUNKING_NEVER`, which SigV4 signing needs

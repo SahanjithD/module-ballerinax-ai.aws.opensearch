@@ -73,7 +73,7 @@ public type ServerlessDeployment ServerlessClassicDeployment|ServerlessNextGenDe
 public type ServerlessClassicDeployment record {|
     # Selects this variant.
     CLASSIC generation;
-    # SigV4 credentials (`auth:DEFAULT_CREDENTIALS` for the default chain). Serverless has no basic
+    # AWS credentials; `auth:DEFAULT_CREDENTIALS` uses the default chain. Serverless has no basic
     # auth.
     auth:AuthConfig auth;
 |};
@@ -82,7 +82,7 @@ public type ServerlessClassicDeployment record {|
 public type ServerlessNextGenDeployment record {|
     # Selects this variant.
     NEXTGEN generation;
-    # SigV4 credentials (`auth:DEFAULT_CREDENTIALS` for the default chain). Serverless has no basic
+    # AWS credentials; `auth:DEFAULT_CREDENTIALS` uses the default chain. Serverless has no basic
     # auth.
     auth:AuthConfig auth;
     // A per-account NextGen endpoint does not say which collection a request is for, so it needs
