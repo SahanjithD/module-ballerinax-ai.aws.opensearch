@@ -112,15 +112,22 @@ public type CollectionId record {|
 // fields.
 # Shape of the `knn_vector` field, applied when the index is created.
 public type IndexConfig record {|
-    // No client-side ceiling: AWS documents both 10,000 and 16,000, so the server decides.
-    # Number of dimensions in each dense vector.
+    // `init` rejects values above OpenSearch's documented 16,000. AWS also documents 10,000 in
+    // places, so any lower limit is left to the server.
+    # Number of dimensions in each dense vector, from 1 to 16,000.
     int dimension;
-    # Similarity metric, mapped to the `cosinesimil`, `l2` or `innerproduct` space type.
+    // Set explicitly rather than left to OpenSearch's `l2` default (OpenSearch docs, methods and
+    // engines), since text embedding models are usually compared by cosine.
+    # Similarity metric, mapped to the `cosinesimil`, `l2` or `innerproduct` space type. Defaults
+    # to cosine, not OpenSearch's own default of `l2`.
     ai:SimilarityMetric similarityMetric = ai:COSINE;
-    # HNSW `ef_construction`. Higher builds a more accurate graph, more slowly.
-    int efConstruction = 128;
-    # HNSW `m`, the maximum number of graph links per node.
-    int m = 16;
+    // Left out of the mapping when unset, so OpenSearch applies its own defaults: `ef_construction`
+    // 100 (512 on 2.11) and `m` 16 (OpenSearch docs, methods and engines).
+    # HNSW `ef_construction`. Higher builds a more accurate graph, more slowly. Unset uses
+    # OpenSearch's default.
+    int efConstruction?;
+    # HNSW `m`, the maximum number of graph links per node. Unset uses OpenSearch's default.
+    int m?;
 |};
 
 // The processor splits a raw `query_tokens` map directly, so this works without a `model_id`.

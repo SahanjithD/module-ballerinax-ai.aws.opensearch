@@ -174,8 +174,8 @@ isolated function testContainerBulkFailureNamesTheCallersEntry() returns error? 
 @test:Config {groups: ["docker"]}
 isolated function testContainerCreateIndexOnBadMappingIsReported() returns error? {
     string indexName = containerIndexName("err-mapping");
-    // The module sets no dimension ceiling, so the server's rejection must fail construction.
-    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 99999}};
+    // The module does not range-check `m`, so the server's rejection must fail construction.
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION, m: 0}};
     VectorStoreCore|ai:Error result = newContainerStore(indexName, configMode);
 
     if result !is ai:Error {

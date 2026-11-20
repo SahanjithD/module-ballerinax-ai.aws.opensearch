@@ -25,6 +25,9 @@ const int DOC_ID_LOOKUP_CHUNK_SIZE = 65536;
 // Binary floating point does not sum 0.7 and 0.3 to exactly 1.0.
 const float WEIGHT_SUM_TOLERANCE = 1.0e-6;
 
+// OpenSearch's documented `knn_vector` maximum: "[1, 16,000]" (OpenSearch docs, k-NN vector field).
+const int MAX_DIMENSION = 16000;
+
 // Named rather than inline in `init`, since a bare record literal is ambiguous against the union.
 # The default search mode: dense search over 1536-dimensional vectors.
 final DenseSearch & readonly DEFAULT_SEARCH_MODE = {queryMode: ai:DENSE, indexConfig: {dimension: 1536}};
@@ -246,8 +249,8 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
         check validateEfSearch(searchMode.efSearch, "DenseSearch");
     }
     IndexConfig? indexConfig = indexConfigOf(searchMode);
-    if indexConfig is IndexConfig && indexConfig.dimension < 1 {
-        return error(string `'IndexConfig.dimension' must be a positive integer, got: ` +
+    if indexConfig is IndexConfig && (indexConfig.dimension < 1 || indexConfig.dimension > MAX_DIMENSION) {
+        return error(string `'IndexConfig.dimension' must be between 1 and ${MAX_DIMENSION}, got: ` +
                 string `${indexConfig.dimension}`);
     }
     check validateFieldNames(searchMode, config);

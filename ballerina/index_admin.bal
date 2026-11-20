@@ -42,10 +42,18 @@ isolated function buildDenseVectorField(IndexConfig indexConfig, Deployment depl
         method["engine"] = deployment is ManagedDomainDeployment ? deployment.engine : FAISS;
         method["space_type"] = spaceType;
     }
-    method["parameters"] = {
-        "ef_construction": indexConfig.efConstruction,
-        "m": indexConfig.m
-    };
+    map<json> parameters = {};
+    int? efConstruction = indexConfig.efConstruction;
+    if efConstruction is int {
+        parameters["ef_construction"] = efConstruction;
+    }
+    int? m = indexConfig.m;
+    if m is int {
+        parameters["m"] = m;
+    }
+    if parameters.length() > 0 {
+        method["parameters"] = parameters;
+    }
     vectorField["method"] = method;
     return vectorField;
 }

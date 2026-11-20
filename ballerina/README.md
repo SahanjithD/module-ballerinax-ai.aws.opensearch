@@ -371,10 +371,10 @@ On `ManagedDomainVectorStore`, `auth` is an `init` parameter of its own. On
 
 | Field | Default | Notes |
 |---|---|---|
-| `dimension` | *(required)* | No client-side ceiling — AWS's own docs disagree on the maximum (10,000 vs. 16,000); the server enforces its own limit |
-| `similarityMetric` | `ai:COSINE` | Maps to OpenSearch `space_type`: `COSINE`→`cosinesimil`, `EUCLIDEAN`→`l2`, `DOT_PRODUCT`→`innerproduct` |
-| `efConstruction` | `128` | HNSW build-time accuracy/speed trade-off. Honored on all three deployment types |
-| `m` | `16` | HNSW max bi-directional links per node. Honored on all three deployment types |
+| `dimension` | *(required)* | 1 to 16,000, OpenSearch's documented maximum; `init` rejects anything outside it. AWS also documents 10,000 in places, so a lower limit is left to the server |
+| `similarityMetric` | `ai:COSINE` | Maps to OpenSearch `space_type`: `COSINE`→`cosinesimil`, `EUCLIDEAN`→`l2`, `DOT_PRODUCT`→`innerproduct`. Always sent; OpenSearch's own default would be `l2` |
+| `efConstruction` | *(unset)* | HNSW build-time accuracy/speed trade-off. Sent only when set; unset leaves OpenSearch's default (100, or 512 on 2.11). Honored on all three deployment types |
+| `m` | *(unset)* | HNSW max bi-directional links per node. Sent only when set; unset leaves OpenSearch's default (16). Honored on all three deployment types |
 
 `engine` and `compressionLevel` are not here: they live where only the deployment that honors
 them can set them (`ManagedDomainStoreConfiguration.engine` and

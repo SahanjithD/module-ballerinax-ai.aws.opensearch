@@ -112,6 +112,25 @@ isolated function testHnswParametersHonoredOnEveryDeploymentType() returns error
 }
 
 @test:Config
+isolated function testUnsetHnswParametersLeaveServerDefaults() returns error? {
+    foreach Deployment deployment in allDeployments() {
+        map<json> vectorField = check vectorFieldOf(buildIndexMapping(baseMode(), {}, deployment));
+        map<json> method = check asMap(vectorField["method"]);
+        test:assertFalse(method.hasKey("parameters"),
+                string `unset 'efConstruction'/'m' must send no parameters to ${deploymentLabel(deployment)}`);
+    }
+}
+
+@test:Config
+isolated function testOnlyTheSetHnswParameterIsSent() returns error? {
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 8, m: 24}};
+    map<json> vectorField = check vectorFieldOf(buildIndexMapping(configMode, {}, managedDeployment()));
+    map<json> method = check asMap(vectorField["method"]);
+    map<json> parameters = check asMap(method["parameters"]);
+    test:assertEquals(parameters, {"m": 24});
+}
+
+@test:Config
 isolated function testSpaceTypePropagatesPerDeploymentType() returns error? {
     foreach Deployment deployment in allDeployments() {
         map<json> vectorField = check vectorFieldOf(buildIndexMapping(baseMode(ai:EUCLIDEAN), {}, deployment));
@@ -141,8 +160,9 @@ isolated function testQuantizationOmittedWhenUnset() returns error? {
 // `compression_level` sits at the field's top level, beside the `method` block.
 @test:Config
 isolated function testQuantizationEmittedAtFieldTopLevelBesideTheMethodBlock() returns error? {
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 1536, m: 16}};
     map<json> vectorField = check vectorFieldOf(
-            buildIndexMapping(baseMode(), {}, nextGenDeployment(COMPRESSION_1X)));
+            buildIndexMapping(configMode, {}, nextGenDeployment(COMPRESSION_1X)));
     test:assertEquals(vectorField["compression_level"], "1x");
 
     map<json> method = check asMap(vectorField["method"]);

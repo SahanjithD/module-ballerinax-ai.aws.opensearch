@@ -166,7 +166,7 @@ isolated function testSparseModeAllowsNextGenWithoutQuantization() {
     test:assertTrue(result is (), "NextGen without quantization is a legitimate SPARSE target");
 }
 
-// --- rule 2: dimension must be positive --------------------------------------------------------
+// --- rule 2: dimension must be 1 to 16,000 --------------------------------------------------------
 
 @test:Config
 isolated function testZeroDimensionRejected() {
@@ -180,6 +180,20 @@ isolated function testNegativeDimensionRejected() {
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: -1}};
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), configMode, {});
     test:assertTrue(result is ai:Error);
+}
+
+@test:Config
+isolated function testDimensionAboveMaximumRejected() {
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 16001}};
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), configMode, {});
+    test:assertTrue(result is ai:Error);
+}
+
+@test:Config
+isolated function testDimensionAtMaximumAccepted() {
+    DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: 16000}};
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(), configMode, {});
+    test:assertTrue(result is ());
 }
 
 // --- rule 3: serviceUrl must parse to a host ---------------------------------------------------

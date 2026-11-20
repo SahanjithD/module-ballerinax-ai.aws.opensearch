@@ -58,6 +58,10 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   which member of the union the caller had picked.
 
 ### Changed
+- `IndexConfig.efConstruction` and `IndexConfig.m` are optional and are left out of the mapping
+  when unset, so OpenSearch's own defaults apply (`ef_construction` 100, `m` 16). The module used
+  to send `ef_construction: 128` and `m: 16`.
+- `IndexConfig.dimension` above 16,000, OpenSearch's documented maximum, is rejected by `init`.
 - `VectorStore` is split into `ManagedDomainVectorStore` and `ServerlessVectorStore`, one per AWS
   product, so each `init` takes only what its deployment needs. `ManagedDomainVectorStore` takes
   `auth` as a parameter, typed `ManagedDomainAuthConfig` (formerly `Auth`), and its managed-only
