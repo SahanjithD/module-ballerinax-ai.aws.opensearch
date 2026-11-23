@@ -41,8 +41,9 @@ isolated class OpenSearchTransport {
     private final boolean refreshOnWrite;
     private final boolean retryWrites;
 
-    isolated function init(string serviceUrl, aws:Region|string region, Deployment deployment,
-            RetryConfig retryConfig, http:ClientConfiguration httpConfig) returns ai:Error? {
+    isolated function init(string serviceUrl, aws:Region|string region, ManagedDomainAuthConfig authConfig,
+            Deployment deployment, RetryConfig retryConfig, http:ClientConfiguration httpConfig)
+            returns ai:Error? {
         self.host = check extractHost(serviceUrl);
         self.signingName = deployment is ManagedDomainDeployment ? SIGNING_NAME_MANAGED : SIGNING_NAME_SERVERLESS;
         self.region = region;
@@ -54,7 +55,6 @@ isolated class OpenSearchTransport {
         // Elsewhere the `_id` makes a retry an idempotent upsert.
         self.retryWrites = deployment !is ServerlessClassicDeployment;
 
-        ManagedDomainAuthConfig authConfig = deployment.auth;
         if authConfig is BasicAuth {
             string credentials = string `${authConfig.username}:${authConfig.password}`;
             self.basicAuthHeader = string `Basic ${credentials.toBytes().toBase64()}`;
@@ -76,6 +76,8 @@ isolated class OpenSearchTransport {
         http:ClientConfiguration effectiveConfig = {...httpConfig};
         effectiveConfig.httpVersion = http:HTTP_1_1;
         effectiveConfig.http1Settings = http1Settings;
+        // `sendSigned` retries; see `RetryConfig`.
+        effectiveConfig.retryConfig = ();
 
         http:Client|http:ClientError httpClient = new (serviceUrl, effectiveConfig);
         if httpClient is error {

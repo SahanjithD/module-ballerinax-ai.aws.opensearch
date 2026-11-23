@@ -58,6 +58,12 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   which member of the union the caller had picked.
 
 ### Changed
+- `ServerlessVectorStore` takes `auth` as an `init` parameter right after `indexName`, as
+  `ManagedDomainVectorStore` does, instead of as a field of `ServerlessClassicDeployment` and
+  `ServerlessNextGenDeployment`. A positional `deployment` argument now comes after `auth`.
+- `httpConfig.retryConfig` is cleared, like `httpVersion` and `http1Settings.chunking`. The HTTP
+  client's retry resent the same signed request and replayed Serverless Classic writes, which
+  appends duplicates; `StoreConfiguration.retryConfig` is the only retry setting.
 - `createIndexIfNotExists` moved from `StoreConfiguration` to an `init` parameter of both stores,
   right after `auth` / `deployment` and still defaulting to `true`, so creating an index is a
   visible choice in the form. A positional `searchMode` argument now has to be passed by name.

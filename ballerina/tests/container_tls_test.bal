@@ -37,7 +37,7 @@ isolated function newSecureContainerStore(string indexName, string password = se
         returns VectorStoreCore|ai:Error {
     BasicAuth auth = {username: secureContainerUsername, password};
     return new (secureContainerUrl, CONTAINER_REGION, indexName,
-        {auth, refreshOnWrite: true},
+        auth, {refreshOnWrite: true},
         containerDenseMode(), containerConfig(), secureContainerHttpConfig()
     );
 }
@@ -84,7 +84,7 @@ isolated function testSecureContainerRejectsSigV4Credentials() returns error? {
     string indexName = containerIndexName("tls-sigv4");
     // SigV4 credentials against an FGAC-only domain should fail as a clean 401.
     VectorStoreCore|ai:Error result = new (secureContainerUrl, CONTAINER_REGION, indexName,
-        containerDeployment(), containerDenseMode(), containerConfig(), secureContainerHttpConfig()
+        containerAuth, containerDeployment(), containerDenseMode(), containerConfig(), secureContainerHttpConfig()
     );
 
     if result !is ai:Error {

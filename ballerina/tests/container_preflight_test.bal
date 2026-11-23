@@ -23,7 +23,7 @@ import ballerina/test;
 @test:Config {groups: ["docker"]}
 isolated function testContainerClusterVersionIsReadable() returns error? {
     OpenSearchTransport transport = check new (containerUrl, CONTAINER_REGION,
-            {auth: containerAuth}, {}, {});
+            containerAuth, {}, {}, {});
     string? reported = check transport.clusterVersion();
     if reported !is string {
         test:assertFail("'GET /' must report a version on a managed domain");

@@ -67,24 +67,18 @@ public type ManagedDomainAuthConfig auth:AuthConfig|BasicAuth;
 # The target Serverless collection, with the settings only its generation honors.
 public type ServerlessDeployment ServerlessClassicDeployment|ServerlessNextGenDeployment;
 
-// Nothing to tune beyond credentials: Classic supports Faiss only, rejects custom `_id`s and has a
-// fixed refresh interval.
+// Nothing to tune: Classic supports Faiss only, rejects custom `_id`s and has a fixed refresh
+// interval.
 # An OpenSearch Serverless Classic vector search collection.
 public type ServerlessClassicDeployment record {|
     # Selects this variant.
     CLASSIC generation;
-    # AWS credentials; `auth:DEFAULT_CREDENTIALS` uses the default chain. Serverless has no basic
-    # auth.
-    auth:AuthConfig auth;
 |};
 
 # An OpenSearch Serverless NextGen vector search collection.
 public type ServerlessNextGenDeployment record {|
     # Selects this variant.
     NEXTGEN generation;
-    # AWS credentials; `auth:DEFAULT_CREDENTIALS` uses the default chain. Serverless has no basic
-    # auth.
-    auth:AuthConfig auth;
     // A per-account NextGen endpoint does not say which collection a request is for, so it needs
     // this; a per-collection endpoint does not. A union rather than two fields, so naming the
     // collection both ways does not compile.
@@ -261,6 +255,10 @@ public type HybridSearch record {|
     HybridFusion fusion = {};
 |};
 
+// The connector retries itself instead of through `http:ClientConfiguration.retryConfig`, which
+// it clears: each attempt is signed afresh, since a resent request would carry a stale
+// `x-amz-date` or rotated credentials, and writes to Serverless Classic are never retried, since
+// without a custom `_id` a replayed batch appends duplicates.
 # Exponential backoff for retryable responses (`429`, `408`, `500`, `502`, `503`, `504`).
 public type RetryConfig record {|
     # Retries after the initial request.
@@ -311,10 +309,8 @@ public type ManagedDomainStoreConfiguration record {|
 # The target deployment, as the shared store code sees it.
 type Deployment ManagedDomainDeployment|ServerlessClassicDeployment|ServerlessNextGenDeployment;
 
-# A managed domain, assembled from `ManagedDomainVectorStore`'s `auth` and store configuration.
+# A managed domain, assembled from `ManagedDomainVectorStore`'s store configuration.
 type ManagedDomainDeployment record {|
-    # SigV4 credentials or `BasicAuth`.
-    ManagedDomainAuthConfig auth;
     # The engine backing the `knn_vector` field.
     Engine engine = FAISS;
     # Whether `add` waits for a refresh.

@@ -42,8 +42,8 @@ public isolated class ManagedDomainVectorStore {
     # + searchMode - Dense, sparse or hybrid search and the index shape it uses. Defaults to dense
     # search over 1536-dimensional vectors
     # + storeConfig - Shared store settings plus the engine and refresh behavior
-    # + httpConfig - HTTP client settings. `httpVersion` and `http1Settings.chunking` are always set
-    # to `HTTP_1_1` and `CHUNKING_NEVER`, which SigV4 signing needs
+    # + httpConfig - HTTP client settings. `httpVersion`, `http1Settings.chunking` and `retryConfig`
+    # are overridden for SigV4; set retries in `storeConfig.retryConfig`
     # + return - An `ai:Error` if validation, index creation or verification fails
     public isolated function init(
             @display {label: "Service URL"} string serviceUrl,
@@ -56,11 +56,10 @@ public isolated class ManagedDomainVectorStore {
             @display {label: "HTTP Configuration"} http:ClientConfiguration httpConfig = {})
             returns ai:Error? {
         ManagedDomainDeployment deployment = {
-            auth,
             engine: storeConfig.engine,
             refreshOnWrite: storeConfig.refreshOnWrite
         };
-        self.core = check new (serviceUrl, region, indexName, deployment, searchMode,
+        self.core = check new (serviceUrl, region, indexName, auth, deployment, searchMode,
             sharedStoreConfiguration(storeConfig), httpConfig, createIndexIfNotExists
         );
     }

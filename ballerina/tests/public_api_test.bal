@@ -49,7 +49,7 @@ isolated function testSharedStoreConfigurationCopiesEverySharedField() {
 @test:Config
 isolated function testServerlessStoreRejectsCompressionWithSparse() {
     ServerlessVectorStore|ai:Error result = new (UNREACHABLE_URL, "us-east-1", "idx",
-        {generation: NEXTGEN, auth: TEST_CREDENTIALS, compressionLevel: COMPRESSION_1X}, searchMode = {queryMode: ai:SPARSE}
+        TEST_CREDENTIALS, {generation: NEXTGEN, compressionLevel: COMPRESSION_1X}, searchMode = {queryMode: ai:SPARSE}
     );
     if result !is ai:Error {
         test:assertFail("'compressionLevel' with a SPARSE store should fail construction");

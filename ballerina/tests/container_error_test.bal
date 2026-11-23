@@ -191,7 +191,7 @@ isolated function testContainerUnreachableEndpointFailsAfterRetries() returns er
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
     StoreConfiguration config = {retryConfig: {maxRetries: 0}};
     VectorStoreCore|ai:Error result = new ("http://localhost:9299", CONTAINER_REGION, "unreachable",
-        containerDeployment(), configMode, config
+        containerAuth, containerDeployment(), configMode, config
     );
 
     if result !is ai:Error {

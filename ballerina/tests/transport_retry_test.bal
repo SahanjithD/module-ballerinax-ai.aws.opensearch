@@ -80,7 +80,7 @@ isolated function testRetryIsSignedAfresh() returns error? {
     // `x-amz-date` has one-second resolution, so the backoff must exceed a second to tell the
     // attempts apart.
     VectorStoreCore store = check new (string `http://localhost:${RETRY_PORT}`, CONTAINER_REGION, "retry-index",
-        containerDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}},
+        containerAuth, containerDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}},
         {retryConfig: {maxRetries: 1, initialDelay: 1.1}},
         createIndexIfNotExists = false
     );
@@ -95,4 +95,20 @@ isolated function testRetryIsSignedAfresh() returns error? {
     test:assertNotEquals(second.authorization, first.authorization,
             "a retry must carry a signature computed for its own 'x-amz-date'");
     test:assertEquals(second.bodyLength, first.bodyLength, "a retry must resend the same body");
+}
+
+// Only the connector retries: a second, HTTP-client retry would resend a stale signature.
+@test:Config {dependsOn: [testRetryIsSignedAfresh]}
+isolated function testHttpClientRetryIsCleared() returns error? {
+    _ = takeRetryCaptures();
+    VectorStoreCore store = check new (string `http://localhost:${RETRY_PORT}`, CONTAINER_REGION, "retry-index",
+        containerAuth, containerDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}},
+        {retryConfig: {maxRetries: 0}},
+        {retryConfig: {count: 3, interval: 0.1, statusCodes: [503]}},
+        createIndexIfNotExists = false
+    );
+    ai:Error? result = store.add([entry("retry-2", vec(1.0))]);
+
+    test:assertTrue(result is ai:Error, "the 503 should not be retried with 'maxRetries' at 0");
+    test:assertEquals(takeRetryCaptures().length(), 1, "'httpConfig.retryConfig' must not add attempts");
 }

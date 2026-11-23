@@ -17,6 +17,7 @@
 import ballerina/ai;
 import ballerina/http;
 import ballerinax/aws;
+import ballerinax/aws.auth;
 
 # Vector store for an Amazon OpenSearch Serverless vector search collection.
 @display {label: "OpenSearch Serverless Vector Store"}
@@ -25,6 +26,8 @@ public isolated class ServerlessVectorStore {
 
     private final VectorStoreCore core;
 
+    // `auth` is required rather than defaulted: silently falling back to the ambient credential
+    // chain hides a misconfiguration until it shows up as a 403 for the wrong principal.
     // `createIndexIfNotExists` is an `init` parameter rather than a store setting so that creating
     // a resource in the collection is a visible choice; with it on, a mistyped index name silently
     // creates an empty index.
@@ -34,27 +37,29 @@ public isolated class ServerlessVectorStore {
     # `https://abc123.aoss.us-east-1.on.aws` (NextGen)
     # + region - The AWS region of the collection
     # + indexName - The index this store reads and writes
-    # + deployment - The collection's generation, its credentials and its generation-specific
-    # settings
+    # + auth - AWS credentials; `auth:DEFAULT_CREDENTIALS` uses the default chain. Serverless has no
+    # basic auth
+    # + deployment - The collection's generation and its generation-specific settings
     # + createIndexIfNotExists - Creates the index if it doesn't exist. Turn off to fail on a missing
     # or mistyped index name instead
     # + searchMode - Dense, sparse or hybrid search and the index shape it uses. Defaults to dense
     # search over 1536-dimensional vectors
     # + storeConfig - Settings shared by every search mode
-    # + httpConfig - HTTP client settings. `httpVersion` and `http1Settings.chunking` are always set
-    # to `HTTP_1_1` and `CHUNKING_NEVER`, which SigV4 signing needs
+    # + httpConfig - HTTP client settings. `httpVersion`, `http1Settings.chunking` and `retryConfig`
+    # are overridden for SigV4; set retries in `storeConfig.retryConfig`
     # + return - An `ai:Error` if validation, index creation or verification fails
     public isolated function init(
             @display {label: "Service URL"} string serviceUrl,
             @display {label: "Region"} aws:Region|string region,
             @display {label: "Index Name"} string indexName,
+            @display {label: "Authentication"} auth:AuthConfig auth,
             @display {label: "Collection Configuration"} ServerlessDeployment deployment,
             @display {label: "Create Index If Missing"} boolean createIndexIfNotExists = true,
             @display {label: "Search Mode"} SearchMode searchMode = DEFAULT_SEARCH_MODE,
             @display {label: "Store Configuration"} StoreConfiguration storeConfig = {},
             @display {label: "HTTP Configuration"} http:ClientConfiguration httpConfig = {})
             returns ai:Error? {
-        self.core = check new (serviceUrl, region, indexName, deployment, searchMode, storeConfig,
+        self.core = check new (serviceUrl, region, indexName, auth, deployment, searchMode, storeConfig,
             httpConfig, createIndexIfNotExists
         );
     }

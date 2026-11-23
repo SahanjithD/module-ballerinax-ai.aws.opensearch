@@ -48,6 +48,7 @@ isolated class VectorStoreCore {
     # + serviceUrl - The endpoint
     # + region - The AWS region of the endpoint
     # + indexName - The index this store reads and writes
+    # + auth - SigV4 credentials, or `BasicAuth` on a managed domain
     # + deploymentConfig - The target deployment and its deployment-specific settings
     # + searchMode - Dense, sparse or hybrid search, with the index shape and fields it uses
     # + storeConfig - Settings shared by every search mode and deployment
@@ -55,13 +56,13 @@ isolated class VectorStoreCore {
     # + createIndexIfNotExists - Whether `init` creates the index when it does not exist
     # + return - An `ai:Error` if validation, index creation or verification fails
     isolated function init(string serviceUrl, aws:Region|string region, string indexName,
-            Deployment deploymentConfig, SearchMode searchMode = DEFAULT_SEARCH_MODE,
+            ManagedDomainAuthConfig auth, Deployment deploymentConfig, SearchMode searchMode = DEFAULT_SEARCH_MODE,
             StoreConfiguration storeConfig = {}, http:ClientConfiguration httpConfig = {},
             boolean createIndexIfNotExists = true)
             returns ai:Error? {
         check validateConfiguration(serviceUrl, deploymentConfig, searchMode, storeConfig);
 
-        OpenSearchTransport transport = check new (serviceUrl, region, deploymentConfig,
+        OpenSearchTransport transport = check new (serviceUrl, region, auth, deploymentConfig,
             storeConfig.retryConfig, httpConfig
         );
         ai:Error? preparation = prepareIndex(transport, indexName, searchMode, storeConfig, deploymentConfig,

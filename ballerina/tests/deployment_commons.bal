@@ -32,13 +32,13 @@ final readonly & auth:StaticAuthConfig TEST_CREDENTIALS = {
 # + return - The deployment
 isolated function managedDeployment(Engine engine = FAISS, boolean refreshOnWrite = false)
         returns ManagedDomainDeployment =>
-    {auth: TEST_CREDENTIALS, engine, refreshOnWrite};
+    {engine, refreshOnWrite};
 
 # A Serverless Classic deployment with test credentials.
 #
 # + return - The deployment
 isolated function classicDeployment() returns ServerlessClassicDeployment =>
-    {generation: CLASSIC, auth: TEST_CREDENTIALS};
+    {generation: CLASSIC};
 
 # A Serverless NextGen deployment with test credentials.
 #
@@ -46,7 +46,7 @@ isolated function classicDeployment() returns ServerlessClassicDeployment =>
 # + return - The deployment
 isolated function nextGenDeployment(CompressionLevel? compressionLevel = ())
         returns ServerlessNextGenDeployment =>
-    {generation: NEXTGEN, auth: TEST_CREDENTIALS, compressionLevel};
+    {generation: NEXTGEN, compressionLevel};
 
 # All three deployment types with their defaults, for tests that assert behavior shared by every
 # flavour.

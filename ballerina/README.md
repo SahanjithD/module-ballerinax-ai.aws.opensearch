@@ -263,20 +263,20 @@ For a Serverless collection, `deployment` selects the generation, and each varia
 settings that generation honors, so a setting that does not apply cannot be named at all:
 
 ```ballerina
-// Serverless Classic: credentials only. Faiss is the sole engine it supports, and its refresh
+// Serverless Classic: nothing to tune. Faiss is the sole engine it supports, and its refresh
 // interval is fixed, so neither is a choice.
 opensearch:ServerlessVectorStore vectorStore = check new (
     serviceUrl = "https://abc123.us-east-1.aoss.amazonaws.com",
     region = "us-east-1",
     indexName = "my-knowledge-base",
-    deployment = {generation: opensearch:CLASSIC, auth: auth:DEFAULT_CREDENTIALS},
+    auth = auth:DEFAULT_CREDENTIALS,
+    deployment = {generation: opensearch:CLASSIC},
     searchMode = {queryMode: ai:DENSE, indexConfig: {dimension: 1536}}
 );
 
 // Serverless NextGen: the only generation exposing vector quantization.
 deployment = {
     generation: opensearch:NEXTGEN,
-    auth: auth:DEFAULT_CREDENTIALS,
     collection: {name: "my-collection"},   // or {id: "..."}; needed on a per-account endpoint
     compressionLevel: opensearch:COMPRESSION_1X
 }
@@ -366,12 +366,11 @@ auth = {accessKeyId: "...", secretAccessKey: "..."}
 auth = auth:DEFAULT_CREDENTIALS
 
 // HTTP basic auth — requires FGAC + an internal user database, and is accepted only by
-// `ManagedDomainVectorStore`. The Serverless deployments' `auth` field does not admit this type.
+// `ManagedDomainVectorStore`. `ServerlessVectorStore`'s `auth` does not admit this type.
 auth = {username: "...", password: "..."}
 ```
 
-On `ManagedDomainVectorStore`, `auth` is an `init` parameter of its own. On
-`ServerlessVectorStore`, it is a field of `deployment`.
+On both stores, `auth` is an `init` parameter of its own, right after `indexName`.
 
 ### Index configuration (`IndexConfig`)
 
@@ -445,7 +444,7 @@ does not compile.
 | `includeEmbeddingsInResults` | `false` | Whether a `query` result carries the stored vector. Off by default, so every vector field the mode declares is excluded from `_source` — a meaningful bandwidth saving at high dimensions and large `topK`, and a larger one under `SPARSE`/`HYBRID`. Set `true` when the caller needs the vectors back |
 | `maxBulkSize` | `500` | Entries per `_bulk` request; `add` chunks larger batches automatically |
 | `maxResultWindow` | `10000` | The `size` used when `topK < 1` ("return all"), and the ceiling enforced on an explicit `topK` |
-| `retryConfig` | exponential backoff, 3 retries | Applied to `429`/`408`/`5xx` responses |
+| `retryConfig` | exponential backoff, 3 retries | Applied to `429`/`408`/`5xx` responses. Each attempt is signed afresh, and indexing writes are never retried on Serverless Classic, where a replay appends duplicates. `httpConfig.retryConfig` is ignored, so retries are set only here |
 
 `vectorFieldName`, `normalizeCosineScore` and `efSearch` are not here: they live on the
 `SearchMode` variant that honors them, alongside `sparseVectorFieldName`, `maxQueryTokens`,

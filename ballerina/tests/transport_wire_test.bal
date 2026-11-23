@@ -82,7 +82,7 @@ service / on wireListener {
 }
 
 isolated function wireStore() returns VectorStoreCore|ai:Error =>
-    new (string `http://localhost:${WIRE_PORT}`, CONTAINER_REGION, "wire-index", containerDeployment(),
+    new (string `http://localhost:${WIRE_PORT}`, CONTAINER_REGION, "wire-index", containerAuth, containerDeployment(),
     {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}},
     createIndexIfNotExists = false
 );
@@ -116,7 +116,7 @@ isolated function testLargeBodyIsSentAsUnchunkedHttp11() returns error? {
 @test:Config
 isolated function testCallerSuppliedHttpConfigCannotUnpinTheFraming() returns error? {
     VectorStoreCore store = check new (string `http://localhost:${WIRE_PORT}`, CONTAINER_REGION, "wire-index",
-        containerDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}},
+        containerAuth, containerDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}},
         {}, {httpVersion: http:HTTP_2_0, http1Settings: {chunking: http:CHUNKING_ALWAYS}},
         createIndexIfNotExists = false
     );

@@ -410,7 +410,7 @@ isolated function testServerlessClassicSameIdTwiceIsAppendOnlyAndDeleteRemovesBo
         return;
     }
     ServerlessVectorStore store = check new (serverlessClassicUrl, serverlessClassicRegion,
-        liveIndexName(classicTarget(), "sc-append"), {generation: CLASSIC, auth: auth:DEFAULT_CREDENTIALS},
+        liveIndexName(classicTarget(), "sc-append"), auth:DEFAULT_CREDENTIALS, {generation: CLASSIC},
         searchMode = liveDenseMode()
     );
 
@@ -435,7 +435,7 @@ isolated function testServerlessClassicSameIdTwiceIsAppendOnlyAndDeleteRemovesBo
 isolated function newNextGenStore(string indexName, SearchMode searchMode = liveDenseMode(),
         CompressionLevel? compressionLevel = ()) returns ServerlessVectorStore|ai:Error =>
     new (serverlessNextGenUrl, serverlessNextGenRegion, indexName,
-        {generation: NEXTGEN, auth: auth:DEFAULT_CREDENTIALS, compressionLevel}, searchMode = searchMode
+        auth:DEFAULT_CREDENTIALS, {generation: NEXTGEN, compressionLevel}, searchMode = searchMode
     );
 
 @test:Config {groups: ["live"], enable: isLiveServer}
@@ -505,7 +505,7 @@ isolated function testServerlessNextGenPerAccountEndpoint() returns error? {
     }
     ServerlessVectorStore store = check new (serverlessNextGenAccountUrl, serverlessNextGenRegion,
         liveIndexName(nextGenAccountTarget(), "ng-account"),
-        {generation: NEXTGEN, auth: auth:DEFAULT_CREDENTIALS, collection: {name: serverlessNextGenCollectionName}},
+        auth:DEFAULT_CREDENTIALS, {generation: NEXTGEN, collection: {name: serverlessNextGenCollectionName}},
         searchMode = liveDenseMode()
     );
 

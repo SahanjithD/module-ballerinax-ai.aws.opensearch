@@ -30,14 +30,6 @@ isolated function validMode() returns DenseSearch => {queryMode: ai:DENSE, index
 // --- accepted deployments --------------------------------------------------------------------
 
 @test:Config
-isolated function testManagedDomainWithBasicAuthPasses() {
-    BasicAuth basicAuth = {username: "u", password: "p"};
-    ManagedDomainDeployment deployment = {auth: basicAuth};
-    ai:Error? result = validateConfiguration(VALID_URL, deployment, validMode(), {});
-    test:assertTrue(result is ());
-}
-
-@test:Config
 isolated function testManagedDomainWithNonFaissEnginePasses() {
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(LUCENE), validMode(), {});
     test:assertTrue(result is ());
@@ -67,8 +59,8 @@ isolated function testEveryDeploymentTypePassesWithDefaults() {
 // `generation` is required on both Serverless variants so a literal resolves to exactly one.
 @test:Config
 isolated function testGenerationSelectsTheServerlessVariant() {
-    ServerlessDeployment classic = {generation: CLASSIC, auth: TEST_CREDENTIALS};
-    ServerlessDeployment nextGen = {generation: NEXTGEN, auth: TEST_CREDENTIALS};
+    ServerlessDeployment classic = {generation: CLASSIC};
+    ServerlessDeployment nextGen = {generation: NEXTGEN};
     test:assertTrue(classic is ServerlessClassicDeployment);
     test:assertTrue(nextGen is ServerlessNextGenDeployment);
 }
@@ -305,6 +297,7 @@ isolated function testVerificationDoesNotFailConstructionWhenItCannotRun() retur
         UNREACHABLE_URL,
         "us-east-1",
         "test-index",
+        TEST_CREDENTIALS,
         managedDeployment(),
         {queryMode: ai:DENSE, indexConfig: {dimension: 8}},
         // No retries, to skip the backoff.
@@ -338,12 +331,10 @@ isolated function testUnsetQuantizationIsAllowedOnNextGen() {
 isolated function testEitherCollectionIdentifierIsAccepted() {
     ServerlessNextGenDeployment byName = {
         generation: NEXTGEN,
-        auth: TEST_CREDENTIALS,
         collection: {name: "vectors"}
     };
     ServerlessNextGenDeployment byId = {
         generation: NEXTGEN,
-        auth: TEST_CREDENTIALS,
         collection: {id: "abc123"}
     };
     test:assertTrue(validateConfiguration(VALID_URL, byName, validMode(), {}) is ());
@@ -373,12 +364,10 @@ isolated function testCollectionHeadersOnlyOnNextGen() {
 isolated function testCollectionNameAndIdMapToTheirHeaders() {
     ServerlessNextGenDeployment byName = {
         generation: NEXTGEN,
-        auth: TEST_CREDENTIALS,
         collection: {name: "vectors"}
     };
     ServerlessNextGenDeployment byId = {
         generation: NEXTGEN,
-        auth: TEST_CREDENTIALS,
         collection: {id: "abc123"}
     };
     test:assertEquals(buildCollectionHeaders(byName), {"x-amz-aoss-collection-name": "vectors"});
