@@ -157,7 +157,7 @@ isolated function testContainerSparseRoundTripIsLossy() returns error? {
 
 // --- two-phase acceleration ------------------------------------------------------------------------
 
-// With the default `pruneRatio` of 0.4 the threshold is 4.0, so token 1055 runs in the first phase
+// With OpenSearch's default `prune_ratio` of 0.4 the threshold is 4.0, so token 1055 runs in the first phase
 // and token 2001 is left to the rescoring pass.
 isolated function twoPhaseContainerQuery() returns ai:VectorStoreQuery =>
     {embedding: {indices: [1055, 2001], values: [10.0, 1.0]}, topK: 10};

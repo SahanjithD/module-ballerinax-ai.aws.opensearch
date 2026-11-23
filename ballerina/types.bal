@@ -92,7 +92,7 @@ public type ServerlessNextGenDeployment record {|
     CollectionName|CollectionId collection?;
     // `mode` is not offered: the AOSS proxy rejects every value of it.
     # Quantization ratio. Unset keeps NextGen's default of `32x`, which is lossy.
-    CompressionLevel? compressionLevel = ();
+    CompressionLevel compressionLevel?;
 |};
 
 # A NextGen collection named by its name, sent as the signed `x-amz-aoss-collection-name` header.
@@ -135,8 +135,11 @@ public type IndexConfig record {|
 # Two-phase `neural_sparse` acceleration (OpenSearch 2.15+): high-weight tokens select candidates
 # and low-weight tokens rescore only those.
 public type TwoPhaseAcceleration record {|
+    // Unset sends no `two_phase_parameter`, so the processor's default of 0.4 applies (OpenSearch
+    // docs, neural sparse query two-phase processor).
     # Fraction of the largest query-token weight that separates high from low tokens, in `[0, 1]`.
-    float pruneRatio = 0.4;
+    # Unset uses OpenSearch's default.
+    float pruneRatio?;
 |};
 
 // No `z_score`: it is OpenSearch 3.0+, and AWS documents only `min_max` and `l2` for Serverless.
@@ -217,7 +220,7 @@ public type DenseSearch record {|
     // Unset omits `method_parameters`, so the index's own `ef_search` (default 100) applies.
     # HNSW `ef_search`, sent with every query. Higher improves recall but adds latency.
     # OpenSearch 2.16+.
-    int? efSearch = ();
+    int efSearch?;
 |};
 
 // The weights come from the caller's encoder; no ML model, ingest pipeline or `index.knn` is used.
@@ -232,7 +235,7 @@ public type SparseSearch record {|
     # Most non-zero terms a query vector may carry. Raise only with the cluster's clause limit.
     int maxQueryTokens = 1024;
     # Two-phase acceleration (OpenSearch 2.15+). Unset sends no pipeline.
-    TwoPhaseAcceleration? twoPhaseAcceleration = ();
+    TwoPhaseAcceleration twoPhaseAcceleration?;
 |};
 
 // Filters are copied into each sub-query because a top-level `hybrid.filter` is OpenSearch 3.0+.
@@ -250,7 +253,7 @@ public type HybridSearch record {|
     # Most non-zero terms a query sparse vector may carry. See `SparseSearch.maxQueryTokens`.
     int maxQueryTokens = 1024;
     # HNSW `ef_search` for the dense sub-query. See `DenseSearch.efSearch`.
-    int? efSearch = ();
+    int efSearch?;
     # How the sub-query scores are fused: inline, or by a named pipeline.
     HybridFusion fusion = {};
 |};

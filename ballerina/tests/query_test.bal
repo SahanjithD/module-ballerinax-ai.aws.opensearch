@@ -721,12 +721,8 @@ isolated function testTwoPhaseAccelerationEmitsARequestProcessor() returns error
     map<json> processor = check inlineProcessorOf(body, "request_processors");
     map<json> twoPhase = check asJsonMap(processor["neural_sparse_two_phase_processor"]);
     test:assertEquals(twoPhase["enabled"], true);
-    // Singular, as OpenSearch names it; an unknown key fails the search.
-    map<json> parameters = check asJsonMap(twoPhase["two_phase_parameter"]);
-    test:assertEquals(parameters["prune_ratio"], 0.4);
-    // Left to the server's defaults.
-    test:assertFalse(parameters.hasKey("expansion_rate"));
-    test:assertFalse(parameters.hasKey("max_window_size"));
+    // An unset `pruneRatio` leaves every parameter to the server's defaults.
+    test:assertFalse(twoPhase.hasKey("two_phase_parameter"));
 }
 
 @test:Config

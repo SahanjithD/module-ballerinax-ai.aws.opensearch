@@ -458,18 +458,16 @@ isolated function buildInlineFusionPipeline(InlineFusion fusion) returns json {
 #
 # + acceleration - The two-phase settings
 # + return - The inline pipeline object
-isolated function buildInlineTwoPhasePipeline(TwoPhaseAcceleration acceleration) returns json => {
-    "request_processors": [
-        {
-            "neural_sparse_two_phase_processor": {
-                "enabled": true,
-                // Singular, as OpenSearch names it; an unknown key fails the search. The other
-                // parameters are left to the server's defaults.
-                "two_phase_parameter": {"prune_ratio": acceleration.pruneRatio}
-            }
-        }
-    ]
-};
+isolated function buildInlineTwoPhasePipeline(TwoPhaseAcceleration acceleration) returns json {
+    map<json> processor = {"enabled": true};
+    float? pruneRatio = acceleration.pruneRatio;
+    if pruneRatio is float {
+        // Singular, as OpenSearch names it; an unknown key fails the search. The other
+        // parameters are left to the server's defaults.
+        processor["two_phase_parameter"] = {"prune_ratio": pruneRatio};
+    }
+    return {"request_processors": [{"neural_sparse_two_phase_processor": processor}]};
+}
 
 // Never both inline and named: OpenSearch rejects a request carrying both.
 # The pipeline name to send as `?search_pipeline=`, or `()` if fusion is inline or there is no

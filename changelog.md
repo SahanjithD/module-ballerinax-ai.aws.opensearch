@@ -62,6 +62,10 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   when unset, so OpenSearch's own defaults apply (`ef_construction` 100, `m` 16). The module used
   to send `ef_construction: 128` and `m: 16`.
 - `IndexConfig.dimension` above 16,000, OpenSearch's documented maximum, is rejected by `init`.
+- `TwoPhaseAcceleration.pruneRatio` is optional; unset sends no `two_phase_parameter`, so
+  OpenSearch's default of 0.4 applies. `DenseSearch.efSearch`, `HybridSearch.efSearch`,
+  `SparseSearch.twoPhaseAcceleration` and `ServerlessNextGenDeployment.compressionLevel` are now
+  declared optional (`field?`) instead of `= ()`; behavior is unchanged.
 - `VectorStore` is split into `ManagedDomainVectorStore` and `ServerlessVectorStore`, one per AWS
   product, so each `init` takes only what its deployment needs. `ManagedDomainVectorStore` takes
   `auth` as a parameter, typed `ManagedDomainAuthConfig` (formerly `Auth`), and its managed-only

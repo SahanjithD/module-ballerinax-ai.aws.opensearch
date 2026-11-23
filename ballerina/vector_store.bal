@@ -354,8 +354,8 @@ isolated function validateTwoPhaseAcceleration(TwoPhaseAcceleration? acceleratio
     if acceleration is () {
         return;
     }
-    float pruneRatio = acceleration.pruneRatio;
-    if pruneRatio < 0.0 || pruneRatio > 1.0 {
+    float? pruneRatio = acceleration.pruneRatio;
+    if pruneRatio is float && (pruneRatio < 0.0 || pruneRatio > 1.0) {
         return error(string `'TwoPhaseAcceleration.pruneRatio' must be between 0.0 and 1.0, got: ` +
                 string `${pruneRatio}. It is a fraction of the query's largest token weight, and ` +
                 "is what separates the tokens that select candidates from the ones that rescore them");

@@ -144,6 +144,9 @@ high-weight tokens select a candidate set and the low-weight ones rescore only t
 searchMode = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}}
 ```
 
+`{}` sends the processor with no parameters, so OpenSearch's defaults apply (`prune_ratio` 0.4).
+Set `pruneRatio` to override it.
+
 It is unset by default because it raises the version floor, and it is reachable from `SPARSE` alone
 — the processor rewrites `neural_sparse` clauses at the top level or inside a `bool`, and does not
 descend into a `hybrid` query, where it would be accepted and then quietly do nothing.
