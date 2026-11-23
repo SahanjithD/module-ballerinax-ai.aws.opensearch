@@ -52,17 +52,20 @@ isolated class VectorStoreCore {
     # + searchMode - Dense, sparse or hybrid search, with the index shape and fields it uses
     # + storeConfig - Settings shared by every search mode and deployment
     # + httpConfig - HTTP client settings
+    # + createIndexIfNotExists - Whether `init` creates the index when it does not exist
     # + return - An `ai:Error` if validation, index creation or verification fails
     isolated function init(string serviceUrl, aws:Region|string region, string indexName,
             Deployment deploymentConfig, SearchMode searchMode = DEFAULT_SEARCH_MODE,
-            StoreConfiguration storeConfig = {}, http:ClientConfiguration httpConfig = {})
+            StoreConfiguration storeConfig = {}, http:ClientConfiguration httpConfig = {},
+            boolean createIndexIfNotExists = true)
             returns ai:Error? {
         check validateConfiguration(serviceUrl, deploymentConfig, searchMode, storeConfig);
 
         OpenSearchTransport transport = check new (serviceUrl, region, deploymentConfig,
             storeConfig.retryConfig, httpConfig
         );
-        ai:Error? preparation = prepareIndex(transport, indexName, searchMode, storeConfig, deploymentConfig);
+        ai:Error? preparation = prepareIndex(transport, indexName, searchMode, storeConfig, deploymentConfig,
+                createIndexIfNotExists);
         if preparation is ai:Error {
             // Best effort: a close failure must not mask the preparation error.
             ai:Error? closeResult = transport.close();
@@ -207,11 +210,12 @@ isolated class VectorStoreCore {
 # + searchMode - The store's search mode
 # + config - The vector store configuration
 # + deployment - The target deployment
+# + createIndexIfNotExists - Whether a missing index is created rather than reported
 # + return - An `ai:Error` if the cluster or index cannot serve this store, otherwise `()`
 isolated function prepareIndex(OpenSearchTransport transport, string indexName, SearchMode searchMode,
-        StoreConfiguration config, Deployment deployment) returns ai:Error? {
+        StoreConfiguration config, Deployment deployment, boolean createIndexIfNotExists) returns ai:Error? {
     boolean missing = false;
-    if config.createIndexIfNotExists {
+    if createIndexIfNotExists {
         missing = !check transport.indexExists(indexName);
     }
     check verifyClusterVersion(transport, searchMode, deployment, missing);

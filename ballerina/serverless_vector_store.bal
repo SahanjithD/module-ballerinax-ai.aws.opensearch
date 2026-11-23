@@ -25,6 +25,9 @@ public isolated class ServerlessVectorStore {
 
     private final VectorStoreCore core;
 
+    // `createIndexIfNotExists` is an `init` parameter rather than a store setting so that creating
+    // a resource in the collection is a visible choice; with it on, a mistyped index name silently
+    // creates an empty index.
     # Initializes the store and, by default, creates and checks the index.
     #
     # + serviceUrl - The collection endpoint: `https://abc123.us-east-1.aoss.amazonaws.com` (Classic) or
@@ -33,6 +36,8 @@ public isolated class ServerlessVectorStore {
     # + indexName - The index this store reads and writes
     # + deployment - The collection's generation, its credentials and its generation-specific
     # settings
+    # + createIndexIfNotExists - Creates the index if it doesn't exist. Turn off to fail on a missing
+    # or mistyped index name instead
     # + searchMode - Dense, sparse or hybrid search and the index shape it uses. Defaults to dense
     # search over 1536-dimensional vectors
     # + storeConfig - Settings shared by every search mode
@@ -44,12 +49,13 @@ public isolated class ServerlessVectorStore {
             @display {label: "Region"} aws:Region|string region,
             @display {label: "Index Name"} string indexName,
             @display {label: "Collection Configuration"} ServerlessDeployment deployment,
+            @display {label: "Create Index If Missing"} boolean createIndexIfNotExists = true,
             @display {label: "Search Mode"} SearchMode searchMode = DEFAULT_SEARCH_MODE,
             @display {label: "Store Configuration"} StoreConfiguration storeConfig = {},
             @display {label: "HTTP Configuration"} http:ClientConfiguration httpConfig = {})
             returns ai:Error? {
         self.core = check new (serviceUrl, region, indexName, deployment, searchMode, storeConfig,
-            httpConfig
+            httpConfig, createIndexIfNotExists
         );
     }
 

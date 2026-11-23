@@ -125,11 +125,11 @@ isolated function testContainerHybridWeightsShiftRanking() returns error? {
     check store.add(hybridSeedEntries());
 
     VectorStoreCore denseHeavy = check newContainerStore(indexName,
-            containerHybridMode({denseWeight: 0.9, sparseWeight: 0.1}), {createIndexIfNotExists: false});
+            containerHybridMode({denseWeight: 0.9, sparseWeight: 0.1}), createIndexIfNotExists = false);
     ai:VectorMatch[] denseFirst = check denseHeavy.query(hybridContainerQuery());
 
     VectorStoreCore sparseHeavy = check newContainerStore(indexName,
-            containerHybridMode({denseWeight: 0.1, sparseWeight: 0.9}), {createIndexIfNotExists: false});
+            containerHybridMode({denseWeight: 0.1, sparseWeight: 0.9}), createIndexIfNotExists = false);
     ai:VectorMatch[] sparseFirst = check sparseHeavy.query(hybridContainerQuery());
 
     test:assertEquals(denseFirst[0].id, "dense-favoured",

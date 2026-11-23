@@ -81,7 +81,8 @@ isolated function testRetryIsSignedAfresh() returns error? {
     // attempts apart.
     VectorStoreCore store = check new (string `http://localhost:${RETRY_PORT}`, CONTAINER_REGION, "retry-index",
         containerDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}},
-        {createIndexIfNotExists: false, retryConfig: {maxRetries: 1, initialDelay: 1.1}}
+        {retryConfig: {maxRetries: 1, initialDelay: 1.1}},
+        createIndexIfNotExists = false
     );
     check store.add([entry("retry-1", vec(1.0))]);
 

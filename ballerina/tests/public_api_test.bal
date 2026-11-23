@@ -29,7 +29,6 @@ isolated function testSharedStoreConfigurationCopiesEverySharedField() {
         includeEmbeddingsInResults: true,
         maxBulkSize: 7,
         maxResultWindow: 42,
-        createIndexIfNotExists: false,
         retryConfig: {maxRetries: 1, initialDelay: 0.1, maxDelay: 0.2, backoffFactor: 3.0},
         engine: LUCENE,
         refreshOnWrite: true
@@ -41,7 +40,6 @@ isolated function testSharedStoreConfigurationCopiesEverySharedField() {
         includeEmbeddingsInResults: true,
         maxBulkSize: 7,
         maxResultWindow: 42,
-        createIndexIfNotExists: false,
         retryConfig: {maxRetries: 1, initialDelay: 0.1, maxDelay: 0.2, backoffFactor: 3.0}
     };
     test:assertEquals(sharedStoreConfiguration(managed), expected);
@@ -51,7 +49,7 @@ isolated function testSharedStoreConfigurationCopiesEverySharedField() {
 @test:Config
 isolated function testServerlessStoreRejectsCompressionWithSparse() {
     ServerlessVectorStore|ai:Error result = new (UNREACHABLE_URL, "us-east-1", "idx",
-        {generation: NEXTGEN, auth: TEST_CREDENTIALS, compressionLevel: COMPRESSION_1X}, {queryMode: ai:SPARSE}
+        {generation: NEXTGEN, auth: TEST_CREDENTIALS, compressionLevel: COMPRESSION_1X}, searchMode = {queryMode: ai:SPARSE}
     );
     if result !is ai:Error {
         test:assertFail("'compressionLevel' with a SPARSE store should fail construction");
@@ -63,7 +61,7 @@ isolated function testServerlessStoreRejectsCompressionWithSparse() {
 isolated function testContainerManagedDomainStoreRoundTrip() returns error? {
     string indexName = containerIndexName("public-managed");
     ManagedDomainVectorStore store = check new (containerUrl, CONTAINER_REGION, indexName, containerAuth,
-        containerDenseMode(), {refreshOnWrite: true, includeEmbeddingsInResults: true}
+        searchMode = containerDenseMode(), storeConfig = {refreshOnWrite: true, includeEmbeddingsInResults: true}
     );
     check store.add([entry("p-1", queryVector(), "through the public store")]);
 
@@ -78,10 +76,22 @@ isolated function testContainerManagedDomainStoreRoundTrip() returns error? {
 }
 
 @test:Config {groups: ["docker"]}
+isolated function testContainerPublicStoreHonorsCreateIndexIfNotExists() returns error? {
+    string indexName = containerIndexName("public-nocreate");
+    ManagedDomainVectorStore|ai:Error result = new (containerUrl, CONTAINER_REGION, indexName, containerAuth,
+        false, containerDenseMode()
+    );
+    if result !is ai:Error {
+        test:assertFail("with 'createIndexIfNotExists' off, a missing index must fail construction");
+    }
+    test:assertFalse(check rawIndexExists(indexName), "no index should have been created");
+}
+
+@test:Config {groups: ["docker"]}
 isolated function testContainerManagedDomainStorePassesTheEngine() returns error? {
     string indexName = containerIndexName("public-engine");
     _ = check new ManagedDomainVectorStore(containerUrl, CONTAINER_REGION, indexName, containerAuth,
-        containerDenseMode(), {engine: LUCENE}
+        searchMode = containerDenseMode(), storeConfig = {engine: LUCENE}
     );
     map<json> mapping = check indexMapping(indexName);
     map<json> properties = check mapField(mapping, "properties");

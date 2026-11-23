@@ -190,7 +190,7 @@ isolated function verifyIndexMapping(OpenSearchTransport transport, string index
     if properties is ai:Error {
         if properties.detail()["status"] == 404 {
             return error(string `The index '${indexName}' does not exist, and ` +
-                    "'StoreConfiguration.createIndexIfNotExists' is false so this module did not " +
+                    "'createIndexIfNotExists' is false so this module did not " +
                     "create it. Writing to it anyway would not fail: OpenSearch's " +
                     "'action.auto_create_index' default would build an index from the first " +
                     "document's inferred shape, with no 'index.knn' setting and the vector mapped " +

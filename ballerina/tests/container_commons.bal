@@ -113,6 +113,7 @@ isolated function containerDeployment(Engine engine = FAISS) returns ManagedDoma
 # + searchMode - The search mode, defaulting to dense over `CONTAINER_DIMENSION`
 # + config - The store configuration
 # + deployment - The deployment, defaulting to a managed domain with `refreshOnWrite` set
+# + createIndexIfNotExists - Whether a missing index is created
 # + return - The store, or an `ai:Error` if construction fails
 isolated function newContainerStore(string indexName, SearchMode searchMode = {
             queryMode: ai:DENSE,
@@ -120,8 +121,9 @@ isolated function newContainerStore(string indexName, SearchMode searchMode = {
         }, StoreConfiguration config = {}, ManagedDomainDeployment deployment = {
             auth: containerAuth,
             refreshOnWrite: true
-        }) returns VectorStoreCore|ai:Error =>
-    new (containerUrl, CONTAINER_REGION, indexName, deployment, searchMode, config);
+        }, boolean createIndexIfNotExists = true) returns VectorStoreCore|ai:Error =>
+    new (containerUrl, CONTAINER_REGION, indexName, deployment, searchMode, config,
+        createIndexIfNotExists = createIndexIfNotExists);
 
 # Builds a dense test vector of `CONTAINER_DIMENSION` components.
 #

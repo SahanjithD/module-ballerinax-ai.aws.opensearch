@@ -43,24 +43,24 @@ isolated function testContainerVerificationAcceptsTheModulesOwnIndex() returns e
     _ = check newContainerStore(denseIndex, containerDenseMode());
     // A second store over the same index skips creation, so verification runs.
     _ = check newContainerStore(denseIndex, containerDenseMode(),
-            {createIndexIfNotExists: false});
+            createIndexIfNotExists = false);
 
     string sparseIndex = containerIndexName("verify-sparse");
     _ = check newSparseContainerStore(sparseIndex);
     _ = check newContainerStore(sparseIndex, containerSparseMode(),
-            {createIndexIfNotExists: false});
+            createIndexIfNotExists = false);
 
     string hybridIndex = containerIndexName("verify-hybrid");
     _ = check newContainerStore(hybridIndex, containerHybridMode());
     _ = check newContainerStore(hybridIndex, containerHybridMode(),
-            {createIndexIfNotExists: false});
+            createIndexIfNotExists = false);
 }
 
 @test:Config {groups: ["docker"]}
 isolated function testContainerVerificationRejectsAMissingIndex() {
     string indexName = containerIndexName("verify-missing");
     VectorStoreCore|ai:Error result = newContainerStore(indexName, containerDenseMode(),
-            {createIndexIfNotExists: false});
+            createIndexIfNotExists = false);
     if result !is ai:Error {
         test:assertFail("a store pointed at an index that does not exist must not construct");
     }
@@ -74,7 +74,7 @@ isolated function testContainerVerificationRejectsAModeMismatch() returns error?
     _ = check newContainerStore(indexName, containerDenseMode());
 
     VectorStoreCore|ai:Error result = newContainerStore(indexName, containerSparseMode(),
-            {createIndexIfNotExists: false});
+            createIndexIfNotExists = false);
     if result !is ai:Error {
         test:assertFail("a SPARSE store aimed at a dense index must not construct");
     }
@@ -88,7 +88,7 @@ isolated function testContainerVerificationRejectsADriftedDimension() returns er
     _ = check newContainerStore(indexName, containerDenseMode());
 
     DenseSearch widened = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION + 1}};
-    VectorStoreCore|ai:Error result = newContainerStore(indexName, widened, {createIndexIfNotExists: false});
+    VectorStoreCore|ai:Error result = newContainerStore(indexName, widened, createIndexIfNotExists = false);
     if result !is ai:Error {
         test:assertFail("a dimension that disagrees with the index must not construct");
     }
@@ -106,7 +106,7 @@ isolated function testContainerVerificationRejectsARenamedVectorField() returns 
         indexConfig: {dimension: CONTAINER_DIMENSION},
         vectorFieldName: "vector"
     };
-    VectorStoreCore|ai:Error result = newContainerStore(indexName, renamed, {createIndexIfNotExists: false});
+    VectorStoreCore|ai:Error result = newContainerStore(indexName, renamed, createIndexIfNotExists = false);
     if result !is ai:Error {
         test:assertFail("a vector field name the index does not declare must not construct");
     }

@@ -308,7 +308,8 @@ isolated function testVerificationDoesNotFailConstructionWhenItCannotRun() retur
         managedDeployment(),
         {queryMode: ai:DENSE, indexConfig: {dimension: 8}},
         // No retries, to skip the backoff.
-        {createIndexIfNotExists: false, retryConfig: {maxRetries: 0}}
+        {retryConfig: {maxRetries: 0}},
+        createIndexIfNotExists = false
     );
 }
 

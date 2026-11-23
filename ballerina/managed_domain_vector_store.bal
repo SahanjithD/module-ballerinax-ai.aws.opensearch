@@ -27,6 +27,9 @@ public isolated class ManagedDomainVectorStore {
 
     // `auth` is required rather than defaulted: silently falling back to the ambient credential
     // chain hides a misconfiguration until it shows up as a 403 for the wrong principal.
+    // `createIndexIfNotExists` is an `init` parameter rather than a store setting so that creating
+    // a resource on the domain is a visible choice; with it on, a mistyped index name silently
+    // creates an empty index.
     # Initializes the store and, by default, creates and checks the index.
     #
     # + serviceUrl - The domain endpoint, e.g. `https://search-my-domain-abc123.us-east-1.es.amazonaws.com`
@@ -34,6 +37,8 @@ public isolated class ManagedDomainVectorStore {
     # + indexName - The index this store reads and writes
     # + auth - AWS credentials or a fine-grained access control user (`BasicAuth`);
     # `auth:DEFAULT_CREDENTIALS` uses the default chain
+    # + createIndexIfNotExists - Creates the index if it doesn't exist. Turn off to fail on a missing
+    # or mistyped index name instead
     # + searchMode - Dense, sparse or hybrid search and the index shape it uses. Defaults to dense
     # search over 1536-dimensional vectors
     # + storeConfig - Shared store settings plus the engine and refresh behavior
@@ -45,6 +50,7 @@ public isolated class ManagedDomainVectorStore {
             @display {label: "Region"} aws:Region|string region,
             @display {label: "Index Name"} string indexName,
             @display {label: "Authentication"} ManagedDomainAuthConfig auth,
+            @display {label: "Create Index If Missing"} boolean createIndexIfNotExists = true,
             @display {label: "Search Mode"} SearchMode searchMode = DEFAULT_SEARCH_MODE,
             @display {label: "Store Configuration"} ManagedDomainStoreConfiguration storeConfig = {},
             @display {label: "HTTP Configuration"} http:ClientConfiguration httpConfig = {})
@@ -55,7 +61,7 @@ public isolated class ManagedDomainVectorStore {
             refreshOnWrite: storeConfig.refreshOnWrite
         };
         self.core = check new (serviceUrl, region, indexName, deployment, searchMode,
-            sharedStoreConfiguration(storeConfig), httpConfig
+            sharedStoreConfiguration(storeConfig), httpConfig, createIndexIfNotExists
         );
     }
 
@@ -93,6 +99,5 @@ isolated function sharedStoreConfiguration(ManagedDomainStoreConfiguration confi
     includeEmbeddingsInResults: config.includeEmbeddingsInResults,
     maxBulkSize: config.maxBulkSize,
     maxResultWindow: config.maxResultWindow,
-    createIndexIfNotExists: config.createIndexIfNotExists,
     retryConfig: config.retryConfig
 };

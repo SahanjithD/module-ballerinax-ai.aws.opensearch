@@ -226,8 +226,10 @@ isolated function countMatches(ai:VectorStore store, string id) returns int|ai:E
 // --- managed domain ----------------------------------------------------------------------------
 
 isolated function newManagedStore(string indexName, SearchMode searchMode = liveDenseMode(),
-        ManagedDomainStoreConfiguration storeConfig = {refreshOnWrite: true}) returns ManagedDomainVectorStore|ai:Error =>
-    new (managedDomainUrl, managedDomainRegion, indexName, auth:DEFAULT_CREDENTIALS, searchMode, storeConfig);
+        ManagedDomainStoreConfiguration storeConfig = {refreshOnWrite: true}, boolean createIndexIfNotExists = true)
+        returns ManagedDomainVectorStore|ai:Error =>
+    new (managedDomainUrl, managedDomainRegion, indexName, auth:DEFAULT_CREDENTIALS, createIndexIfNotExists,
+        searchMode, storeConfig);
 
 @test:Config {groups: ["live"], enable: isLiveServer}
 isolated function testManagedDomainAddQueryDeleteRoundTrip() returns error? {
@@ -307,7 +309,7 @@ isolated function testManagedDomainMissingIndexFailsInitWhenNotCreating() return
         return;
     }
     string indexName = liveIndexName(managedTarget(), "md-missing");
-    ManagedDomainVectorStore|ai:Error result = newManagedStore(indexName, storeConfig = {createIndexIfNotExists: false});
+    ManagedDomainVectorStore|ai:Error result = newManagedStore(indexName, createIndexIfNotExists = false);
     if result !is ai:Error {
         test:assertFail("a missing index that may not be created should fail construction");
     }
@@ -394,7 +396,7 @@ isolated function testManagedDomainBasicAuthRoundTrip() returns error? {
     }
     ManagedDomainVectorStore store = check new (managedDomainUrl, managedDomainRegion,
         liveIndexName(managedTarget(), "md-basic"), {username: managedDomainUsername, password: managedDomainPassword},
-        liveDenseMode(), {refreshOnWrite: true}
+        searchMode = liveDenseMode(), storeConfig = {refreshOnWrite: true}
     );
     check store.add([liveEntry("basic-1")]);
     test:assertEquals(check countMatches(store, "basic-1"), 1);
@@ -409,7 +411,7 @@ isolated function testServerlessClassicSameIdTwiceIsAppendOnlyAndDeleteRemovesBo
     }
     ServerlessVectorStore store = check new (serverlessClassicUrl, serverlessClassicRegion,
         liveIndexName(classicTarget(), "sc-append"), {generation: CLASSIC, auth: auth:DEFAULT_CREDENTIALS},
-        liveDenseMode()
+        searchMode = liveDenseMode()
     );
 
     string id = uuid:createRandomUuid();
@@ -433,7 +435,7 @@ isolated function testServerlessClassicSameIdTwiceIsAppendOnlyAndDeleteRemovesBo
 isolated function newNextGenStore(string indexName, SearchMode searchMode = liveDenseMode(),
         CompressionLevel? compressionLevel = ()) returns ServerlessVectorStore|ai:Error =>
     new (serverlessNextGenUrl, serverlessNextGenRegion, indexName,
-        {generation: NEXTGEN, auth: auth:DEFAULT_CREDENTIALS, compressionLevel}, searchMode
+        {generation: NEXTGEN, auth: auth:DEFAULT_CREDENTIALS, compressionLevel}, searchMode = searchMode
     );
 
 @test:Config {groups: ["live"], enable: isLiveServer}
@@ -504,7 +506,7 @@ isolated function testServerlessNextGenPerAccountEndpoint() returns error? {
     ServerlessVectorStore store = check new (serverlessNextGenAccountUrl, serverlessNextGenRegion,
         liveIndexName(nextGenAccountTarget(), "ng-account"),
         {generation: NEXTGEN, auth: auth:DEFAULT_CREDENTIALS, collection: {name: serverlessNextGenCollectionName}},
-        liveDenseMode()
+        searchMode = liveDenseMode()
     );
 
     check store.add([liveEntry("account-1")]);

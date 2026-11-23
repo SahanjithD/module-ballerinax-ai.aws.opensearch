@@ -37,7 +37,7 @@ public function main() returns error? {
         indexName,
         // The default AWS credential chain.
         auth:DEFAULT_CREDENTIALS,
-        {queryMode: ai:DENSE, indexConfig: {dimension: 4}}
+        searchMode = {queryMode: ai:DENSE, indexConfig: {dimension: 4}}
     );
 
     Article[] articles = [

@@ -292,10 +292,6 @@ public type StoreConfiguration record {|
     // 10,000 is OpenSearch's default `index.max_result_window`.
     # The `size` used when `topK < 1`, and the cap on an explicit `topK`.
     int maxResultWindow = 10000;
-    // With this off, `init` fails on a missing index rather than let the first write auto-create
-    // one without the vector mapping (`action.auto_create_index`).
-    # Whether `init` creates the index when it does not exist.
-    boolean createIndexIfNotExists = true;
     # Retry behavior for transient failures.
     RetryConfig retryConfig = {};
 |};

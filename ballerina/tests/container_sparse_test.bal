@@ -178,7 +178,7 @@ isolated function testContainerTwoPhaseAccelerationMatchesTheUnacceleratedResult
     ai:VectorMatch[] baseline = check seed.query(twoPhaseContainerQuery());
 
     SparseSearch accelerated = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}};
-    VectorStoreCore store = check newContainerStore(indexName, accelerated, {createIndexIfNotExists: false});
+    VectorStoreCore store = check newContainerStore(indexName, accelerated, createIndexIfNotExists = false);
     ai:VectorMatch[] matches = check store.query(twoPhaseContainerQuery());
 
     test:assertEquals(matches.length(), baseline.length(),
@@ -204,7 +204,7 @@ isolated function testContainerTwoPhaseAccelerationWorksWithAFilter() returns er
     ]);
 
     SparseSearch accelerated = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}};
-    VectorStoreCore store = check newContainerStore(indexName, accelerated, {createIndexIfNotExists: false});
+    VectorStoreCore store = check newContainerStore(indexName, accelerated, createIndexIfNotExists = false);
     ai:VectorMatch[] matches = check store.query({
         embedding: {indices: [1055], values: [2.0]},
         filters: {filters: [{key: "language", value: "en"}]},

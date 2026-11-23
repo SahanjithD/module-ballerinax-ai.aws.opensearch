@@ -42,7 +42,7 @@ public function main() returns error? {
         indexName,
         // The default AWS credential chain.
         auth:DEFAULT_CREDENTIALS,
-        {
+        searchMode = {
             queryMode: ai:HYBRID,
             indexConfig: {dimension: 4},
             // Weights must sum to 1.0. For rank-based fusion without weights, use

@@ -218,8 +218,8 @@ granting at least:
 ]
 ```
 
-Drop `aoss:CreateIndex` if you set `StoreConfiguration.createIndexIfNotExists = false` and manage the
-index yourself.
+Drop `aoss:CreateIndex` if you pass `createIndexIfNotExists = false` to `init` and manage the index
+yourself.
 
 ## Quickstart
 
@@ -293,8 +293,9 @@ search being performed. The index shape and the vector field names live on `sear
 field names, bulk sizing, retries — live on `storeConfig`. Switching between the two stores carries
 both across untouched.
 
-By default (`StoreConfiguration.createIndexIfNotExists = true`), `init` creates the index with the
-correct mapping if it does not already exist.
+By default (`createIndexIfNotExists = true`, an `init` parameter), `init` creates the index with the
+correct mapping if it does not already exist. Pass `false` to have `init` fail on a missing or
+mistyped index name instead of creating an empty index.
 
 ### Step 3: Add, query, and delete vector entries
 
@@ -442,7 +443,6 @@ does not compile.
 | `idFieldName` | `"doc_id"` | The field carrying the logical entry id; always written, and the only identity handle on Serverless Classic |
 | `metadataFieldName` | `"metadata"` | Set to `""` to address bare `<key>` paths — for pointing this module at a pre-existing index with a flat schema. A metadata key that would then collide with a reserved field name (`embedding`, `sparse_embedding`, `content`, `doc_id`, `chunk_type`) is rejected with an `ai:Error` rather than silently overwriting that field. When this module creates the index, `""` also maps every string field it does not map itself as `keyword`: those fields match exactly only, and values over 8,191 characters are not indexed |
 | `includeEmbeddingsInResults` | `false` | Whether a `query` result carries the stored vector. Off by default, so every vector field the mode declares is excluded from `_source` — a meaningful bandwidth saving at high dimensions and large `topK`, and a larger one under `SPARSE`/`HYBRID`. Set `true` when the caller needs the vectors back |
-| `createIndexIfNotExists` | `true` | When `false`, `init` creates nothing. See the warning under `IndexConfig` before setting it |
 | `maxBulkSize` | `500` | Entries per `_bulk` request; `add` chunks larger batches automatically |
 | `maxResultWindow` | `10000` | The `size` used when `topK < 1` ("return all"), and the ceiling enforced on an explicit `topK` |
 | `retryConfig` | exponential backoff, 3 retries | Applied to `429`/`408`/`5xx` responses |

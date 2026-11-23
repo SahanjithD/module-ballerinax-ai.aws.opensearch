@@ -46,7 +46,7 @@ isolated function testContainerInitOnExistingIndexIsANoOp() returns error? {
 isolated function testContainerCreateIndexIfNotExistsFalseSkipsCreation() returns error? {
     string indexName = containerIndexName("init-nocreate");
     DenseSearch configMode = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}};
-    VectorStoreCore|ai:Error result = newContainerStore(indexName, configMode, {createIndexIfNotExists: false});
+    VectorStoreCore|ai:Error result = newContainerStore(indexName, configMode, createIndexIfNotExists = false);
     if result !is ai:Error {
         test:assertFail("a missing index that may not be created should fail construction");
     }
