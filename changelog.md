@@ -62,6 +62,9 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   when unset, so OpenSearch's own defaults apply (`ef_construction` 100, `m` 16). The module used
   to send `ef_construction: 128` and `m: 16`.
 - `IndexConfig.dimension` above 16,000, OpenSearch's documented maximum, is rejected by `init`.
+- `HybridSearchConfig.normalization`, `.combination`, `.denseWeight` and `.sparseWeight` are
+  optional and left out of the `normalization-processor` when unset, so OpenSearch's defaults apply
+  (`min_max`, `arithmetic_mean`, equal weights). The two weights must be set together.
 - `TwoPhaseAcceleration.pruneRatio` is optional; unset sends no `two_phase_parameter`, so
   OpenSearch's default of 0.4 applies. `DenseSearch.efSearch`, `HybridSearch.efSearch`,
   `SparseSearch.twoPhaseAcceleration` and `ServerlessNextGenDeployment.compressionLevel` are now

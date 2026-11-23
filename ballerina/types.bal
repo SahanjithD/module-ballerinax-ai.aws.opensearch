@@ -164,14 +164,17 @@ public enum CombinationTechnique {
 // cluster state, IAM stays at index scope, and there is no Serverless pipeline propagation delay.
 # Score-based fusion for `HYBRID`, sent as an inline `normalization-processor`.
 public type HybridSearchConfig record {|
-    # How each sub-query's scores are rescaled.
-    NormalizationTechnique normalization = MIN_MAX;
-    # How the rescaled scores are combined.
-    CombinationTechnique combination = ARITHMETIC_MEAN;
-    # Weight of the dense sub-query, in `[0, 1]`. Must sum to 1.0 with `sparseWeight`.
-    float denseWeight = 0.5;
+    // Each unset field is left out of the processor, so OpenSearch's defaults apply: `min_max`,
+    // `arithmetic_mean` and equal weights (OpenSearch docs, normalization processor).
+    # How each sub-query's scores are rescaled. Unset uses OpenSearch's default (`min_max`).
+    NormalizationTechnique normalization?;
+    # How the rescaled scores are combined. Unset uses OpenSearch's default (`arithmetic_mean`).
+    CombinationTechnique combination?;
+    # Weight of the dense sub-query, in `[0, 1]`. Set with `sparseWeight`, summing to 1.0; unset
+    # weighs both sub-queries equally.
+    float denseWeight?;
     # Weight of the sparse sub-query. See `denseWeight`.
-    float sparseWeight = 0.5;
+    float sparseWeight?;
 |};
 
 # Selects `RrfFusion`; also the `combination.technique` value the `score-ranker-processor` takes.

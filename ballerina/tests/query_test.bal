@@ -506,10 +506,17 @@ isolated function testHybridQueryEmitsInlineNormalizationPipeline() returns erro
     map<json> pipeline = check asJsonMap(bodyMap["search_pipeline"]);
     json[] processors = check pipeline["phase_results_processors"].ensureType();
     map<json> normalization = check asJsonMap((check asJsonMap(processors[0]))["normalization-processor"]);
-    test:assertEquals((check asJsonMap(normalization["normalization"]))["technique"], "min_max");
-    map<json> combination = check asJsonMap(normalization["combination"]);
-    test:assertEquals(combination["technique"], "arithmetic_mean");
-    test:assertEquals((check asJsonMap(combination["parameters"]))["weights"], <json[]>[0.5, 0.5]);
+    // Unset settings are left to the processor's own defaults.
+    test:assertEquals(normalization, {});
+}
+
+@test:Config
+isolated function testOnlyTheSetFusionSettingIsSent() returns error? {
+    json body = check buildSearchBody(hybridQuery(), hybridMode({combination: HARMONIC_MEAN}), {});
+    map<json> pipeline = check asJsonMap((check asJsonMap(body))["search_pipeline"]);
+    json[] processors = check pipeline["phase_results_processors"].ensureType();
+    map<json> normalization = check asJsonMap((check asJsonMap(processors[0]))["normalization-processor"]);
+    test:assertEquals(normalization, {"combination": {"technique": "harmonic_mean"}});
 }
 
 // Weights are positional; an uneven split makes a swap detectable.

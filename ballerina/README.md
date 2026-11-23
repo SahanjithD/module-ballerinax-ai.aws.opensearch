@@ -97,8 +97,10 @@ the request body on every query** and provisions nothing:
 - it sidesteps AWS's documented **up-to-15-second** Serverless pipeline propagation delay.
 
 `HybridSearchConfig` exposes `normalization` (`MIN_MAX`, `L2`), `combination` (`ARITHMETIC_MEAN`,
-`GEOMETRIC_MEAN`, `HARMONIC_MEAN`) and the two weights, which must each be in `[0.0, 1.0]` and sum
-to `1.0`.
+`GEOMETRIC_MEAN`, `HARMONIC_MEAN`) and the two weights, which must be set together, each in
+`[0.0, 1.0]`, summing to `1.0`. All of them are optional: an unset one is left out of the processor,
+so OpenSearch's default applies (`min_max`, `arithmetic_mean`, equal weights). The default
+`fusion: {}` therefore sends the processor with no settings.
 
 **Reciprocal rank fusion** is the alternative, and is worth reaching for here: it combines the
 sub-queries by the *rank* each document reached rather than by its score, so a bounded cosine score

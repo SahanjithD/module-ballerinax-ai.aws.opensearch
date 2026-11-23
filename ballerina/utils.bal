@@ -437,21 +437,27 @@ isolated function buildInlineFusionPipeline(InlineFusion fusion) returns json {
             ]
         };
     }
-    // In the sub-query order of `buildHybridQueryClause`.
-    float[] weights = [fusion.denseWeight, fusion.sparseWeight];
-    return {
-        "phase_results_processors": [
-            {
-                "normalization-processor": {
-                    "normalization": {"technique": fusion.normalization},
-                    "combination": {
-                        "technique": fusion.combination,
-                        "parameters": {"weights": weights}
-                    }
-                }
-            }
-        ]
-    };
+    // Only the fields the caller set are sent; the processor fills in its own defaults for the rest.
+    map<json> processor = {};
+    NormalizationTechnique? normalization = fusion.normalization;
+    if normalization is NormalizationTechnique {
+        processor["normalization"] = {"technique": normalization};
+    }
+    map<json> combination = {};
+    CombinationTechnique? combinationTechnique = fusion.combination;
+    if combinationTechnique is CombinationTechnique {
+        combination["technique"] = combinationTechnique;
+    }
+    float? denseWeight = fusion.denseWeight;
+    float? sparseWeight = fusion.sparseWeight;
+    if denseWeight is float && sparseWeight is float {
+        // In the sub-query order of `buildHybridQueryClause`.
+        combination["parameters"] = {"weights": [denseWeight, sparseWeight]};
+    }
+    if combination.length() > 0 {
+        processor["combination"] = combination;
+    }
+    return {"phase_results_processors": [{"normalization-processor": processor}]};
 }
 
 # Builds the inline `search_pipeline` for two-phase `neural_sparse` acceleration.

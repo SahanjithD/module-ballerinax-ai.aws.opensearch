@@ -320,8 +320,17 @@ isolated function validateHybridFusion(HybridFusion fusion) returns ai:Error? {
     if fusion is RrfFusion {
         return;
     }
-    float denseWeight = fusion.denseWeight;
-    float sparseWeight = fusion.sparseWeight;
+    float? denseWeightValue = fusion.denseWeight;
+    float? sparseWeightValue = fusion.sparseWeight;
+    if denseWeightValue is () && sparseWeightValue is () {
+        return;
+    }
+    if denseWeightValue is () || sparseWeightValue is () {
+        return error("'HybridSearchConfig.denseWeight' and '.sparseWeight' must be set together, " +
+                "or both left unset to weigh the sub-queries equally");
+    }
+    float denseWeight = denseWeightValue;
+    float sparseWeight = sparseWeightValue;
     if denseWeight < 0.0 || denseWeight > 1.0 || sparseWeight < 0.0 || sparseWeight > 1.0 {
         return error(string `'HybridSearchConfig.denseWeight' and '.sparseWeight' must each be ` +
                 string `between 0.0 and 1.0, got: ${denseWeight} and ${sparseWeight}`);

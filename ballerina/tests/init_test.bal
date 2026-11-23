@@ -121,6 +121,23 @@ isolated function testHybridWeightsMustBeInRange() {
 }
 
 @test:Config
+isolated function testHybridWeightsMustBeSetTogether() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:HYBRID, indexConfig: {dimension: 8}, fusion: {denseWeight: 0.7}}, {});
+    if result !is ai:Error {
+        test:assertFail("one weight without the other must be rejected");
+    }
+    test:assertTrue(result.message().includes("set together"));
+}
+
+@test:Config
+isolated function testHybridWeightsMayBothBeUnset() {
+    ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
+            {queryMode: ai:HYBRID, indexConfig: {dimension: 8}, fusion: {normalization: L2}}, {});
+    test:assertTrue(result is (), "unset weights leave equal weighting to OpenSearch");
+}
+
+@test:Config
 isolated function testHybridNamedPipelineMustNotBeBlank() {
     ai:Error? result = validateConfiguration(VALID_URL, managedDeployment(),
             {queryMode: ai:HYBRID, indexConfig: {dimension: 8}, fusion: {name: "  "}}, {});
