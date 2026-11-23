@@ -45,8 +45,8 @@ public isolated class ServerlessVectorStore {
     # + searchMode - Dense, sparse or hybrid search and the index shape it uses. Defaults to dense
     # search over 1536-dimensional vectors
     # + storeConfig - Settings shared by every search mode
-    # + httpConfig - HTTP client settings. `httpVersion`, `http1Settings.chunking` and `retryConfig`
-    # are overridden for SigV4; set retries in `storeConfig.retryConfig`
+    # + httpConfig - HTTP client settings. `httpVersion`, `http1Settings.chunking`, `retryConfig` and
+    # `auth` are overridden; set retries in `storeConfig.retryConfig` and credentials in `auth`
     # + return - An `ai:Error` if validation, index creation or verification fails
     public isolated function init(
             @display {label: "Service URL"} string serviceUrl,

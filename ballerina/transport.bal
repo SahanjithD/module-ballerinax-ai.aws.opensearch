@@ -78,6 +78,8 @@ isolated class OpenSearchTransport {
         effectiveConfig.http1Settings = http1Settings;
         // `sendSigned` retries; see `RetryConfig`.
         effectiveConfig.retryConfig = ();
+        // The client's own auth handler would overwrite the SigV4 or basic `authorization` header.
+        effectiveConfig.auth = ();
 
         http:Client|http:ClientError httpClient = new (serviceUrl, effectiveConfig);
         if httpClient is error {

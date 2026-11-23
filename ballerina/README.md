@@ -453,6 +453,10 @@ field names must be distinct from each other and from the fixed `chunk_type`; a 
 rejected at construction rather than silently producing an index where one field overwrites
 another.
 
+`httpConfig` takes any `http:ClientConfiguration`, but four of its settings are always overridden:
+`httpVersion` and `http1Settings.chunking` (SigV4 needs HTTP/1.1 and an unchunked body),
+`retryConfig` (the store retries itself, above) and `auth` (credentials come only from `auth`).
+
 ### Construction-time verification
 
 Nothing else in this module connects a store's configuration to the index it is pointed at, and

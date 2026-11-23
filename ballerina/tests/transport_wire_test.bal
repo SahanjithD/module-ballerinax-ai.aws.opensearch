@@ -37,6 +37,8 @@ type WireCapture record {|
     string? transferEncoding;
     # The number of body bytes actually received.
     int bodyLength;
+    # The `authorization` header, or `()` when absent.
+    string? authorization;
 |};
 
 isolated WireCapture? lastWireCapture = ();
@@ -74,7 +76,8 @@ service / on wireListener {
                               httpVersion: request.httpVersion,
                               contentLength: optionalHeader(request, "content-length"),
                               transferEncoding: optionalHeader(request, "transfer-encoding"),
-                              bodyLength: body is byte[] ? body.length() : -1
+                              bodyLength: body is byte[] ? body.length() : -1,
+                              authorization: optionalHeader(request, "authorization")
                           });
         // A bare `json` would be sent as a 201, which `bulk` treats as a failure.
         return {body: {"errors": false, "items": []}};
@@ -126,4 +129,27 @@ isolated function testCallerSuppliedHttpConfigCannotUnpinTheFraming() returns er
     test:assertEquals(capture.httpVersion, "1.1", "an explicit HTTP_2_0 must still be overridden");
     test:assertEquals(capture.transferEncoding, (), "an explicit CHUNKING_ALWAYS must still be overridden");
     test:assertEquals(capture.contentLength, capture.bodyLength.toString());
+}
+
+@test:Config
+isolated function testCallerSuppliedHttpAuthCannotReplaceTheStoreAuth() returns error? {
+    http:ClientConfiguration httpConfig = {auth: {token: "caller-token"}};
+    DenseSearch mode = {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}};
+    string url = string `http://localhost:${WIRE_PORT}`;
+
+    VectorStoreCore sigV4Store = check new (url, CONTAINER_REGION, "wire-index", containerAuth,
+        containerDeployment(), mode, {}, httpConfig, createIndexIfNotExists = false
+    );
+    check sigV4Store.add([{id: "wire-3", embedding: wireEmbedding(), chunk: <ai:TextChunk>{content: "auth"}}]);
+    WireCapture sigV4 = check takeWireCapture().ensureType();
+    test:assertTrue((sigV4.authorization ?: "").startsWith("AWS4-HMAC-SHA256 "),
+            string `'httpConfig.auth' must not replace the SigV4 signature, got: ${sigV4.authorization ?: "none"}`);
+
+    BasicAuth basicAuth = {username: "u", password: "p"};
+    VectorStoreCore basicStore = check new (url, CONTAINER_REGION, "wire-index", basicAuth,
+        containerDeployment(), mode, {}, httpConfig, createIndexIfNotExists = false
+    );
+    check basicStore.add([{id: "wire-4", embedding: wireEmbedding(), chunk: <ai:TextChunk>{content: "auth"}}]);
+    WireCapture basic = check takeWireCapture().ensureType();
+    test:assertEquals(basic.authorization, "Basic dTpw", "'httpConfig.auth' must not replace the store's basic auth");
 }
