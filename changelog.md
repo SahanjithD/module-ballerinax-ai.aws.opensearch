@@ -58,6 +58,10 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   which member of the union the caller had picked.
 
 ### Changed
+- Verification of an existing index also checks the dense field's `space_type` against
+  `IndexConfig.similarityMetric`, and rejects an `nmslib` cosine field on a cluster older than 2.19
+  while `normalizeCosineScore` is on. Before 2.19, NMSLIB scored cosine as `1 / (2 - cos)` rather
+  than `(1 + cos) / 2`, so the normalization returned wrong similarities.
 - `add` re-sends the items a `_bulk` response rejects with `429` (`es_rejected_execution_exception`)
   on their own, with `retryConfig`'s backoff, when every failure in the batch is a `429`. Not on
   Serverless Classic, where a re-sent item would be appended twice.

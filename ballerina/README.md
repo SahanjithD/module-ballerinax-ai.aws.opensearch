@@ -473,8 +473,11 @@ themselves change length. So `init` always makes two reads:
    existing index is not held to these, since it may use a different engine. Skipped on both
    Serverless generations, which do not answer `GET /`.
 2. **`GET /<index>/_mapping`** for the vector field(s) the mode declares — that each exists, is the
-   expected type (`knn_vector` / `rank_features`), and carries the configured `dimension`. Skipped
-   when `init` just created the index, which is correct by construction. Only the vector fields are
+   expected type (`knn_vector` / `rank_features`), and carries the configured `dimension`. A
+   `knn_vector` field that declares a `space_type` must also match `similarityMetric`. With
+   `normalizeCosineScore` on, an `nmslib` cosine field needs OpenSearch 2.19 or later, checked with a
+   further `GET /`: before 2.19, NMSLIB scores cosine as `1 / (2 - cos)`, which the normalization
+   cannot invert. Skipped when `init` just created the index, which is correct by construction. Only the vector fields are
    checked; pointing this module at a pre-existing index whose content and metadata fields look
    different is supported.
 

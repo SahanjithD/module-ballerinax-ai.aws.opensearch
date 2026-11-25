@@ -216,6 +216,9 @@ isolated function verifyIndexMapping(OpenSearchTransport transport, string index
     if indexConfig is IndexConfig && denseFieldName is string {
         check verifyMappedField(properties, indexName, denseFieldName, "knn_vector",
                 indexConfig.dimension);
+        boolean normalizesCosine = searchMode is DenseSearch && searchMode.normalizeCosineScore;
+        check verifyVectorSpace(transport, <map<json>>properties[denseFieldName], indexName, denseFieldName,
+                indexConfig.similarityMetric, normalizesCosine);
     }
     string? sparseFieldName = sparseFieldNameOf(searchMode);
     if sparseFieldName is string {
@@ -263,6 +266,53 @@ isolated function verifyMappedField(map<json> properties, string indexName, stri
                 "embeddings themselves still match the index, would misreport its own shape. Set " +
                 string `'IndexConfig.dimension' to ${declaredDimension}, or reindex into an index ` +
                 string `built for ${expectedDimension}`);
+    }
+}
+
+// `normalizeScore` inverts `(1 + cos) / 2`, the `cosinesimil` score of every engine from 2.19.
+// Before 2.19 NMSLIB scored it `1 / (1 + d)`, `d = 1 - cos`: the k-NN plugin's
+// `SpaceType.COSINESIMIL.scoreTranslation`, which `Nmslib` does not override. Lucene always
+// scores `(1 + cos) / 2`, and Faiss has no `cosinesimil` before 2.19.
+# Checks an existing `knn_vector` field's space against the configured metric, and that its cosine
+# scores can be normalized.
+#
+# + transport - The transport to read `GET /` through, for an NMSLIB cosine field only
+# + declared - The field's mapping, already checked to be a `knn_vector`
+# + indexName - The index, for the error message
+# + fieldName - The field, for the error message
+# + metric - `IndexConfig.similarityMetric`
+# + normalizesCosine - Whether `DenseSearch.normalizeCosineScore` is on
+# + return - An `ai:Error` if the space differs or the scores cannot be normalized, otherwise `()`
+isolated function verifyVectorSpace(OpenSearchTransport transport, map<json> declared, string indexName,
+        string fieldName, ai:SimilarityMetric metric, boolean normalizesCosine) returns ai:Error? {
+    json method = declared["method"];
+    json declaredSpace = method is map<json> && method.hasKey("space_type")
+        ? method["space_type"] : declared["space_type"];
+    string expectedSpace = toSpaceType(metric);
+    if declaredSpace is string && declaredSpace != expectedSpace {
+        return error(string `The index '${indexName}' maps field '${fieldName}' with space type ` +
+                string `'${declaredSpace}', but this store's 'IndexConfig.similarityMetric' is ${metric}, ` +
+                string `which is '${expectedSpace}'. Set 'similarityMetric' to match the index, or reindex`);
+    }
+    json engine = method is map<json> ? method["engine"] : ();
+    if !normalizesCosine || metric != ai:COSINE || engine != "nmslib" {
+        return;
+    }
+    string?|ai:Error reported = transport.clusterVersion();
+    int[]? version = reported is string ? parseVersion(reported) : ();
+    if version is () {
+        log:printWarn(string `The index '${indexName}' maps field '${fieldName}' with the 'nmslib' ` +
+                "engine, and the OpenSearch version could not be read. Before 2.19, NMSLIB scores " +
+                "cosine differently and 'normalizeCosineScore' returns wrong similarities; on an " +
+                "older cluster, set it to false");
+        return;
+    }
+    if !isAtLeast(version, [2, 19]) {
+        return error(string `The index '${indexName}' maps field '${fieldName}' with the 'nmslib' ` +
+                string `engine, which on OpenSearch ${reported is string ? reported : ""} scores cosine ` +
+                "as 1 / (2 - cos) instead of (1 + cos) / 2, so 'normalizeCosineScore' would return " +
+                "wrong similarities. Set 'DenseSearch.normalizeCosineScore' to false, or upgrade the " +
+                "domain to 2.19 or later");
     }
 }
 

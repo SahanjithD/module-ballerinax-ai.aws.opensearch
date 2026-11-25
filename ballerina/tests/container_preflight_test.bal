@@ -18,6 +18,7 @@
 // whose stored mapping has fields the create request never sent.
 
 import ballerina/ai;
+import ballerina/http;
 import ballerina/test;
 
 @test:Config {groups: ["docker"]}
@@ -114,3 +115,37 @@ isolated function testContainerVerificationRejectsARenamedVectorField() returns 
             string `the error should name the missing field, got: ${result.message()}`);
 }
 
+
+@test:Config {groups: ["docker"]}
+isolated function testContainerVerificationRejectsADifferentSpaceType() returns error? {
+    string indexName = containerIndexName("verify-space");
+    _ = check newContainerStore(indexName, containerDenseMode(ai:EUCLIDEAN));
+
+    VectorStoreCore|ai:Error result = newContainerStore(indexName, containerDenseMode(ai:COSINE),
+            createIndexIfNotExists = false);
+    if result !is ai:Error {
+        test:assertFail("a cosine store must not open an 'l2' index");
+    }
+    test:assertTrue(result.message().includes("'l2'"), result.message());
+}
+
+// The container runs 2.19.1, where NMSLIB scores cosine as (1 + cos) / 2 like every engine.
+@test:Config {groups: ["docker"]}
+isolated function testContainerNmslibCosineIndexOpensOn219() returns error? {
+    string indexName = containerIndexName("verify-nmslib");
+    http:Client 'client = check rawClient();
+    http:Response created = check 'client->put("/" + indexName, {
+        "settings": {"index": {"knn": true}},
+        "mappings": {
+            "properties": {
+                "embedding": {
+                    "type": "knn_vector",
+                    "dimension": CONTAINER_DIMENSION,
+                    "method": {"name": "hnsw", "engine": "nmslib", "space_type": "cosinesimil"}
+                }
+            }
+        }
+    });
+    test:assertEquals(created.statusCode, 200, check created.getTextPayload());
+    _ = check newContainerStore(indexName, containerDenseMode(), createIndexIfNotExists = false);
+}
