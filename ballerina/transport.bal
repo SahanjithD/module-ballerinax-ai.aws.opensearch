@@ -55,6 +55,12 @@ isolated class OpenSearchTransport {
         // Elsewhere the `_id` makes a retry an idempotent upsert.
         self.retryWrites = deployment !is ServerlessClassicDeployment;
 
+        // AWS requires HTTPS for all traffic to a domain with fine-grained access control, the only
+        // setup that takes basic auth ("Fine-grained access control in Amazon OpenSearch Service").
+        if authConfig is BasicAuth && !serviceUrl.startsWith("https://") {
+            return error("'BasicAuth' needs an 'https://' service URL; over 'http://' the password " +
+                    "would be sent unencrypted");
+        }
         if authConfig is BasicAuth {
             string credentials = string `${authConfig.username}:${authConfig.password}`;
             self.basicAuthHeader = string `Basic ${credentials.toBytes().toBase64()}`;

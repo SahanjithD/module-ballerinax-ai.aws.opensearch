@@ -375,6 +375,11 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
         if embedding !is ai:HybridVector {
             return embeddingMismatchError("The query", embedding, searchMode);
         }
+        // `size` is also the dense sub-query's `k`, so "all" would fuse a `maxResultWindow`-deep
+        // k-NN search with a full sparse scan.
+        if topK < 1 {
+            return error(string `'topK' must be at least 1 for a HYBRID query with an embedding, got: ${topK}`);
+        }
         // A `NamedSearchPipeline` goes as a query parameter instead; OpenSearch rejects both.
         HybridFusion fusion = searchMode.fusion;
         if fusion is InlineFusion {
@@ -1004,6 +1009,27 @@ isolated function extractDeleteFailures(BulkResponse response, string[] submitte
         }
     }
     return failures;
+}
+
+// OpenSearch answers an item with 429 (`es_rejected_execution_exception`) when its write queue is
+// full; the item was not applied.
+# Positions of the items the cluster rejected as overloaded.
+#
+# + response - The parsed `_bulk` response
+# + return - The positions, in request order
+isolated function extractRejectedPositions(BulkResponse response) returns int[] {
+    int[] positions = [];
+    if !response.errors {
+        return positions;
+    }
+    foreach int position in 0 ..< response.items.length() {
+        foreach BulkItemResult result in response.items[position] {
+            if result?.status == 429 {
+                positions.push(position);
+            }
+        }
+    }
+    return positions;
 }
 
 # A single failing item from a `_bulk` response.

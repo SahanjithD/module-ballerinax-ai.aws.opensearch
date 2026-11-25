@@ -448,3 +448,24 @@ isolated function testDistinctFieldNamesPass() {
     }, {contentFieldName: "body", idFieldName: "entry_id", metadataFieldName: "props"});
     test:assertTrue(result is ());
 }
+
+// Validation runs before any request, so neither URL is contacted.
+@test:Config
+isolated function testBasicAuthNeedsHttps() {
+    BasicAuth basicAuth = {username: "u", password: "p"};
+    ManagedDomainVectorStore|ai:Error result = new ("http://my-domain.us-east-1.es.amazonaws.com", "us-east-1",
+        "idx", basicAuth, false
+    );
+    if result !is ai:Error {
+        test:assertFail("'BasicAuth' over 'http://' should fail construction");
+    }
+    test:assertTrue(result.message().includes("https://"), result.message());
+}
+
+@test:Config
+isolated function testSigV4IsAllowedOverHttp() {
+    OpenSearchTransport|ai:Error transport = new (UNREACHABLE_URL, "us-east-1", TEST_CREDENTIALS, managedDeployment(),
+        {}, {}
+    );
+    test:assertTrue(transport is OpenSearchTransport, "SigV4 never sends the secret key, so 'http://' stays allowed");
+}

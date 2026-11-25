@@ -16,6 +16,7 @@
 
 import ballerina/ai;
 import ballerina/http;
+import ballerina/lang.runtime;
 import ballerina/log;
 import ballerinax/aws;
 
@@ -96,18 +97,47 @@ isolated class VectorStoreCore {
         PreparedEntry[] prepared = check prepareEntries(entries, self.searchMode);
 
         foreach PreparedEntry[] batch in chunkPreparedEntries(prepared, self.config.maxBulkSize) {
-            byte[] body = check buildAddBulkBody(batch, self.indexName, self.deployment, self.searchMode,
+            check self.indexBatch(batch);
+        }
+    }
+
+    // A `_bulk` that returns 200 can still reject items with 429 when the cluster is overloaded.
+    // Those are re-sent on their own with `retryConfig`'s backoff, but only when every failure is a
+    // 429, and never on Serverless Classic, where a re-sent item without a custom `_id` is appended
+    // a second time.
+    # Indexes one batch, re-sending the items the cluster rejected as overloaded.
+    #
+    # + batch - The entries of one `_bulk` request
+    # + return - An `ai:Error` naming the entries that could not be indexed
+    private isolated function indexBatch(PreparedEntry[] batch) returns ai:Error? {
+        RetryConfig retryConfig = self.config.retryConfig;
+        PreparedEntry[] pending = batch;
+        decimal delay = retryConfig.initialDelay;
+        int attempt = 0;
+        while true {
+            byte[] body = check buildAddBulkBody(pending, self.indexName, self.deployment, self.searchMode,
                     self.config);
             BulkResponse response = check self.transport.bulk(body, isIndexingBatch = true);
             // Matched by position, because on Serverless Classic the response `_id` is
             // server-generated.
-            string[] submittedIds = from PreparedEntry entry in batch
+            string[] submittedIds = from PreparedEntry entry in pending
                 select entry.id;
             BulkFailure[] failures = extractIndexFailures(response, submittedIds);
-            if failures.length() > 0 {
+            if failures.length() == 0 {
+                return;
+            }
+            int[] rejected = extractRejectedPositions(response);
+            if self.deployment is ServerlessClassicDeployment || attempt >= retryConfig.maxRetries ||
+                    rejected.length() != failures.length() {
                 return error(string `Failed to index ${failures.length()} of ${batch.length()} ` +
                         string `entries: ${summarizeBulkFailures(failures)}`);
             }
+            pending = from int position in rejected
+                select pending[position];
+            runtime:sleep(delay);
+            decimal nextDelay = delay * retryConfig.backoffFactor;
+            delay = nextDelay < retryConfig.maxDelay ? nextDelay : retryConfig.maxDelay;
+            attempt += 1;
         }
     }
 

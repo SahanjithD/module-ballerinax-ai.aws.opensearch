@@ -58,6 +58,15 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   which member of the union the caller had picked.
 
 ### Changed
+- `add` re-sends the items a `_bulk` response rejects with `429` (`es_rejected_execution_exception`)
+  on their own, with `retryConfig`'s backoff, when every failure in the batch is a `429`. Not on
+  Serverless Classic, where a re-sent item would be appended twice.
+- `BasicAuth` with an `http://` service URL fails `init`, since the password would be sent
+  unencrypted. AWS requires HTTPS on every domain with fine-grained access control, the only setup
+  that accepts basic auth.
+- A `HYBRID` query with an embedding rejects `topK` below 1. The value is also the dense
+  sub-query's `k`, so "all" meant a `maxResultWindow`-deep k-NN search fused with a full sparse
+  scan. A filter-only query still accepts it.
 - `ServerlessVectorStore` takes `auth` as an `init` parameter right after `indexName`, as
   `ManagedDomainVectorStore` does, instead of as a field of `ServerlessClassicDeployment` and
   `ServerlessNextGenDeployment`. A positional `deployment` argument now comes after `auth`.

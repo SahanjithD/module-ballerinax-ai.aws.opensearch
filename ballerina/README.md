@@ -365,8 +365,8 @@ auth = {accessKeyId: "...", secretAccessKey: "..."}
 // The standard AWS credential chain (recommended)
 auth = auth:DEFAULT_CREDENTIALS
 
-// HTTP basic auth — requires FGAC + an internal user database, and is accepted only by
-// `ManagedDomainVectorStore`. `ServerlessVectorStore`'s `auth` does not admit this type.
+// HTTP basic auth — requires FGAC + an internal user database and an `https://` service URL,
+// and is accepted only by `ManagedDomainVectorStore`. `ServerlessVectorStore`'s `auth` does not admit this type.
 auth = {username: "...", password: "..."}
 ```
 
@@ -444,7 +444,7 @@ does not compile.
 | `includeEmbeddingsInResults` | `false` | Whether a `query` result carries the stored vector. Off by default, so every vector field the mode declares is excluded from `_source` — a meaningful bandwidth saving at high dimensions and large `topK`, and a larger one under `SPARSE`/`HYBRID`. Set `true` when the caller needs the vectors back |
 | `maxBulkSize` | `500` | Entries per `_bulk` request; `add` chunks larger batches automatically |
 | `maxResultWindow` | `10000` | The `size` used when `topK < 1` ("return all"), and the ceiling enforced on an explicit `topK` |
-| `retryConfig` | exponential backoff, 3 retries | Applied to `429`/`408`/`5xx` responses. Each attempt is signed afresh, and indexing writes are never retried on Serverless Classic, where a replay appends duplicates. `httpConfig.retryConfig` is ignored, so retries are set only here |
+| `retryConfig` | exponential backoff, 3 retries | Applied to `429`/`408`/`5xx` responses, and to `add` items a `_bulk` response rejects with `429`, which are re-sent on their own. Each attempt is signed afresh. On Serverless Classic, indexing writes are never retried, since a replay appends duplicates. `httpConfig.retryConfig` is ignored, so retries are set only here |
 
 `vectorFieldName`, `normalizeCosineScore` and `efSearch` are not here: they live on the
 `SearchMode` variant that honors them, alongside `sparseVectorFieldName`, `maxQueryTokens`,
@@ -536,7 +536,8 @@ those matches regardless of this setting.
   There is no separate depth control: OpenSearch's lever is the `hybrid` query's
   `pagination_depth`, which is 2.19+ and would silently do nothing on the 2.11 floor this mode
   otherwise supports. Request a larger `topK` than you intend to use and truncate the results
-  yourself.
+  yourself. For the same reason a `HYBRID` query with an embedding rejects `topK` below 1: "all"
+  would be a `maxResultWindow`-deep k-NN search fused with a full sparse scan.
 - **Sparse weights round-trip lossily.** `rank_features` keeps roughly nine significant bits, so
   a returned weight carries about 0.4% relative error, and a returned sparse vector is always
   sorted by index ascending regardless of the order it was written in. Never compare one to a

@@ -132,7 +132,7 @@ isolated function testCallerSuppliedHttpConfigCannotUnpinTheFraming() returns er
 }
 
 @test:Config
-isolated function testCallerSuppliedHttpAuthCannotReplaceTheStoreAuth() returns error? {
+isolated function testCallerSuppliedHttpAuthCannotReplaceTheSignature() returns error? {
     http:ClientConfiguration httpConfig = {auth: {token: "caller-token"}};
     DenseSearch mode = {queryMode: ai:DENSE, indexConfig: {dimension: WIRE_DIMENSION}};
     string url = string `http://localhost:${WIRE_PORT}`;
@@ -144,12 +144,4 @@ isolated function testCallerSuppliedHttpAuthCannotReplaceTheStoreAuth() returns 
     WireCapture sigV4 = check takeWireCapture().ensureType();
     test:assertTrue((sigV4.authorization ?: "").startsWith("AWS4-HMAC-SHA256 "),
             string `'httpConfig.auth' must not replace the SigV4 signature, got: ${sigV4.authorization ?: "none"}`);
-
-    BasicAuth basicAuth = {username: "u", password: "p"};
-    VectorStoreCore basicStore = check new (url, CONTAINER_REGION, "wire-index", basicAuth,
-        containerDeployment(), mode, {}, httpConfig, createIndexIfNotExists = false
-    );
-    check basicStore.add([{id: "wire-4", embedding: wireEmbedding(), chunk: <ai:TextChunk>{content: "auth"}}]);
-    WireCapture basic = check takeWireCapture().ensureType();
-    test:assertEquals(basic.authorization, "Basic dTpw", "'httpConfig.auth' must not replace the store's basic auth");
 }

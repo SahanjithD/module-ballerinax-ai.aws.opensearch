@@ -93,3 +93,14 @@ isolated function testSecureContainerRejectsSigV4Credentials() returns error? {
     test:assertEquals(result.detail()["status"], 401,
             string `expected a 401, got: ${result.message()}`);
 }
+
+// Construction reads the cluster, so it succeeds only if the store's basic auth reached it.
+@test:Config {groups: ["docker"]}
+isolated function testSecureContainerIgnoresHttpConfigAuth() returns error? {
+    http:ClientConfiguration httpConfig = secureContainerHttpConfig();
+    httpConfig.auth = {token: "caller-token"};
+    BasicAuth auth = {username: secureContainerUsername, password: secureContainerPassword};
+    _ = check new VectorStoreCore(secureContainerUrl, CONTAINER_REGION, containerIndexName("tls-httpauth"), auth,
+        {refreshOnWrite: true}, containerDenseMode(), containerConfig(), httpConfig
+    );
+}

@@ -804,3 +804,24 @@ isolated function testNegativeScoresAreLeftAloneOutsideHybrid() returns error? {
     test:assertEquals(hitMatch.similarityScore, -0.5,
             "cos = 2 * 0.25 - 1 is negative and is a real similarity, not a sentinel");
 }
+
+// `topK` is also the dense sub-query's `k` under HYBRID, so "all" is rejected there.
+@test:Config
+isolated function testHybridQueryWithEmbeddingNeedsPositiveTopK() {
+    ai:VectorStoreQuery query = {
+        embedding: {dense: [0.1, 0.2, 0.3], sparse: {indices: [1], values: [1.0]}},
+        topK: 0
+    };
+    json|ai:Error body = buildSearchBody(query, hybridMode(), {});
+    if body !is ai:Error {
+        test:assertFail("a HYBRID query with an embedding and 'topK' 0 should be rejected");
+    }
+    test:assertTrue(body.message().includes("topK"), body.message());
+}
+
+@test:Config
+isolated function testHybridFilterOnlyQueryMayAskForAll() returns error? {
+    json body = check buildSearchBody({topK: -1}, hybridMode(), {});
+    map<json> bodyMap = check asJsonMap(body);
+    test:assertEquals(bodyMap["size"], 10000, "a filter-only query runs no k-NN search, so 'all' stays allowed");
+}
