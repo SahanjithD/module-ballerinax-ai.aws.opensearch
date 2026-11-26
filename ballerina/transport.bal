@@ -61,19 +61,6 @@ isolated class OpenSearchTransport {
             return error("'BasicAuth' needs an 'https://' service URL; over 'http://' the password " +
                     "would be sent unencrypted");
         }
-        if authConfig is BasicAuth {
-            string credentials = string `${authConfig.username}:${authConfig.password}`;
-            self.basicAuthHeader = string `Basic ${credentials.toBytes().toBase64()}`;
-            self.credProvider = ();
-        } else {
-            auth:CredentialProvider|auth:CredentialResolutionError provider = new (authConfig);
-            if provider is error {
-                return error("Failed to initialize the AWS credential provider", provider);
-            }
-            self.credProvider = provider;
-            self.basicAuthHeader = ();
-        }
-
         // Both Ballerina defaults break SigV4 with a misleading 403: HTTP/2 can alter a signed JSON
         // body, and a chunked body has no `Content-Length` to check the signature against.
         // Copied then assigned, since a spread cannot be combined with a key it also supplies.
@@ -87,11 +74,25 @@ isolated class OpenSearchTransport {
         // The client's own auth handler would overwrite the SigV4 or basic `authorization` header.
         effectiveConfig.auth = ();
 
+        // Before the credential provider, so a client that fails to build leaves nothing to close.
         http:Client|http:ClientError httpClient = new (serviceUrl, effectiveConfig);
         if httpClient is error {
             return error("Failed to initialize the OpenSearch HTTP client", httpClient);
         }
         self.httpClient = httpClient;
+
+        if authConfig is BasicAuth {
+            string credentials = string `${authConfig.username}:${authConfig.password}`;
+            self.basicAuthHeader = string `Basic ${credentials.toBytes().toBase64()}`;
+            self.credProvider = ();
+        } else {
+            auth:CredentialProvider|auth:CredentialResolutionError provider = new (authConfig);
+            if provider is error {
+                return error("Failed to initialize the AWS credential provider", provider);
+            }
+            self.credProvider = provider;
+            self.basicAuthHeader = ();
+        }
     }
 
     # Checks whether an index already exists via `HEAD /<index>`.

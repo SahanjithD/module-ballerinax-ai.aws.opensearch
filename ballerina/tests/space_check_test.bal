@@ -101,3 +101,13 @@ isolated function testNmslibCosineFrom219CanBeNormalized() returns error? {
     test:assertEquals(verifyVectorSpace(transport, knnField("nmslib", "cosinesimil"), "idx", "embedding",
             ai:COSINE, true), (), "from 2.19 NMSLIB scores cosine as (1 + cos) / 2 like every engine");
 }
+
+// Without a `method` the space is set elsewhere; it is warned about, not guessed.
+@test:Config
+isolated function testAbsentSpaceTypeIsNotGuessed() returns error? {
+    OpenSearchTransport transport = check new (UNREACHABLE_URL, "us-east-1", TEST_CREDENTIALS, managedDeployment(),
+        {}, {});
+    map<json> declared = {"type": "knn_vector", "dimension": 4};
+    test:assertEquals(verifyVectorSpace(transport, declared, "idx", "embedding", ai:COSINE, true), (),
+            "an index-level or model space may well be cosine, so this must not fail");
+}

@@ -62,6 +62,7 @@ isolated class VectorStoreCore {
             boolean createIndexIfNotExists = true)
             returns ai:Error? {
         check validateConfiguration(serviceUrl, deploymentConfig, searchMode, storeConfig);
+        check validateIndexName(indexName);
 
         OpenSearchTransport transport = check new (serviceUrl, region, auth, deploymentConfig,
             storeConfig.retryConfig, httpConfig
@@ -290,6 +291,55 @@ isolated function prepareIndex(OpenSearchTransport transport, string indexName, 
     }
 }
 
+// A negative delay sleeps not at all, and a factor below 1 shrinks the delay, so either retries an
+// overloaded cluster with no backoff.
+# Checks that retries back off.
+#
+# + retryConfig - `StoreConfiguration.retryConfig`
+# + return - An `ai:Error` naming the first invalid setting, otherwise `()`
+isolated function validateRetryConfig(RetryConfig retryConfig) returns ai:Error? {
+    if retryConfig.maxRetries < 0 {
+        return error(string `'RetryConfig.maxRetries' must not be negative, got: ${retryConfig.maxRetries}`);
+    }
+    if retryConfig.initialDelay < 0d || retryConfig.maxDelay < 0d {
+        return error(string `'RetryConfig.initialDelay' and '.maxDelay' must not be negative, got: ` +
+                string `${retryConfig.initialDelay} and ${retryConfig.maxDelay}`);
+    }
+    if retryConfig.backoffFactor < 1d {
+        return error(string `'RetryConfig.backoffFactor' must be at least 1, got: ${retryConfig.backoffFactor}`);
+    }
+}
+
+// The rules OpenSearch applies to both index and alias names (`MetadataCreateIndexService.
+// validateIndexOrAliasName`, `Strings.INVALID_FILENAME_CHARS`, OpenSearch 2.19.1). Lowercase is
+// required of index names only, so it is not checked: an alias may hold uppercase letters. A blank
+// name reads every index (`HEAD /` answers 200, `GET //_mapping` returns them all), and a pattern
+// or list cannot be written to or created, and does not check indices it matches later.
+# Checks that the index name is a single index or alias that OpenSearch would accept.
+#
+# + indexName - The configured index or alias
+# + return - An `ai:Error` naming the problem, otherwise `()`
+isolated function validateIndexName(string indexName) returns ai:Error? {
+    if indexName == "" {
+        return error("'indexName' must not be empty");
+    }
+    if indexName == "." || indexName == ".." {
+        return error(string `'indexName' must not be '${indexName}'`);
+    }
+    if indexName.startsWith("_") || indexName.startsWith("-") || indexName.startsWith("+") {
+        return error(string `'indexName' must not start with '_', '-' or '+', got: '${indexName}'`);
+    }
+    foreach string:Char c in indexName {
+        if "\\/*?\"<>|,#: ".includes(c) {
+            return error(string `'indexName' must not contain '${c}', which OpenSearch does not allow ` +
+                    string `in an index or alias name, got: '${indexName}'`);
+        }
+    }
+    if indexName.toBytes().length() > 255 {
+        return error(string `'indexName' must be at most 255 bytes, got ${indexName.toBytes().length()}`);
+    }
+}
+
 # Runs the construction checks that need no network I/O.
 #
 # + serviceUrl - The service URL, checked for a parseable host
@@ -331,6 +381,7 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
         return error(string `'StoreConfiguration.maxResultWindow' must be a positive integer, got: ` +
                 string `${config.maxResultWindow}`);
     }
+    check validateRetryConfig(config.retryConfig);
     if deployment is ServerlessNextGenDeployment {
         // Quantization shapes a `knn_vector` field, which a SPARSE index does not have, so setting
         // it is a mistake worth reporting rather than ignoring.

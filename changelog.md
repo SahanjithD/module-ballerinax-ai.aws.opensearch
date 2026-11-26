@@ -58,6 +58,18 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   which member of the union the caller had picked.
 
 ### Changed
+- `init` rejects an `indexName` OpenSearch would not accept as an index or alias name: empty,
+  containing `\ / * ? " < > | , # :` or a space, starting with `_`, `-` or `+`, equal to `.` or
+  `..`, or over 255 bytes. An empty name read every index. This also rejects a pattern or list such
+  as `logs-*` or `a,b`, which a read-only store could use before, but which cannot be written to or
+  created, and whose later-matched indices were never checked.
+- `init` rejects a `RetryConfig` that would not back off: a negative `maxRetries` or delay, or a
+  `backoffFactor` below 1.
+- A query with an empty sparse vector is rejected. OpenSearch matched nothing for it, which under
+  `HYBRID` silently left dense-only results.
+- An existing index whose vector field declares no `space_type` logs a warning that its space could
+  not be checked against `similarityMetric`.
+- The AWS credential provider is no longer left open when the HTTP client fails to build.
 - A filtered `SPARSE` query puts its `neural_sparse` clause under `bool.should` with
   `minimum_should_match: 1` instead of `bool.must`. The two-phase processor only looks inside
   `should`, so filtered queries were never accelerated. Matching and scores are unchanged.

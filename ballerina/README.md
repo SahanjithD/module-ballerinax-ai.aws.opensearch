@@ -299,6 +299,9 @@ search being performed. The index shape and the vector field names live on `sear
 field names, bulk sizing, retries — live on `storeConfig`. Switching between the two stores carries
 both across untouched.
 
+`indexName` names one index or alias. `init` rejects what OpenSearch does not accept as one,
+including a pattern or list such as `logs-*` or `a,b`.
+
 By default (`createIndexIfNotExists = true`, an `init` parameter), `init` creates the index with the
 correct mapping if it does not already exist. Pass `false` to have `init` fail on a missing or
 mistyped index name instead of creating an empty index.
@@ -450,7 +453,7 @@ does not compile.
 | `includeEmbeddingsInResults` | `false` | Whether a `query` result carries the stored vector. Off by default, so every vector field the mode declares is excluded from `_source` — a meaningful bandwidth saving at high dimensions and large `topK`, and a larger one under `SPARSE`/`HYBRID`. Set `true` when the caller needs the vectors back |
 | `maxBulkSize` | `500` | Entries per `_bulk` request; `add` and `delete` split larger calls. It counts entries, not bytes: lower it if large entries make a request exceed the endpoint's payload limit (a 413) |
 | `maxResultWindow` | `10000` | The `size` used when `topK < 1` ("return all"), and the ceiling enforced on an explicit `topK`. A query with an embedding also asks for at most 10,000 neighbours, OpenSearch's `knn` limit |
-| `retryConfig` | exponential backoff, 3 retries | Applied to `429`/`408`/`5xx` responses, and to `add` items a `_bulk` response rejects with `429`, which are re-sent on their own. Each attempt is signed afresh. On Serverless Classic, indexing writes are never retried, since a replay appends duplicates. `httpConfig.retryConfig` is ignored, so retries are set only here |
+| `retryConfig` | exponential backoff, 3 retries | Values must not be negative, and `backoffFactor` must be at least 1. Applied to `429`/`408`/`5xx` responses, and to `add` items a `_bulk` response rejects with `429`, which are re-sent on their own. Each attempt is signed afresh. On Serverless Classic, indexing writes are never retried, since a replay appends duplicates. `httpConfig.retryConfig` is ignored, so retries are set only here |
 
 `vectorFieldName`, `normalizeCosineScore` and `efSearch` are not here: they live on the
 `SearchMode` variant that honors them, alongside `sparseVectorFieldName`, `maxQueryTokens`,
@@ -480,7 +483,8 @@ themselves change length. So `init` always makes two reads:
    Serverless generations, which do not answer `GET /`.
 2. **`GET /<index>/_mapping`** for the vector field(s) the mode declares — that each exists, is the
    expected type (`knn_vector` / `rank_features`), and carries the configured `dimension`. A
-   `knn_vector` field that declares a `space_type` must also match `similarityMetric`. With
+   `knn_vector` field that declares a `space_type` must also match `similarityMetric`; one that
+   declares none gets a warning, since its space is set elsewhere. With
    `normalizeCosineScore` on, an `nmslib` cosine field needs OpenSearch 2.19 or later, checked with a
    further `GET /`: before 2.19, NMSLIB scores cosine as `1 / (2 - cos)`, which the normalization
    cannot invert. Skipped when `init` just created the index, which is correct by construction. Only the vector fields are
@@ -557,7 +561,9 @@ those matches regardless of this setting.
   the request is sent rather than clamped, since clamping would silently rewrite your ranking.
 - **A sparse query is capped at `maxQueryTokens` terms** (default 1024), because `neural_sparse`
   compiles to one Lucene clause per term and the cluster's `indices.query.bool.max_clause_count`
-  bounds it. Prune the query vector to its highest-weighted terms, or raise both.
+  bounds it. Prune the query vector to its highest-weighted terms, or raise both. A query vector
+  with no terms is rejected: OpenSearch would match nothing, and under `HYBRID` silently return
+  dense-only results.
 - **Hybrid metadata filters are duplicated into each sub-query** rather than sent as a top-level
   `hybrid.filter`, which is OpenSearch 3.0+ only. The two are documented as equivalent.
 - **Sparse and hybrid are unverified on OpenSearch Serverless.** Both are exercised against

@@ -71,7 +71,7 @@ isolated function buildIndexMapping(SearchMode searchMode, StoreConfiguration co
     map<json> properties = {
         [config.contentFieldName]: {"type": "text"},
         [config.idFieldName]: {"type": "keyword"},
-        "chunk_type": {"type": "keyword"}
+        [CHUNK_TYPE_FIELD]: {"type": "keyword"}
     };
 
     IndexConfig? indexConfig = indexConfigOf(searchMode);

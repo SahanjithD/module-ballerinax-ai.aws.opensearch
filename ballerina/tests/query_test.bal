@@ -879,3 +879,15 @@ isolated function testTwoPhaseIsSkippedPastItsWindow() returns error? {
     test:assertFalse((check acceleratedQueryBody(0)).hasKey("search_pipeline"),
             "'all' is the full window, far past the processor's");
 }
+
+// OpenSearch would accept it and match nothing, silently leaving HYBRID with dense-only results.
+@test:Config
+isolated function testEmptySparseQueryVectorIsRejected() {
+    json|ai:Error sparse = buildSearchBody({embedding: {indices: [], values: []}}, sparseMode(), {});
+    test:assertTrue(sparse is ai:Error, "an empty SPARSE query vector should be rejected");
+    json|ai:Error hybrid = buildSearchBody({
+        embedding: {dense: [0.1, 0.2, 0.3], sparse: {indices: [], values: []}},
+        topK: 5
+    }, hybridMode(), {});
+    test:assertTrue(hybrid is ai:Error, "an empty sparse half should fail a HYBRID query too");
+}

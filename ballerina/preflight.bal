@@ -310,6 +310,13 @@ isolated function verifyVectorSpace(OpenSearchTransport transport, map<json> dec
     json declaredSpace = method is map<json> && method.hasKey("space_type")
         ? method["space_type"] : declared["space_type"];
     string expectedSpace = toSpaceType(metric);
+    // Without a declared `space_type`, the space comes from the index's `index.knn.space_type`
+    // setting, a trained model, or the version's default, none of which the mapping shows.
+    if declaredSpace is () {
+        log:printWarn(string `The index '${indexName}' maps field '${fieldName}' without a ` +
+                string `'space_type', so it was not checked against 'similarityMetric' (${metric}). ` +
+                "If the field's space differs, scores are computed under another metric");
+    }
     if declaredSpace is string && declaredSpace != expectedSpace {
         return error(string `The index '${indexName}' maps field '${fieldName}' with space type ` +
                 string `'${declaredSpace}', but this store's 'IndexConfig.similarityMetric' is ${metric}, ` +

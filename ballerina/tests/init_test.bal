@@ -518,3 +518,44 @@ isolated function testCompatibilityModeVersionIsNotTrusted() {
     test:assertEquals(openSearchVersion("1.3.0"), [1, 3, 0]);
     test:assertEquals(openSearchVersion("3.0.0"), [3, 0, 0]);
 }
+
+// A blank name reads every index, and a pattern or list cannot be written to or created.
+@test:Config
+isolated function testInvalidIndexNamesAreRejected() {
+    string longName = "";
+    foreach int _ in 0 ..< 256 {
+        longName += "a";
+    }
+    foreach string name in ["", "  ", "docs*", "a,b", "_all", "-docs", "+docs", ".", "..", "a/b", "a?b", "a#b",
+            "a:b", "a b", "a\\b", "a|b", "a<b", "a\"b", longName] {
+        test:assertTrue(validateIndexName(name) is ai:Error, string `'${name}' should be rejected`);
+    }
+}
+
+// Aliases may hold uppercase letters, so case is not checked.
+@test:Config
+isolated function testValidIndexAndAliasNamesAreAccepted() {
+    foreach string name in ["docs", "Docs-Alias", "my_index.v2", "logs-2026.11", ".hidden-index"] {
+        test:assertEquals(validateIndexName(name), (), string `'${name}' should be accepted`);
+    }
+}
+
+@test:Config
+isolated function testRetryConfigMustBackOff() {
+    RetryConfig[] invalid = [
+        {maxRetries: -1},
+        {initialDelay: -0.5},
+        {maxDelay: -1},
+        {backoffFactor: 0},
+        {backoffFactor: 0.5}
+    ];
+    foreach RetryConfig retryConfig in invalid {
+        test:assertTrue(validateConfiguration(VALID_URL, managedDeployment(), validMode(), {retryConfig}) is ai:Error,
+                string `${retryConfig.toString()} should be rejected`);
+    }
+    RetryConfig[] valid = [{}, {maxRetries: 0}, {initialDelay: 0, maxDelay: 0}, {backoffFactor: 1}];
+    foreach RetryConfig retryConfig in valid {
+        test:assertEquals(validateConfiguration(VALID_URL, managedDeployment(), validMode(), {retryConfig}), (),
+                string `${retryConfig.toString()} should be accepted`);
+    }
+}

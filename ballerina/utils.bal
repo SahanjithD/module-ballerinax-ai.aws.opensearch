@@ -555,6 +555,12 @@ isolated function buildSparseQueryClause(ai:SparseVector embedding, string spars
                 "terms, or raise both that cluster setting and 'maxQueryTokens'");
     }
     map<float> queryTokens = check toSparseTokenMap(embedding, "The query", MAX_QUERY_TOKEN_WEIGHT);
+    // OpenSearch accepts empty `query_tokens` and matches nothing, which under HYBRID silently
+    // leaves dense-only results.
+    if queryTokens.length() == 0 {
+        return error("The query sparse vector has no terms, so it would match nothing. A query whose " +
+                "terms all encode to nothing (stop words, for example) needs no sparse search");
+    }
     json neuralSparse = {"neural_sparse": {[sparseVectorFieldName]: {"query_tokens": queryTokens}}};
     if filterClause is () {
         return neuralSparse;
