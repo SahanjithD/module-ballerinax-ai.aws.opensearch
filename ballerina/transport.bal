@@ -126,14 +126,14 @@ isolated class OpenSearchTransport {
         return number is string ? number : ();
     }
 
-    // The response is keyed by the concrete index name, which differs from the requested one for
-    // an alias, so the entry is taken by position.
-    # Reads the index's mapped `properties` from `GET /<index>/_mapping`.
+    // The response is keyed by concrete index name: one entry for an index, one per backing index
+    // for an alias.
+    # Reads each concrete index's mapped `properties` from `GET /<index>/_mapping`.
     #
     # + indexName - The index or alias to read
-    # + return - The `properties` object, `()` if the index declares none, or an `ai:Error`
-    # (a `404` if the index does not exist)
-    isolated function indexMappingProperties(string indexName) returns map<json>?|ai:Error {
+    # + return - The `properties` of each concrete index, `()` for one that declares none, or an
+    # `ai:Error` (a `404` if the index does not exist)
+    isolated function indexMappingProperties(string indexName) returns map<map<json>?>|ai:Error {
         http:Response resp = check self.sendSigned("GET", "/" + indexName + "/_mapping", {}, {}, []);
         if resp.statusCode != 200 {
             return mapErrorResponse(resp);
@@ -143,13 +143,12 @@ isolated class OpenSearchTransport {
             return error("Failed to parse the '_mapping' response body",
                     payload is error ? payload : error("the body was not a JSON object"));
         }
-        foreach json indexEntry in payload {
+        map<map<json>?> result = {};
+        foreach [string, json] [concreteIndex, indexEntry] in payload.entries() {
             json|error properties = indexEntry.mappings.properties;
-            if properties is map<json> {
-                return properties;
-            }
+            result[concreteIndex] = properties is map<json> ? properties : ();
         }
-        return ();
+        return result;
     }
 
     # Creates an index with the given mapping via `PUT /<index>`.
@@ -264,7 +263,9 @@ isolated class OpenSearchTransport {
         string fullPath = queryParams.length() == 0 ? path : path + "?" + check buildQueryString(queryParams);
 
         int attempt = 0;
-        decimal delay = self.retryConfig.initialDelay;
+        // `maxDelay` is the longest delay between attempts, the first included.
+        decimal delay = self.retryConfig.initialDelay < self.retryConfig.maxDelay ? self.retryConfig.initialDelay
+            : self.retryConfig.maxDelay;
         while true {
             // Signed per attempt, after any backoff, so a retry never resends a stale `x-amz-date`
             // or credentials that rotated in the meantime.

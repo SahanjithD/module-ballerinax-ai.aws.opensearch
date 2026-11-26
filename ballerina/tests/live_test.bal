@@ -64,6 +64,8 @@ type LiveTarget record {|
     string signingName;
     # Extra headers to sign, e.g. the NextGen collection header.
     map<string> headers = {};
+    # Basic auth to send instead of a SigV4 signature, for an index a basic-auth store created.
+    BasicAuth basicAuth?;
 |};
 
 # An index a live test created.
@@ -84,6 +86,13 @@ isolated function classicTarget() returns LiveTarget =>
 
 isolated function nextGenTarget() returns LiveTarget =>
     {url: serverlessNextGenUrl, region: serverlessNextGenRegion, signingName: SIGNING_NAME_SERVERLESS};
+
+isolated function managedBasicAuthTarget() returns LiveTarget => {
+    url: managedDomainUrl,
+    region: managedDomainRegion,
+    signingName: SIGNING_NAME_MANAGED,
+    basicAuth: {username: managedDomainUsername, password: managedDomainPassword}
+};
 
 isolated function nextGenAccountTarget() returns LiveTarget => {
     url: serverlessNextGenAccountUrl,
@@ -113,13 +122,22 @@ isolated function liveEntry(string id, string content = "hello", ai:Metadata met
 isolated function liveDenseMode() returns DenseSearch =>
     {queryMode: ai:DENSE, indexConfig: {dimension: LIVE_TEST_DIMENSION}};
 
-# Sends a SigV4-signed request with the default credential chain, bypassing the store.
+# Sends a request bypassing the store: with the target's basic auth, or SigV4-signed with the
+# default credential chain.
 #
 # + target - Where to send it
 # + method - The HTTP method
 # + path - The request path
 # + return - The response, or an error
 isolated function liveSignedRequest(LiveTarget target, string method, string path) returns http:Response|error {
+    BasicAuth? basicAuth = target?.basicAuth;
+    if basicAuth is BasicAuth {
+        http:Client basicClient = check new (target.url, {
+            httpVersion: http:HTTP_1_1,
+            auth: {username: basicAuth.username, password: basicAuth.password}
+        });
+        return basicClient->execute(method, path, new http:Request());
+    }
     auth:CredentialProvider provider = check new (auth:DEFAULT_CREDENTIALS);
     auth:Credentials credentials = check provider.getCredentials();
     map<string> signed = check auth:getSignedHeaders({
@@ -395,7 +413,8 @@ isolated function testManagedDomainBasicAuthRoundTrip() returns error? {
         return;
     }
     ManagedDomainVectorStore store = check new (managedDomainUrl, managedDomainRegion,
-        liveIndexName(managedTarget(), "md-basic"), {username: managedDomainUsername, password: managedDomainPassword},
+        liveIndexName(managedBasicAuthTarget(), "md-basic"),
+        {username: managedDomainUsername, password: managedDomainPassword},
         searchMode = liveDenseMode(), storeConfig = {refreshOnWrite: true}
     );
     check store.add([liveEntry("basic-1")]);

@@ -48,7 +48,9 @@ public function main() returns error? {
             // Weights must sum to 1.0. For rank-based fusion without weights, use
             // `fusion: {technique: opensearch:RRF}` (OpenSearch 2.19+).
             fusion: {denseWeight: 0.4, sparseWeight: 0.6}
-        }
+        },
+        // Waits for each write to become searchable, so the query below sees it.
+        storeConfig = {refreshOnWrite: true}
     );
 
     Article[] articles = [
@@ -69,7 +71,7 @@ public function main() returns error? {
         {
             title: "Ballerina on Kubernetes",
             language: "en",
-            dense: [0.35, 0.60, 0.10, 0.05],
+            dense: [0.60, 0.40, 0.10, 0.05],
             termIds: [101, 310],
             termWeights: [3.4, 2.8]
         },

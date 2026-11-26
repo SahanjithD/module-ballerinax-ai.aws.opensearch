@@ -73,7 +73,8 @@ public isolated class ManagedDomainVectorStore {
 
     # Searches by embedding, by metadata filter, or both.
     #
-    # + query - The query. Any `topK < 1` returns all entries, up to `maxResultWindow`
+    # + query - The query. `topK < 1` returns all entries up to `maxResultWindow` (at most the
+    # nearest 10,000 for a dense query); a HYBRID query with an embedding needs `topK >= 1`
     # + return - The matches, or an `ai:Error`
     public isolated function query(ai:VectorStoreQuery query) returns ai:VectorMatch[]|ai:Error =>
         self.core.query(query);

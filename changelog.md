@@ -58,6 +58,22 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   which member of the union the caller had picked.
 
 ### Changed
+- A filtered `SPARSE` query puts its `neural_sparse` clause under `bool.should` with
+  `minimum_should_match: 1` instead of `bool.must`. The two-phase processor only looks inside
+  `should`, so filtered queries were never accelerated. Matching and scores are unchanged.
+- An accelerated query whose rescore window (`size` × 5) would pass the processor's default of
+  10,000 runs without acceleration instead of failing. That includes `topK < 1`.
+- A query with a dense embedding asks for at most 10,000 neighbours, OpenSearch's `knn` limit. An
+  explicit `topK` above it is rejected before the request.
+- `delete` sends its `_bulk` requests in batches of `maxBulkSize` on every deployment.
+- A Serverless Classic delete fails, deleting nothing, when its lookup reports partial results
+  (`timed_out`, or failed shards).
+- Every index behind an alias is checked at `init`, not only the first one.
+- A `GET /` version of 5.x to 7.x, which a domain in Elasticsearch compatibility mode reports, is
+  treated as unknown, with a warning, rather than as newer than every floor.
+- `maxDelay` also caps the first retry delay.
+- A `NaN` hybrid weight or `pruneRatio` is rejected at `init`, and so is a `pruneRatio` of 1.0,
+  which OpenSearch 2.19 rejects.
 - A vector field name containing `.` is rejected by `init`. OpenSearch maps it as nested objects,
   so the next `init` could not find the field the module had itself created.
 - `delete` on Serverless Classic looks ids up in chunks no larger than `maxResultWindow`, and splits

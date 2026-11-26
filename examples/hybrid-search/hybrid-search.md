@@ -43,12 +43,13 @@ the unbounded dot product a `SPARSE` store returns. The French article is exclud
 Indexed 4 articles.
 
 Top matches:
-  1.0  Ballerina on Kubernetes
-  0.4...  Deploying to Kubernetes
-  0.2...  Getting started with Ballerina
+  0.854...  Ballerina on Kubernetes
+  0.4006...  Deploying to Kubernetes
+  0.107...  Getting started with Ballerina
 ```
 
 At `denseWeight: 0.4, sparseWeight: 0.6` the term match wins. Flip the weights to
-`denseWeight: 0.8, sparseWeight: 0.2` and "Deploying to Kubernetes" takes the top spot instead —
+`denseWeight: 0.8, sparseWeight: 0.2` and "Deploying to Kubernetes" takes the top spot instead
+(0.800 against 0.708) —
 the pipeline carrying those weights is sent inline with every query, so the change takes effect
 immediately with nothing to reprovision on the cluster.

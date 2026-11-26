@@ -159,11 +159,11 @@ isolated function verifyClusterVersion(OpenSearchTransport transport, SearchMode
     if reported is () {
         return;
     }
-    int[]? version = parseVersion(reported);
+    int[]? version = openSearchVersion(reported);
     if version is () {
-        log:printWarn(string `Could not parse the OpenSearch version '${reported}' reported by ` +
-                "'GET /', so this store's search mode was not checked against the cluster's " +
-                "capabilities");
+        log:printWarn(string `'GET /' reported version '${reported}', which is not an OpenSearch ` +
+                "version this store can check, so its search mode was not checked against the " +
+                "cluster's capabilities. A domain in Elasticsearch compatibility mode reports 7.10");
         return;
     }
     foreach VersionRequirement requirement in requirements {
@@ -186,9 +186,9 @@ isolated function verifyClusterVersion(OpenSearchTransport transport, SearchMode
 # + return - An `ai:Error` if the index is missing or its vector fields disagree, otherwise `()`
 isolated function verifyIndexMapping(OpenSearchTransport transport, string indexName,
         SearchMode searchMode) returns ai:Error? {
-    map<json>?|ai:Error properties = transport.indexMappingProperties(indexName);
-    if properties is ai:Error {
-        if properties.detail()["status"] == 404 {
+    map<map<json>?>|ai:Error mappings = transport.indexMappingProperties(indexName);
+    if mappings is ai:Error {
+        if mappings.detail()["status"] == 404 {
             return error(string `The index '${indexName}' does not exist, and ` +
                     "'createIndexIfNotExists' is false so this module did not " +
                     "create it. Writing to it anyway would not fail: OpenSearch's " +
@@ -196,13 +196,35 @@ isolated function verifyIndexMapping(OpenSearchTransport transport, string index
                     "document's inferred shape, with no 'index.knn' setting and the vector mapped " +
                     "as a plain float array, after which every query fails. Create the index out " +
                     "of band with a compatible mapping, or set 'createIndexIfNotExists' to true",
-                    properties);
+                    mappings);
         }
         log:printWarn(string `Could not read the mapping of index '${indexName}', so this store's ` +
                 "search mode was not checked against it. Grant the calling principal " +
-                "'indices:admin/mappings/get' on the index to enable this check", 'error = properties);
+                "'indices:admin/mappings/get' on the index to enable this check", 'error = mappings);
         return;
     }
+    if mappings.length() == 0 {
+        return error(string `The index '${indexName}' declares no field mappings at all, so it ` +
+                "cannot serve this store. An index in this state is usually one that " +
+                "'action.auto_create_index' created from a write to a missing index. Delete it " +
+                "and let this module create it, or map it out of band to match this store's " +
+                "'SearchMode'");
+    }
+    // An alias reads from every backing index, so each one must fit the store.
+    foreach [string, map<json>?] [concreteIndex, properties] in mappings.entries() {
+        check verifyConcreteIndex(transport, concreteIndex, properties, searchMode);
+    }
+}
+
+# Checks one concrete index's vector fields against the store's search mode.
+#
+# + transport - The transport, for the NMSLIB version check
+# + indexName - The concrete index, for error messages
+# + properties - Its mapped `properties`, or `()` if it declares none
+# + searchMode - The store's search mode, supplying the expected field names and shapes
+# + return - An `ai:Error` if a vector field disagrees, otherwise `()`
+isolated function verifyConcreteIndex(OpenSearchTransport transport, string indexName, map<json>? properties,
+        SearchMode searchMode) returns ai:Error? {
     if properties is () {
         return error(string `The index '${indexName}' declares no field mappings at all, so it ` +
                 "cannot serve this store. An index in this state is usually one that " +
@@ -210,7 +232,6 @@ isolated function verifyIndexMapping(OpenSearchTransport transport, string index
                 "and let this module create it, or map it out of band to match this store's " +
                 "'SearchMode'");
     }
-
     IndexConfig? indexConfig = indexConfigOf(searchMode);
     string? denseFieldName = denseFieldNameOf(searchMode);
     if indexConfig is IndexConfig && denseFieldName is string {
@@ -299,7 +320,7 @@ isolated function verifyVectorSpace(OpenSearchTransport transport, map<json> dec
         return;
     }
     string?|ai:Error reported = transport.clusterVersion();
-    int[]? version = reported is string ? parseVersion(reported) : ();
+    int[]? version = reported is string ? openSearchVersion(reported) : ();
     if version is () {
         log:printWarn(string `The index '${indexName}' maps field '${fieldName}' with the 'nmslib' ` +
                 "engine, and the OpenSearch version could not be read. Before 2.19, NMSLIB scores " +
@@ -314,6 +335,21 @@ isolated function verifyVectorSpace(OpenSearchTransport transport, map<json> dec
                 "wrong similarities. Set 'DenseSearch.normalizeCosineScore' to false, or upgrade the " +
                 "domain to 2.19 or later");
     }
+}
+
+// With `compatibility.override_main_response_version` on, `GET /` reports 7.10.2 instead of the
+// real version (AWS docs, "Amazon OpenSearch Service rename"; OpenSearch `TransportMainAction`).
+// OpenSearch itself started at 1.0, so 5 to 7 are Elasticsearch numbers.
+# Parses a version reported by `GET /`, unless it is an Elasticsearch-style 5.x to 7.x number.
+#
+# + reported - The `version.number` string
+# + return - The components, or `()` if they cannot be read or are not an OpenSearch version
+isolated function openSearchVersion(string reported) returns int[]? {
+    int[]? version = parseVersion(reported);
+    if version is () || (version[0] >= 5 && version[0] <= 7) {
+        return ();
+    }
+    return version;
 }
 
 # Parses the leading numbers of a version, so `3.0.0-SNAPSHOT` reads as `[3, 0, 0]`.

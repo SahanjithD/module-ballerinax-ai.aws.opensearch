@@ -484,3 +484,37 @@ isolated function testDottedVectorFieldNamesAreRejected() {
     test:assertTrue(validateConfiguration(VALID_URL, managedDeployment(), sparse, {}) is ai:Error,
             "a dotted 'sparseVectorFieldName' should be rejected");
 }
+
+// Every ordered comparison with `NaN` is false, so it must fail the checks rather than slip past.
+@test:Config
+isolated function testNaNHybridWeightIsRejected() {
+    HybridSearch mode = {
+        queryMode: ai:HYBRID,
+        indexConfig: {dimension: 8},
+        fusion: {denseWeight: float:NaN, sparseWeight: 0.3}
+    };
+    test:assertTrue(validateConfiguration(VALID_URL, managedDeployment(), mode, {}) is ai:Error);
+}
+
+@test:Config
+isolated function testPruneRatioMustBeBelowOne() {
+    foreach float pruneRatio in [float:NaN, 1.0, -0.1] {
+        SparseSearch mode = {queryMode: ai:SPARSE, twoPhaseAcceleration: {pruneRatio}};
+        test:assertTrue(validateConfiguration(VALID_URL, managedDeployment(), mode, {}) is ai:Error,
+                string `pruneRatio ${pruneRatio} should be rejected`);
+    }
+    foreach float pruneRatio in [0.0, 0.4, 0.99] {
+        SparseSearch mode = {queryMode: ai:SPARSE, twoPhaseAcceleration: {pruneRatio}};
+        test:assertTrue(validateConfiguration(VALID_URL, managedDeployment(), mode, {}) is (),
+                string `pruneRatio ${pruneRatio} should be accepted`);
+    }
+}
+
+// A domain in Elasticsearch compatibility mode reports 7.10.2 whatever it really runs.
+@test:Config
+isolated function testCompatibilityModeVersionIsNotTrusted() {
+    test:assertEquals(openSearchVersion("7.10.2"), ());
+    test:assertEquals(openSearchVersion("2.19.1"), [2, 19, 1]);
+    test:assertEquals(openSearchVersion("1.3.0"), [1, 3, 0]);
+    test:assertEquals(openSearchVersion("3.0.0"), [3, 0, 0]);
+}

@@ -131,7 +131,7 @@ public type IndexConfig record {|
 public type TwoPhaseAcceleration record {|
     // Unset sends no `two_phase_parameter`, so the processor's default of 0.4 applies (OpenSearch
     // docs, neural sparse query two-phase processor).
-    # Fraction of the largest query-token weight that separates high from low tokens, in `[0, 1]`.
+    # Fraction of the largest query-token weight that separates high from low tokens, in `[0, 1)`.
     # Unset uses OpenSearch's default.
     float pruneRatio?;
 |};
@@ -284,8 +284,9 @@ public type StoreConfiguration record {|
     string metadataFieldName = "metadata";
     # Whether `query` results carry the stored vectors. `false` saves bandwidth.
     boolean includeEmbeddingsInResults = false;
-    // Keeps each request under the endpoint's HTTP payload limit.
-    # Most entries per `_bulk` request; larger `add` calls are split.
+    // Counts entries, not bytes: lower it if large entries make a `_bulk` exceed the endpoint's
+    // HTTP payload limit (a 413).
+    # Most entries per `_bulk` request; larger `add` and `delete` calls are split.
     int maxBulkSize = 500;
     // 10,000 is OpenSearch's default `index.max_result_window`.
     # The `size` used when `topK < 1`, and the cap on an explicit `topK`.
@@ -372,10 +373,20 @@ type SearchHits record {
     SearchHit[] hits = [];
 };
 
+# The `_shards` object of a `_search` response.
+type ShardStats record {
+    # Shards that failed to answer.
+    int failed?;
+};
+
 # The `POST /_search` response.
 type SearchResponse record {
     # Search results.
     SearchHits hits;
+    # Whether the search timed out, in which case the hits may be partial.
+    boolean timed_out?;
+    # Per-shard outcome.
+    ShardStats _shards?;
 };
 
 # The body of a non-2xx OpenSearch response.

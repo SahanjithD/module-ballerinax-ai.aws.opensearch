@@ -112,7 +112,9 @@ isolated class VectorStoreCore {
     private isolated function indexBatch(PreparedEntry[] batch) returns ai:Error? {
         RetryConfig retryConfig = self.config.retryConfig;
         PreparedEntry[] pending = batch;
-        decimal delay = retryConfig.initialDelay;
+        // `maxDelay` is the longest delay between attempts, the first included.
+        decimal delay = retryConfig.initialDelay < retryConfig.maxDelay ? retryConfig.initialDelay
+            : retryConfig.maxDelay;
         int attempt = 0;
         while true {
             byte[] body = check buildAddBulkBody(pending, self.indexName, self.deployment, self.searchMode,
@@ -144,7 +146,8 @@ isolated class VectorStoreCore {
     # Searches by embedding, by metadata filter, or both. Without an embedding every match scores
     # 0.0.
     #
-    # + query - The query. Any `topK < 1` returns all entries, up to `maxResultWindow`
+    # + query - The query. `topK < 1` returns all entries up to `maxResultWindow` (at most the
+    # nearest 10,000 for a dense query); a HYBRID query with an embedding needs `topK >= 1`
     # + return - The matches, or an `ai:Error`
     isolated function query(ai:VectorStoreQuery query) returns ai:VectorMatch[]|ai:Error {
         json body = check buildSearchBody(query, self.searchMode, self.config);
@@ -178,21 +181,30 @@ isolated class VectorStoreCore {
         if self.deployment is ServerlessClassicDeployment {
             return self.deleteOnServerlessClassic(idList);
         }
-        byte[] body = buildDeleteBulkBody(self.indexName, idList);
-        BulkResponse response = check self.transport.bulk(body);
-        BulkFailure[] failures = extractDeleteFailures(response, idList);
+        return self.deleteInBatches(idList, idList);
+    }
+
+    # Deletes documents by `_id` in `_bulk` batches of at most `maxBulkSize`.
+    #
+    # + documentIds - The `_id`s to delete
+    # + logicalIds - The caller's id for each, parallel to `documentIds`, to name failures by
+    # + return - An `ai:Error` naming the ids that failed, if any
+    private isolated function deleteInBatches(string[] documentIds, string[] logicalIds) returns ai:Error? {
+        BulkFailure[] failures = [];
+        int offset = 0;
+        while offset < documentIds.length() {
+            int end = int:min(offset + self.config.maxBulkSize, documentIds.length());
+            byte[] body = buildDeleteBulkBody(self.indexName, documentIds.slice(offset, end));
+            BulkResponse response = check self.transport.bulk(body);
+            failures.push(...extractDeleteFailures(response, logicalIds.slice(offset, end)));
+            offset = end;
+        }
         if failures.length() > 0 {
-            return error(string `Failed to delete ${failures.length()} of ${idList.length()} ` +
+            return error(string `Failed to delete ${failures.length()} of ${documentIds.length()} ` +
                     string `entries: ${summarizeBulkFailures(failures)}`);
         }
     }
 
-    // `_delete_by_query` is not available on AOSS, so internal `_id`s are looked up first.
-    // Entries added within the last refresh interval are not found yet and survive.
-    # Deletes on Serverless Classic: looks up the internal `_id`s, then bulk-deletes them.
-    #
-    # + idList - The logical ids to delete
-    # + return - An `ai:Error` naming the ids that failed, or if a lookup may have missed some
     // `add` is append-only on Classic, so one id may match several documents, and a lookup that
     // fills the window may have missed some. It is split in half and retried until it fits.
     # Finds the internal `_id`s of the documents carrying the given logical ids.
@@ -205,6 +217,14 @@ isolated class VectorStoreCore {
             returns ai:Error? {
         json searchBody = buildDocIdLookupBody(self.config.idFieldName, ids, self.config.maxResultWindow);
         SearchResponse searchResponse = check self.transport.search(self.indexName, searchBody);
+        // A timed-out search or a failed shard still answers 200, with only some of the hits.
+        // Absent fields count as complete, since not every endpoint may send them.
+        int failedShards = searchResponse?._shards?.failed ?: 0;
+        if searchResponse?.timed_out == true || failedShards > 0 {
+            return error(string `A lookup of ${ids.length()} id(s) to delete on Serverless Classic ` +
+                    string `returned partial results (timed out, or ${failedShards} failed shard(s)), ` +
+                    "so some copies could be left undeleted. Nothing was deleted; retry");
+        }
         int hitCount = searchResponse.hits.hits.length();
         if hitCount >= self.config.maxResultWindow {
             if ids.length() > 1 {
@@ -225,6 +245,12 @@ isolated class VectorStoreCore {
         }
     }
 
+    // `_delete_by_query` is not available on AOSS, so internal `_id`s are looked up first.
+    // Entries added within the last refresh interval are not found yet and survive.
+    # Deletes on Serverless Classic: looks up the internal `_id`s, then bulk-deletes them.
+    #
+    # + idList - The logical ids to delete
+    # + return - An `ai:Error` naming the ids that failed, or if a lookup may have missed some
     private isolated function deleteOnServerlessClassic(string[] idList) returns ai:Error? {
         string[] internalIds = [];
         // Parallel to `internalIds`, so a failure is reported against the caller's id.
@@ -234,16 +260,7 @@ isolated class VectorStoreCore {
         foreach string[] chunk in chunkIds(idList, chunkSize) {
             check self.lookUpInternalIds(chunk, internalIds, logicalIds);
         }
-        if internalIds.length() == 0 {
-            return;
-        }
-        byte[] body = buildDeleteBulkBody(self.indexName, internalIds);
-        BulkResponse response = check self.transport.bulk(body);
-        BulkFailure[] failures = extractDeleteFailures(response, logicalIds);
-        if failures.length() > 0 {
-            return error(string `Failed to delete ${failures.length()} of ${internalIds.length()} ` +
-                    string `entries: ${summarizeBulkFailures(failures)}`);
-        }
+        return self.deleteInBatches(internalIds, logicalIds);
     }
 }
 
@@ -391,7 +408,8 @@ isolated function validateHybridFusion(HybridFusion fusion) returns ai:Error? {
     }
     float denseWeight = denseWeightValue;
     float sparseWeight = sparseWeightValue;
-    if denseWeight < 0.0 || denseWeight > 1.0 || sparseWeight < 0.0 || sparseWeight > 1.0 {
+    // Written so `NaN`, for which every ordered comparison is false, fails too.
+    if !(0.0 <= denseWeight && denseWeight <= 1.0) || !(0.0 <= sparseWeight && sparseWeight <= 1.0) {
         return error(string `'HybridSearchConfig.denseWeight' and '.sparseWeight' must each be ` +
                 string `between 0.0 and 1.0, got: ${denseWeight} and ${sparseWeight}`);
     }
@@ -424,8 +442,10 @@ isolated function validateTwoPhaseAcceleration(TwoPhaseAcceleration? acceleratio
         return;
     }
     float? pruneRatio = acceleration.pruneRatio;
-    if pruneRatio is float && (pruneRatio < 0.0 || pruneRatio > 1.0) {
-        return error(string `'TwoPhaseAcceleration.pruneRatio' must be between 0.0 and 1.0, got: ` +
+    // neural-search `PruneUtils.isValidPruneRatio` (2.19.1.0) accepts `[0, 1)` for this prune
+    // type, and rejects 1.0. Written so `NaN` fails too.
+    if pruneRatio is float && !(0.0 <= pruneRatio && pruneRatio < 1.0) {
+        return error(string `'TwoPhaseAcceleration.pruneRatio' must be at least 0.0 and below 1.0, got: ` +
                 string `${pruneRatio}. It is a fraction of the query's largest token weight, and ` +
                 "is what separates the tokens that select candidates from the ones that rescore them");
     }

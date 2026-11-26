@@ -149,3 +149,29 @@ isolated function testContainerNmslibCosineIndexOpensOn219() returns error? {
     test:assertEquals(created.statusCode, 200, check created.getTextPayload());
     _ = check newContainerStore(indexName, containerDenseMode(), createIndexIfNotExists = false);
 }
+
+// An alias reads from every backing index, so a mismatched one must fail `init` too.
+@test:Config {groups: ["docker"]}
+isolated function testContainerVerificationChecksEveryIndexBehindAnAlias() returns error? {
+    string matching = containerIndexName("alias-matching");
+    string mismatched = containerIndexName("alias-mismatched");
+    // Not registered for teardown: deleting the two indexes removes the alias with them.
+    string alias = matching + "-alias";
+    _ = check newContainerStore(matching, containerDenseMode());
+    DenseSearch wider = {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION * 2}};
+    _ = check newContainerStore(mismatched, wider);
+    http:Client 'client = check rawClient();
+    http:Response aliased = check 'client->post("/_aliases", {
+        "actions": [
+            {"add": {"index": matching, "alias": alias}},
+            {"add": {"index": mismatched, "alias": alias}}
+        ]
+    });
+    test:assertEquals(aliased.statusCode, 200, check aliased.getTextPayload());
+
+    VectorStoreCore|ai:Error result = newContainerStore(alias, containerDenseMode(), createIndexIfNotExists = false);
+    if result !is ai:Error {
+        test:assertFail("an alias over an index of another dimension must not construct");
+    }
+    test:assertTrue(result.message().includes(mismatched), result.message());
+}

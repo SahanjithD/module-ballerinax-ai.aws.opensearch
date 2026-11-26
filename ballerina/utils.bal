@@ -23,6 +23,14 @@ import ballerina/uuid;
 # Field holding `ai:Chunk.'type`, so a chunk's type survives a round trip.
 const string CHUNK_TYPE_FIELD = "chunk_type";
 
+// k-NN `KNNQueryBuilder.K_MAX` (2.19.0.0): a `knn` query's `k` must be in `(0, 10000]`.
+const int KNN_MAX_K = 10000;
+
+// neural-search `NeuralSparseTwoPhaseProcessor` (2.19.1.0) defaults: the rescore window is
+// `size * expansion_rate` and the search fails when it exceeds `max_window_size`.
+const int TWO_PHASE_DEFAULT_EXPANSION_RATE = 5;
+const int TWO_PHASE_DEFAULT_MAX_WINDOW_SIZE = 10000;
+
 # The mode's `IndexConfig`, or `()` under `SPARSE`, which has no dense vector.
 #
 # + searchMode - The kind of search
@@ -344,6 +352,12 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
     int size = topK < 1 ? config.maxResultWindow : topK;
 
     ai:Embedding? embedding = query.embedding;
+    if embedding !is () && searchMode !is SparseSearch && topK > KNN_MAX_K {
+        return error(string `'topK' (${topK}) exceeds ${KNN_MAX_K}, the most nearest neighbours a ` +
+                "'knn' query can request");
+    }
+    // Only "all" can reach past the limit here, and it then means the nearest `KNN_MAX_K`.
+    int k = int:min(size, KNN_MAX_K);
     ai:MetadataFilters? filters = query.filters;
 
     json? filterClause = ();
@@ -368,7 +382,10 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
         queryClause = check buildSparseQueryClause(embedding, searchMode.sparseVectorFieldName,
                 searchMode.maxQueryTokens, filterClause);
         TwoPhaseAcceleration? acceleration = searchMode.twoPhaseAcceleration;
-        if acceleration is TwoPhaseAcceleration {
+        // Past the processor's default window the search would fail, so such a query runs
+        // unaccelerated, which is exact, only slower.
+        if acceleration is TwoPhaseAcceleration &&
+                size * TWO_PHASE_DEFAULT_EXPANSION_RATE <= TWO_PHASE_DEFAULT_MAX_WINDOW_SIZE {
             inlinePipeline = buildInlineTwoPhasePipeline(acceleration);
         }
     } else if searchMode is HybridSearch {
@@ -385,12 +402,12 @@ isolated function buildSearchBody(ai:VectorStoreQuery query, SearchMode searchMo
         if fusion is InlineFusion {
             inlinePipeline = buildInlineFusionPipeline(fusion);
         }
-        queryClause = check buildHybridQueryClause(embedding, searchMode, size, filterClause);
+        queryClause = check buildHybridQueryClause(embedding, searchMode, k, filterClause);
     } else {
         if embedding !is ai:Vector {
             return embeddingMismatchError("The query", embedding, searchMode);
         }
-        queryClause = buildDenseQueryClause(embedding, searchMode.vectorFieldName, size, filterClause,
+        queryClause = buildDenseQueryClause(embedding, searchMode.vectorFieldName, k, filterClause,
                 searchMode.efSearch);
     }
 
@@ -542,7 +559,9 @@ isolated function buildSparseQueryClause(ai:SparseVector embedding, string spars
     if filterClause is () {
         return neuralSparse;
     }
-    return {"bool": {"must": [neuralSparse], "filter": [filterClause]}};
+    // `should` rather than `must`: the two-phase processor only looks inside `bool.should`.
+    // `minimum_should_match` keeps the clause required, as `must` would.
+    return {"bool": {"should": [neuralSparse], "minimum_should_match": 1, "filter": [filterClause]}};
 }
 
 # Translates metadata filters into an OpenSearch query clause. Empty groups add no clause.

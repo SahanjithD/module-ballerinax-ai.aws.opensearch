@@ -334,7 +334,8 @@ isolated function testSparseQueryUsesNeuralSparseWithQueryTokens() returns error
     test:assertFalse(queryClause.hasKey("knn"), "a SPARSE query must carry no knn clause");
 }
 
-// `neural_sparse` has no `filter` parameter, so the filter is a `bool` sibling.
+// `neural_sparse` has no `filter` parameter, so the filter is a `bool` sibling. The clause sits
+// under `should`, where the two-phase processor looks, and `minimum_should_match` keeps it required.
 @test:Config
 isolated function testSparseQueryPutsFilterAsBoolSibling() returns error? {
     ai:VectorStoreQuery query = {
@@ -344,11 +345,13 @@ isolated function testSparseQueryPutsFilterAsBoolSibling() returns error? {
     json body = check buildSearchBody(query, sparseMode(), {});
     map<json> bodyMap = check asJsonMap(body);
     map<json> boolClause = check asJsonMap((check asJsonMap(bodyMap["query"]))["bool"]);
-    json[] must = check boolClause["must"].ensureType();
+    test:assertFalse(boolClause.hasKey("must"), "the processor does not look inside 'must'");
+    json[] should = check boolClause["should"].ensureType();
     json[] filter = check boolClause["filter"].ensureType();
-    test:assertEquals(must.length(), 1);
+    test:assertEquals(should.length(), 1);
+    test:assertEquals(boolClause["minimum_should_match"], 1, "without it the sparse clause becomes optional");
     test:assertEquals(filter.length(), 1);
-    map<json> neuralSparse = check asJsonMap((check asJsonMap(must[0]))["neural_sparse"]);
+    map<json> neuralSparse = check asJsonMap((check asJsonMap(should[0]))["neural_sparse"]);
     map<json> sparseField = check asJsonMap(neuralSparse["sparse_embedding"]);
     test:assertFalse(sparseField.hasKey("filter"),
             "neural_sparse over rank_features takes no filter parameter; it must be a bool sibling");
@@ -824,4 +827,55 @@ isolated function testHybridFilterOnlyQueryMayAskForAll() returns error? {
     json body = check buildSearchBody({topK: -1}, hybridMode(), {});
     map<json> bodyMap = check asJsonMap(body);
     test:assertEquals(bodyMap["size"], 10000, "a filter-only query runs no k-NN search, so 'all' stays allowed");
+}
+
+// --- the k-NN `k` limit -----------------------------------------------------------------------------
+
+@test:Config
+isolated function testDenseAllIsCappedAtTheKnnLimit() returns error? {
+    ai:VectorStoreQuery query = {embedding: [0.1, 0.2, 0.3], topK: 0};
+    map<json> body = check asJsonMap(check buildSearchBody(query, queryMode(), {maxResultWindow: 20000}));
+    test:assertEquals(body["size"], 20000, "the page size keeps the configured window");
+    map<json> knn = check asJsonMap((check asJsonMap(body["query"]))["knn"]);
+    map<json> knnField = check asJsonMap(knn["embedding"]);
+    test:assertEquals(knnField["k"], 10000, "'k' is capped at OpenSearch's limit of 10,000");
+}
+
+@test:Config
+isolated function testExplicitTopKAboveTheKnnLimitIsRejected() {
+    ai:VectorStoreQuery query = {embedding: [0.1, 0.2, 0.3], topK: 10001};
+    json|ai:Error body = buildSearchBody(query, queryMode(), {maxResultWindow: 20000});
+    if body !is ai:Error {
+        test:assertFail("'topK' 10001 on a dense query should be rejected before OpenSearch does");
+    }
+    test:assertTrue(body.message().includes("10000"), body.message());
+}
+
+@test:Config
+isolated function testSparseTopKIsNotHeldToTheKnnLimit() returns error? {
+    ai:VectorStoreQuery query = {embedding: {indices: [1055], values: [1.0]}, topK: 10001};
+    map<json> body = check asJsonMap(check buildSearchBody(query, sparseMode(), {maxResultWindow: 20000}));
+    test:assertEquals(body["size"], 10001, "a sparse query sends no 'k'");
+}
+
+// --- the two-phase window ---------------------------------------------------------------------------
+
+isolated function acceleratedQueryBody(int topK) returns map<json>|error {
+    SparseSearch accelerated = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}};
+    ai:VectorStoreQuery query = {embedding: {indices: [1055], values: [1.0]}, topK};
+    return asJsonMap(check buildSearchBody(query, accelerated, {}));
+}
+
+@test:Config
+isolated function testTwoPhaseIsAttachedUpToItsWindow() returns error? {
+    test:assertTrue((check acceleratedQueryBody(2000)).hasKey("search_pipeline"),
+            "2,000 x 5 is exactly the processor's default window of 10,000");
+}
+
+@test:Config
+isolated function testTwoPhaseIsSkippedPastItsWindow() returns error? {
+    test:assertFalse((check acceleratedQueryBody(2001)).hasKey("search_pipeline"),
+            "past 10,000 the processor fails the search, so the query runs unaccelerated");
+    test:assertFalse((check acceleratedQueryBody(0)).hasKey("search_pipeline"),
+            "'all' is the full window, far past the processor's");
 }

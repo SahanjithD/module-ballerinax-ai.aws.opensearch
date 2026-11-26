@@ -23,7 +23,8 @@ user database).
 - Automatic index creation with the right mapping for the mode — `knn_vector`, `rank_features`,
   or both — opt-out-able for least-privilege deployments
 - Full metadata filtering (`==`, `!=`, `>`, `>=`, `<`, `<=`, `in`, `nin`, nested `AND`/`OR`)
-  translated to native OpenSearch `bool` queries, pre-filtered inside the `knn` clause
+  translated to native OpenSearch `bool` queries, pre-filtered inside the `knn` clause (Faiss and
+  Lucene; OpenSearch rejects a `knn` filter on an `nmslib` index)
 - `time:Utc` metadata round-trips through RFC 3339 strings; `fileSize` round-trips through
   `decimal`
 - Exponential-backoff retry on transient failures, and explicit parsing of `_bulk`'s per-item
@@ -150,8 +151,13 @@ searchMode = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}}
 Set `pruneRatio` to override it.
 
 It is unset by default because it raises the version floor, and it is reachable from `SPARSE` alone
-— the processor rewrites `neural_sparse` clauses at the top level or inside a `bool`, and does not
-descend into a `hybrid` query, where it would be accepted and then quietly do nothing.
+— the processor rewrites `neural_sparse` clauses at the top level or under a `bool`'s `should`, and
+does not descend into a `hybrid` query, where it would be accepted and then quietly do nothing. A
+filtered query keeps the clause under `should` for that reason.
+
+The processor rescores a window of `size × 5` documents and fails past 10,000, its defaults. So a
+query asking for more than 2,000 results, including "all", runs without acceleration: exact, only
+slower.
 
 ## Prerequisites
 
@@ -442,8 +448,8 @@ does not compile.
 | `idFieldName` | `"doc_id"` | The field carrying the logical entry id; always written, and the only identity handle on Serverless Classic |
 | `metadataFieldName` | `"metadata"` | Set to `""` to address bare `<key>` paths — for pointing this module at a pre-existing index with a flat schema. A metadata key that would then collide with a reserved field name (`embedding`, `sparse_embedding`, `content`, `doc_id`, `chunk_type`) is rejected with an `ai:Error` rather than silently overwriting that field. When this module creates the index, `""` also maps every string field it does not map itself as `keyword`: those fields match exactly only, and values over 8,191 characters are not indexed |
 | `includeEmbeddingsInResults` | `false` | Whether a `query` result carries the stored vector. Off by default, so every vector field the mode declares is excluded from `_source` — a meaningful bandwidth saving at high dimensions and large `topK`, and a larger one under `SPARSE`/`HYBRID`. Set `true` when the caller needs the vectors back |
-| `maxBulkSize` | `500` | Entries per `_bulk` request; `add` chunks larger batches automatically |
-| `maxResultWindow` | `10000` | The `size` used when `topK < 1` ("return all"), and the ceiling enforced on an explicit `topK` |
+| `maxBulkSize` | `500` | Entries per `_bulk` request; `add` and `delete` split larger calls. It counts entries, not bytes: lower it if large entries make a request exceed the endpoint's payload limit (a 413) |
+| `maxResultWindow` | `10000` | The `size` used when `topK < 1` ("return all"), and the ceiling enforced on an explicit `topK`. A query with an embedding also asks for at most 10,000 neighbours, OpenSearch's `knn` limit |
 | `retryConfig` | exponential backoff, 3 retries | Applied to `429`/`408`/`5xx` responses, and to `add` items a `_bulk` response rejects with `429`, which are re-sent on their own. Each attempt is signed afresh. On Serverless Classic, indexing writes are never retried, since a replay appends duplicates. `httpConfig.retryConfig` is ignored, so retries are set only here |
 
 `vectorFieldName`, `normalizeCosineScore` and `efSearch` are not here: they live on the

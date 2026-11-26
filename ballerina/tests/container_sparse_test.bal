@@ -162,25 +162,32 @@ isolated function testContainerSparseRoundTripIsLossy() returns error? {
 isolated function twoPhaseContainerQuery() returns ai:VectorStoreQuery =>
     {embedding: {indices: [1055, 2001], values: [10.0, 1.0]}, topK: 10};
 
-// Each entry wins on a different phase's token, so a skipped rescoring pass changes the scores.
+// Each of the first two wins on a different phase's token, so a skipped rescoring pass changes the
+// scores. The third carries only the low-weight token: the first phase never selects it, so it is
+// absent from an accelerated result and present in a plain one.
 isolated function twoPhaseSeedEntries() returns ai:VectorEntry[] => [
     sparseVectorEntry("high-then-low", [1055, 2001], [9.0, 1.0]),
-    sparseVectorEntry("low-then-high", [1055, 2001], [1.0, 9.0])
+    sparseVectorEntry("low-then-high", [1055, 2001], [1.0, 9.0]),
+    sparseVectorEntry("low-only", [2001], [9.0])
 ];
 
-// On a corpus this small the acceleration must reproduce the unaccelerated scores exactly; the
-// ranking alone would not catch a rescoring pass that dropped its tokens.
+// Apart from the low-only control, the acceleration must reproduce the unaccelerated scores
+// exactly; the ranking alone would not catch a rescoring pass that dropped its tokens.
 @test:Config {groups: ["docker"]}
 isolated function testContainerTwoPhaseAccelerationMatchesTheUnacceleratedResult() returns error? {
     string indexName = containerIndexName("sparse-twophase");
     VectorStoreCore seed = check newSparseContainerStore(indexName);
     check seed.add(twoPhaseSeedEntries());
-    ai:VectorMatch[] baseline = check seed.query(twoPhaseContainerQuery());
+    ai:VectorMatch[] plain = check seed.query(twoPhaseContainerQuery());
+    test:assertTrue(plain.some(m => m.id == "low-only"), "a plain query must match the low-only control");
+    ai:VectorMatch[] baseline = plain.filter(m => m.id != "low-only");
 
     SparseSearch accelerated = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}};
     VectorStoreCore store = check newContainerStore(indexName, accelerated, createIndexIfNotExists = false);
     ai:VectorMatch[] matches = check store.query(twoPhaseContainerQuery());
 
+    test:assertFalse(matches.some(m => m.id == "low-only"),
+            "the low-only control must be absent, or the two-phase rewrite did not run");
     test:assertEquals(matches.length(), baseline.length(),
             "the two-phase pass must return the same matches as the single-phase one");
     foreach int i in 0 ..< baseline.length() {
@@ -199,18 +206,23 @@ isolated function testContainerTwoPhaseAccelerationWorksWithAFilter() returns er
     string indexName = containerIndexName("sparse-twophase-filter");
     VectorStoreCore seed = check newSparseContainerStore(indexName);
     check seed.add([
-        sparseVectorEntry("english", [1055], [9.0], "en"),
+        sparseVectorEntry("english", [1055, 2001], [9.0, 1.0], "en"),
+        sparseVectorEntry("english-low-only", [2001], [9.0], "en"),
         sparseVectorEntry("french", [1055], [9.5], "fr")
     ]);
+    ai:VectorStoreQuery query = {
+        embedding: {indices: [1055, 2001], values: [10.0, 1.0]},
+        filters: {filters: [{key: "language", value: "en"}]},
+        topK: 10
+    };
+    ai:VectorMatch[] plain = check seed.query(query);
+    test:assertEquals(plain.length(), 2, "a plain filtered query matches both English entries");
 
     SparseSearch accelerated = {queryMode: ai:SPARSE, twoPhaseAcceleration: {}};
     VectorStoreCore store = check newContainerStore(indexName, accelerated, createIndexIfNotExists = false);
-    ai:VectorMatch[] matches = check store.query({
-        embedding: {indices: [1055], values: [2.0]},
-        filters: {filters: [{key: "language", value: "en"}]},
-        topK: 10
-    });
+    ai:VectorMatch[] matches = check store.query(query);
 
-    test:assertEquals(matches.length(), 1, "the filter must still apply under the two-phase rewrite");
+    test:assertEquals(matches.length(), 1,
+            "the filter must still apply, and the low-only control must drop out under the rewrite");
     test:assertEquals(matches[0].id, "english");
 }

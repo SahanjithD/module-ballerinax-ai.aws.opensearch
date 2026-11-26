@@ -203,3 +203,34 @@ isolated function testContainerClassicRejectsAnIdWithAFullWindowOfCopies() retur
     }
     test:assertTrue(result.message().includes("'dup'"), result.message());
 }
+
+@test:Config {groups: ["docker"]}
+isolated function testContainerDeleteIsSplitByMaxBulkSize() returns error? {
+    string indexName = containerIndexName("delete-batches");
+    VectorStoreCore store = check newContainerStore(indexName, containerDenseMode(), {maxBulkSize: 2});
+    string[] ids = from int i in 0 ..< 5
+        select string `b-${i}`;
+    check store.add(from string id in ids
+        select entry(id, vec(1.0)));
+    test:assertEquals(check documentCount(indexName), 5);
+
+    check store.delete(ids);
+    test:assertEquals(check documentCount(indexName), 0, "every batch of the delete should have run");
+}
+
+@test:Config {groups: ["docker"]}
+isolated function testContainerClassicDeleteIsSplitByMaxBulkSize() returns error? {
+    string indexName = containerIndexName("classic-batches");
+    VectorStoreCore store = check new (containerUrl, CONTAINER_REGION, indexName, containerAuth, classicDeployment(),
+        containerDenseMode(), {maxBulkSize: 2}
+    );
+    string[] ids = from int i in 0 ..< 5
+        select string `cb-${i}`;
+    check store.add(from string id in ids
+        select entry(id, vec(1.0)));
+    check rawRefresh(indexName);
+
+    check store.delete(ids);
+    check rawRefresh(indexName);
+    test:assertEquals(check documentCount(indexName), 0, "every batch of the delete should have run");
+}
