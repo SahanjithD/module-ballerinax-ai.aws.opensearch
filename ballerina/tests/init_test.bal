@@ -469,3 +469,18 @@ isolated function testSigV4IsAllowedOverHttp() {
     );
     test:assertTrue(transport is OpenSearchTransport, "SigV4 never sends the secret key, so 'http://' stays allowed");
 }
+
+// OpenSearch maps a dotted name as nested objects, which the next `init` could not find.
+@test:Config
+isolated function testDottedVectorFieldNamesAreRejected() {
+    DenseSearch dense = {queryMode: ai:DENSE, indexConfig: {dimension: 8}, vectorFieldName: "vectors.dense"};
+    ai:Error? denseResult = validateConfiguration(VALID_URL, managedDeployment(), dense, {});
+    if denseResult !is ai:Error {
+        test:assertFail("a dotted 'vectorFieldName' should be rejected");
+    }
+    test:assertTrue(denseResult.message().includes("vectors.dense"), denseResult.message());
+
+    SparseSearch sparse = {queryMode: ai:SPARSE, sparseVectorFieldName: "vectors.sparse"};
+    test:assertTrue(validateConfiguration(VALID_URL, managedDeployment(), sparse, {}) is ai:Error,
+            "a dotted 'sparseVectorFieldName' should be rejected");
+}

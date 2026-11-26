@@ -15,22 +15,17 @@ Explore these [examples](https://github.com/ballerina-platform/module-ballerinax
 ## Prerequisites
 
 1. Follow the [module README](../ballerina/README.md#prerequisites) to create an OpenSearch
-   deployment (managed domain or Serverless collection) and obtain AWS credentials.
+   managed domain and obtain AWS credentials. Both examples use `ManagedDomainVectorStore`.
 
-2. For the example, create a `Config.toml` file with your service URL and, if it differs from the
-   defaults, your region, index name, and deployment type:
+2. For the example, create a `Config.toml` file with your service URL and, if they differ from the
+   defaults, your region and index name:
 
    ```toml
    serviceUrl = "<Your OpenSearch endpoint URL>"
    region = "<Your AWS region>"
    indexName = "<Your index name>"
-
-   [deployment]
-   deploymentType = "MANAGED_DOMAIN"
    ```
 
-   This example opts into the standard AWS credential chain (environment variables, shared
-   config/credentials file, EC2/ECS instance role, and so on), so no credentials need to go in
-   `Config.toml`. Note that `auth` has no default on any `Deployment` variant — the example states
-   `auth:DEFAULT_CREDENTIALS` explicitly in `main.bal`, rather than the store falling back to the
-   ambient chain on its own.
+   The examples pass `auth:DEFAULT_CREDENTIALS` in `main.bal`, which uses the standard AWS
+   credential chain (environment variables, shared config/credentials file, EC2/ECS instance role,
+   and so on), so no credentials go in `Config.toml`.

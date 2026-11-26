@@ -193,29 +193,46 @@ isolated class VectorStoreCore {
     #
     # + idList - The logical ids to delete
     # + return - An `ai:Error` naming the ids that failed, or if a lookup may have missed some
+    // `add` is append-only on Classic, so one id may match several documents, and a lookup that
+    // fills the window may have missed some. It is split in half and retried until it fits.
+    # Finds the internal `_id`s of the documents carrying the given logical ids.
+    #
+    # + ids - The logical ids to look up
+    # + internalIds - Receives the internal `_id` of each match
+    # + logicalIds - Receives each match's logical id, parallel to `internalIds`
+    # + return - An `ai:Error` if a single id matches a full window of documents
+    private isolated function lookUpInternalIds(string[] ids, string[] internalIds, string[] logicalIds)
+            returns ai:Error? {
+        json searchBody = buildDocIdLookupBody(self.config.idFieldName, ids, self.config.maxResultWindow);
+        SearchResponse searchResponse = check self.transport.search(self.indexName, searchBody);
+        int hitCount = searchResponse.hits.hits.length();
+        if hitCount >= self.config.maxResultWindow {
+            if ids.length() > 1 {
+                int half = ids.length() / 2;
+                check self.lookUpInternalIds(ids.slice(0, half), internalIds, logicalIds);
+                return self.lookUpInternalIds(ids.slice(half), internalIds, logicalIds);
+            }
+            return error(string `The id '${ids[0]}' matches at least ${hitCount} documents on Serverless ` +
+                    string `Classic, the configured 'maxResultWindow', so some copies could be left ` +
+                    "undeleted. Raise 'StoreConfiguration.maxResultWindow' and retry");
+        }
+        foreach SearchHit hit in searchResponse.hits.hits {
+            internalIds.push(hit._id);
+            map<json>? hitSource = hit?._source;
+            json logicalId = hitSource is map<json> ? hitSource[self.config.idFieldName] : ();
+            // A document written elsewhere may have no logical id.
+            logicalIds.push(logicalId is string ? logicalId : hit._id);
+        }
+    }
+
     private isolated function deleteOnServerlessClassic(string[] idList) returns ai:Error? {
         string[] internalIds = [];
         // Parallel to `internalIds`, so a failure is reported against the caller's id.
         string[] logicalIds = [];
-        foreach string[] chunk in chunkIds(idList, DOC_ID_LOOKUP_CHUNK_SIZE) {
-            json searchBody = buildDocIdLookupBody(self.config.idFieldName, chunk, self.config.maxResultWindow);
-            SearchResponse searchResponse = check self.transport.search(self.indexName, searchBody);
-            int hitCount = searchResponse.hits.hits.length();
-            // `add` is append-only here, so a full page may have missed duplicates.
-            if hitCount >= self.config.maxResultWindow {
-                return error(string `A lookup for ${chunk.length()} id(s) to delete on Serverless Classic ` +
-                        string `returned ${hitCount} documents, meeting the configured 'maxResultWindow' ` +
-                        string `(${self.config.maxResultWindow}) exactly. Because 'add' is append-only on ` +
-                        "Serverless Classic, there may be more duplicate documents than this lookup could " +
-                        "see, which would be left undeleted. Raise 'StoreConfiguration.maxResultWindow' and retry");
-            }
-            foreach SearchHit hit in searchResponse.hits.hits {
-                internalIds.push(hit._id);
-                map<json>? hitSource = hit?._source;
-                json logicalId = hitSource is map<json> ? hitSource[self.config.idFieldName] : ();
-                // A document written elsewhere may have no logical id.
-                logicalIds.push(logicalId is string ? logicalId : hit._id);
-            }
+        // A chunk of more ids than the window could never fit, so none is larger.
+        int chunkSize = int:min(DOC_ID_LOOKUP_CHUNK_SIZE, self.config.maxResultWindow);
+        foreach string[] chunk in chunkIds(idList, chunkSize) {
+            check self.lookUpInternalIds(chunk, internalIds, logicalIds);
         }
         if internalIds.length() == 0 {
             return;
@@ -335,6 +352,14 @@ isolated function validateFieldNames(SearchMode searchMode, StoreConfiguration c
                     "one silently overwrites another in every stored document");
         }
         seen.push(name);
+    }
+    // OpenSearch maps a dotted name as nested objects, so `verifyMappedField` would not find the
+    // field the next time `init` checks an index this module created.
+    foreach string name in vectorFieldNamesOf(searchMode) {
+        if name.includes(".") {
+            return error(string `The vector field name '${name}' must not contain '.', which ` +
+                    "OpenSearch reads as a path into nested objects");
+        }
     }
 }
 

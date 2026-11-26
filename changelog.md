@@ -58,6 +58,11 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   which member of the union the caller had picked.
 
 ### Changed
+- A vector field name containing `.` is rejected by `init`. OpenSearch maps it as nested objects,
+  so the next `init` could not find the field the module had itself created.
+- `delete` on Serverless Classic looks ids up in chunks no larger than `maxResultWindow`, and splits
+  a lookup that fills the window until it fits. Deleting more ids than the window used to fail and
+  delete nothing; now only a single id with a full window of copies does.
 - Verification of an existing index also checks the dense field's `space_type` against
   `IndexConfig.similarityMetric`, and rejects an `nmslib` cosine field on a cluster older than 2.19
   while `normalizeCosineScore` is on. Before 2.19, NMSLIB scored cosine as `1 / (2 - cos)` rather

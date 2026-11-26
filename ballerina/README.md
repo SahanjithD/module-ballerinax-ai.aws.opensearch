@@ -420,13 +420,13 @@ does not compile.
 > `init` sees the index and returns without building a mapping, so editing them changes nothing on
 > the index.
 >
-> On an existing index, `init` compares `dimension` against the stored mapping and fails on a
-> mismatch, unless the mapping cannot be read. **None of the other settings is checked,
-> so editing them has no effect and produces no error.** Nothing in a later request restates them:
-> a `_bulk` document carries a vector, and a `knn` query carries a vector and `k`. Neither mentions
-> `space_type`, `engine` or `compression_level`, so the server has nothing to disagree with. A
-> changed `similarityMetric` keeps returning scores computed under the original metric; a
-> `compressionLevel` set to opt out of NextGen's default quantization leaves the vectors quantized.
+> On an existing index, `init` compares `dimension` and `similarityMetric` against the stored
+> mapping and fails on a mismatch, unless the mapping cannot be read. **None of the other
+> settings is checked, so editing them has no effect and produces no error.** Nothing in a later
+> request restates them: a `_bulk` document carries a vector, and a `knn` query carries a vector
+> and `k`. Neither mentions `engine`, `m`, `ef_construction` or `compression_level`, so the server
+> has nothing to disagree with. A `compressionLevel` set to opt out of NextGen's default
+> quantization leaves the vectors quantized.
 >
 > To change the shape of an existing index, reindex into a new one. This module does not update
 > mappings.

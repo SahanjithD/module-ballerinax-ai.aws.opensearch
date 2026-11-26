@@ -17,6 +17,7 @@
 // `add`, `query` and `delete` end to end, with `refreshOnWrite` so writes are visible at once.
 
 import ballerina/ai;
+import ballerina/http;
 import ballerina/test;
 
 @test:Config {groups: ["docker"]}
@@ -151,4 +152,54 @@ isolated function testContainerAddRejectsZeroVectorUnderCosine() returns error? 
     ai:Error? result = store.add([entry("zero", vec(0.0, 0.0, 0.0, 0.0))]);
     test:assertTrue(result is ai:Error, "a zero vector under COSINE should be rejected");
     test:assertEquals(check documentCount(indexName), 0, "nothing should have been written");
+}
+
+# Makes everything written so far searchable; Serverless Classic has no `refreshOnWrite`.
+#
+# + indexName - The index to refresh
+# + return - An error if the refresh fails
+isolated function rawRefresh(string indexName) returns error? {
+    http:Client cl = check rawClient();
+    http:Response _ = check cl->post(string `/${indexName}/_refresh`, ());
+}
+
+# A Classic store against the container, with a tiny result window so lookups fill it.
+#
+# + indexName - The target index
+# + return - The store, or an `ai:Error`
+isolated function classicStoreWithSmallWindow(string indexName) returns VectorStoreCore|ai:Error =>
+    new (containerUrl, CONTAINER_REGION, indexName, containerAuth, classicDeployment(), containerDenseMode(),
+    {maxResultWindow: 4}
+);
+
+@test:Config {groups: ["docker"]}
+isolated function testContainerClassicDeletesMoreIdsThanTheWindow() returns error? {
+    string indexName = containerIndexName("classic-many");
+    VectorStoreCore store = check classicStoreWithSmallWindow(indexName);
+    string[] ids = from int i in 0 ..< 10
+        select string `c-${i}`;
+    check store.add(from string id in ids
+        select entry(id, vec(1.0)));
+    check rawRefresh(indexName);
+
+    check store.delete(ids);
+    check rawRefresh(indexName);
+    test:assertEquals(check documentCount(indexName), 0, "every id should be deleted despite a window of 4");
+}
+
+@test:Config {groups: ["docker"]}
+isolated function testContainerClassicRejectsAnIdWithAFullWindowOfCopies() returns error? {
+    string indexName = containerIndexName("classic-copies");
+    VectorStoreCore store = check classicStoreWithSmallWindow(indexName);
+    // Append-only on Classic: the same id four times is four documents.
+    foreach int _ in 0 ..< 4 {
+        check store.add([entry("dup", vec(1.0))]);
+    }
+    check rawRefresh(indexName);
+
+    ai:Error? result = store.delete("dup");
+    if result !is ai:Error {
+        test:assertFail("an id with a full window of copies may have more, so the delete must fail");
+    }
+    test:assertTrue(result.message().includes("'dup'"), result.message());
 }
