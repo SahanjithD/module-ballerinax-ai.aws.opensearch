@@ -70,7 +70,7 @@ service / on retryListener {
         if attempt == 1 {
             return <http:ServiceUnavailable>{};
         }
-        http:Ok ok = {body: {"errors": false, "items": []}};
+        http:Ok ok = {body: {"errors": false, "items": [{"index": {"_id": "retry-1", "status": 201}}]}};
         return ok;
     }
 }
@@ -185,15 +185,87 @@ isolated function testItemsRejectedWith429AreResentAlone() returns error? {
     test:assertFalse(bodies[1].includes("rej-1"), "the re-send must not repeat the item that was applied");
 }
 
+// A 429'd item was not applied, so re-sending it alone cannot duplicate it, even without a custom `_id`.
 @test:Config {dependsOn: [testItemsRejectedWith429AreResentAlone]}
-isolated function testItemsRejectedWith429AreNotResentOnClassic() returns error? {
+isolated function testItemsRejectedWith429AreResentAloneOnClassic() returns error? {
     _ = takeRejectBodies();
     VectorStoreCore store = check rejectingStore(classicDeployment());
-    ai:Error? result = store.add([entry("rej-1", vec(1.0)), entry("rej-2", vec(0.0, 1.0))]);
+    check store.add([entry("rej-1", vec(1.0)), entry("rej-2", vec(0.0, 1.0))]);
 
-    if result !is ai:Error {
-        test:assertFail("a 429'd item on Classic should be reported, not re-sent");
+    string[] bodies = takeRejectBodies();
+    test:assertEquals(bodies.length(), 2, "the rejected item should be re-sent once");
+    test:assertTrue(bodies[1].includes("rej-2"), "the re-send should carry the rejected item");
+    test:assertFalse(bodies[1].includes("rej-1"), "the re-send must not repeat the item that was applied");
+}
+
+// The retry stand-in fails the first `_bulk` with a 503, whose outcome is unknown.
+@test:Config {dependsOn: [testHttpClientRetryIsCleared]}
+isolated function testClassicIndexingIsNotRetriedOnA503() returns error? {
+    _ = takeRetryCaptures();
+    VectorStoreCore store = check new (string `http://localhost:${RETRY_PORT}`, CONTAINER_REGION, "retry-index",
+        containerAuth, classicDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}},
+        {retryConfig: {maxRetries: 2, initialDelay: 0.01}},
+        createIndexIfNotExists = false
+    );
+    ai:Error? result = store.add([entry("c-503", vec(1.0))]);
+
+    test:assertTrue(result is ai:Error, "a 503 on Classic may have applied part of the batch, so it must not be replayed");
+    test:assertEquals(takeRetryCaptures().length(), 1);
+}
+
+// A stand-in that throttles the first `_bulk` with an HTTP 429.
+
+# The port the throttling stand-in listens on.
+const int THROTTLE_PORT = 18305;
+
+isolated int throttledBulkCalls = 0;
+
+listener http:Listener throttleListener = new (THROTTLE_PORT);
+
+service / on throttleListener {
+    isolated resource function get [string index]/_mapping() returns json => {
+        [index]: {"mappings": {"properties": {"embedding": {"type": "knn_vector", "dimension": CONTAINER_DIMENSION}}}}
+    };
+
+    isolated resource function post [string... path]() returns http:Ok|http:TooManyRequests {
+        int call;
+        lock {
+            throttledBulkCalls += 1;
+            call = throttledBulkCalls;
+        }
+        if call == 1 {
+            return <http:TooManyRequests>{};
+        }
+        http:Ok ok = {body: {"errors": false, "items": [{"index": {"_id": "server-generated", "status": 201}}]}};
+        return ok;
     }
-    test:assertTrue(result.message().includes("rej-2"), result.message());
-    test:assertEquals(takeRejectBodies().length(), 1, "Classic must not re-send: it would append a duplicate");
+}
+
+// A whole-request 429 can follow partial execution when shard indexing pressure is enforced, so on
+// Classic it is not replayed either.
+@test:Config
+isolated function testClassicIndexingIsNotRetriedOnA429() returns error? {
+    lock {
+        throttledBulkCalls = 0;
+    }
+    VectorStoreCore store = check new (string `http://localhost:${THROTTLE_PORT}`, CONTAINER_REGION, "throttle-index",
+        containerAuth, classicDeployment(), {queryMode: ai:DENSE, indexConfig: {dimension: CONTAINER_DIMENSION}},
+        {retryConfig: {maxRetries: 2, initialDelay: 0.01}},
+        createIndexIfNotExists = false
+    );
+    ai:Error? result = store.add([entry("c-429", vec(1.0))]);
+    test:assertTrue(result is ai:Error, "the 429 should be reported, not replayed");
+    lock {
+        test:assertEquals(throttledBulkCalls, 1);
+    }
+}
+
+// Deletes are idempotent, so a Classic delete `_bulk` is still retried; only indexing is not.
+@test:Config {dependsOn: [testClassicIndexingIsNotRetriedOnA503]}
+isolated function testClassicDeleteBulkIsStillRetried() returns error? {
+    _ = takeRetryCaptures();
+    OpenSearchTransport transport = check new (string `http://localhost:${RETRY_PORT}`, CONTAINER_REGION,
+        containerAuth, classicDeployment(), {maxRetries: 1, initialDelay: 0.01}, {});
+    _ = check transport.bulk(buildDeleteBulkBody("retry-index", ["internal-1"]));
+    test:assertEquals(takeRetryCaptures().length(), 2, "the 503 should be retried once");
 }

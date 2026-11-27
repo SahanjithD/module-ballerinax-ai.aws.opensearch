@@ -96,8 +96,11 @@ This file documents all significant changes made to the Ballerina `ai.aws.opense
   while `normalizeCosineScore` is on. Before 2.19, NMSLIB scored cosine as `1 / (2 - cos)` rather
   than `(1 + cos) / 2`, so the normalization returned wrong similarities.
 - `add` re-sends the items a `_bulk` response rejects with `429` (`es_rejected_execution_exception`)
-  on their own, with `retryConfig`'s backoff, when every failure in the batch is a `429`. Not on
-  Serverless Classic, where a re-sent item would be appended twice.
+  on their own, with `retryConfig`'s backoff, when every failure in the batch is a `429`. That
+  includes Serverless Classic: a `429`'d item was not applied, so re-sending it cannot duplicate.
+- A Serverless Classic delete sizes its lookups at half of `maxResultWindow`, so a full chunk no
+  longer costs an extra query, and `init` rejects a `maxResultWindow` below 2 on Classic, where a
+  delete could never succeed.
 - `BasicAuth` with an `http://` service URL fails `init`, since the password would be sent
   unencrypted. AWS requires HTTPS on every domain with fine-grained access control, the only setup
   that accepts basic auth.

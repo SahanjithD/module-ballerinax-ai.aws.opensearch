@@ -103,9 +103,8 @@ isolated class VectorStoreCore {
     }
 
     // A `_bulk` that returns 200 can still reject items with 429 when the cluster is overloaded.
-    // Those are re-sent on their own with `retryConfig`'s backoff, but only when every failure is a
-    // 429, and never on Serverless Classic, where a re-sent item without a custom `_id` is appended
-    // a second time.
+    // Those were not applied, so they are re-sent on their own with `retryConfig`'s backoff, on
+    // Serverless Classic too, but only when every failure is a 429.
     # Indexes one batch, re-sending the items the cluster rejected as overloaded.
     #
     # + batch - The entries of one `_bulk` request
@@ -121,6 +120,10 @@ isolated class VectorStoreCore {
             byte[] body = check buildAddBulkBody(pending, self.indexName, self.deployment, self.searchMode,
                     self.config);
             BulkResponse response = check self.transport.bulk(body, isIndexingBatch = true);
+            if response.items.length() != pending.length() {
+                return error(string `The '_bulk' response carried ${response.items.length()} results for ` +
+                        string `${pending.length()} entries`);
+            }
             // Matched by position, because on Serverless Classic the response `_id` is
             // server-generated.
             string[] submittedIds = from PreparedEntry entry in pending
@@ -130,8 +133,7 @@ isolated class VectorStoreCore {
                 return;
             }
             int[] rejected = extractRejectedPositions(response);
-            if self.deployment is ServerlessClassicDeployment || attempt >= retryConfig.maxRetries ||
-                    rejected.length() != failures.length() {
+            if attempt >= retryConfig.maxRetries || rejected.length() != failures.length() {
                 return error(string `Failed to index ${failures.length()} of ${batch.length()} ` +
                         string `entries: ${summarizeBulkFailures(failures)}`);
             }
@@ -257,7 +259,9 @@ isolated class VectorStoreCore {
         // Parallel to `internalIds`, so a failure is reported against the caller's id.
         string[] logicalIds = [];
         // A chunk of more ids than the window could never fit, so none is larger.
-        int chunkSize = int:min(DOC_ID_LOOKUP_CHUNK_SIZE, self.config.maxResultWindow);
+        // Half the window, so a chunk whose ids each match one document leaves room for copies
+        // instead of filling the window and being split.
+        int chunkSize = int:min(DOC_ID_LOOKUP_CHUNK_SIZE, int:max(1, self.config.maxResultWindow / 2));
         foreach string[] chunk in chunkIds(idList, chunkSize) {
             check self.lookUpInternalIds(chunk, internalIds, logicalIds);
         }
@@ -382,6 +386,12 @@ isolated function validateConfiguration(string serviceUrl, Deployment deployment
                 string `${config.maxResultWindow}`);
     }
     check validateRetryConfig(config.retryConfig);
+    // A Classic delete looks each id up and treats a full window as "there may be more copies", so
+    // a window of 1 could never delete an id that exists.
+    if deployment is ServerlessClassicDeployment && config.maxResultWindow < 2 {
+        return error(string `'StoreConfiguration.maxResultWindow' must be at least 2 on Serverless ` +
+                string `Classic, where 'delete' looks ids up first, got: ${config.maxResultWindow}`);
+    }
     if deployment is ServerlessNextGenDeployment {
         // Quantization shapes a `knn_vector` field, which a SPARSE index does not have, so setting
         // it is a mistake worth reporting rather than ignoring.

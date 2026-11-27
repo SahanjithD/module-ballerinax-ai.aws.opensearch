@@ -559,3 +559,12 @@ isolated function testRetryConfigMustBackOff() {
                 string `${retryConfig.toString()} should be accepted`);
     }
 }
+
+// A Classic delete treats a full lookup window as "there may be more copies".
+@test:Config
+isolated function testClassicNeedsAResultWindowOfAtLeastTwo() {
+    test:assertTrue(validateConfiguration(VALID_URL, classicDeployment(), validMode(), {maxResultWindow: 1}) is ai:Error);
+    test:assertEquals(validateConfiguration(VALID_URL, classicDeployment(), validMode(), {maxResultWindow: 2}), ());
+    test:assertEquals(validateConfiguration(VALID_URL, managedDeployment(), validMode(), {maxResultWindow: 1}), (),
+            "a window of 1 is fine where delete does not look ids up");
+}

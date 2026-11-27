@@ -52,7 +52,9 @@ isolated class OpenSearchTransport {
         // Serverless has a fixed refresh interval, so only a managed domain carries this.
         self.refreshOnWrite = deployment is ManagedDomainDeployment && deployment.refreshOnWrite;
         // Without a custom `_id` (Classic), retrying a partly applied batch appends duplicates.
-        // Elsewhere the `_id` makes a retry an idempotent upsert.
+        // Elsewhere the `_id` makes a retry an idempotent upsert. Even a whole-request 429 can follow
+        // partial execution: OpenSearch 2.19.1 `TransportBulkAction` sends shard requests one by one
+        // and can be rejected by shard indexing pressure after some have run.
         self.retryWrites = deployment !is ServerlessClassicDeployment;
 
         // AWS requires HTTPS for all traffic to a domain with fine-grained access control, the only

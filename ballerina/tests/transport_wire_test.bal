@@ -80,7 +80,7 @@ service / on wireListener {
                               authorization: optionalHeader(request, "authorization")
                           });
         // A bare `json` would be sent as a 201, which `bulk` treats as a failure.
-        return {body: {"errors": false, "items": []}};
+        return {body: {"errors": false, "items": [{"index": {"_id": "wire", "status": 201}}]}};
     }
 }
 
